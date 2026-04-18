@@ -1,0 +1,38 @@
+{
+  "design-api": {
+    "type": "design",
+    "depends_on": [],
+    "service_name": null,
+    "description": "为登录功能设计 API 契约"
+  },
+  "review-design": {
+    "type": "review",
+    "depends_on": ["design-api"],
+    "service_name": null,
+    "description": "评审 API 设计"
+  },
+  "build-user-service": {
+    "type": "backend",
+    "depends_on": ["review-design"],
+    "service_name": "user-service",
+    "description": "在 user-service 仓库实现登录接口"
+  },
+  "build-gateway": {
+    "type": "backend",
+    "depends_on": ["review-design"],
+    "service_name": "gateway",
+    "description": "在 gateway 仓库新增路由配置"
+  },
+  "test-e2e": {
+    "type": "test",
+    "depends_on": ["build-user-service", "build-gateway"],
+    "service_name": null,
+    "description": "联调端到端登录流程"
+  },
+  "deploy-staging": {
+    "type": "deploy",
+    "depends_on": ["test-e2e"],
+    "service_name": null,
+    "description": "部署到 staging 环境"
+  }
+}
