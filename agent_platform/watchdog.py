@@ -9,6 +9,7 @@ Watchdog — 任务超时检测与僵尸任务回收
 from __future__ import annotations
 
 import datetime
+import json
 import logging
 import time
 
@@ -20,10 +21,14 @@ log = logging.getLogger("watchdog")
 class Watchdog:
     def __init__(self, consul: ConsulClient,
                  poll_interval: int = 30,
-                 task_timeout_seconds: int = 3600):
+                 task_timeout_seconds: int = 120,
+                 heartbeat_timeout: int = 120,
+                 max_retry: int = 3):
         self.consul = consul
         self.poll_interval = poll_interval
         self.task_timeout = task_timeout_seconds
+        self.heartbeat_timeout = heartbeat_timeout
+        self.max_retry = max_retry
         self._stop = False
 
     def stop(self) -> None:
@@ -69,14 +74,14 @@ class Watchdog:
             if agent_id and agent_id not in alive:
                 log.warning("zombie task %s/%s (agent %s dead), recovering",
                             req_id, task_name, agent_id)
-                self._recover(req_id, task_name)
+                self._recover(req_id, task_name, meta)
                 continue
 
             # 2. 超时检查
             if started_at and self._is_overtime(started_at):
                 log.warning("task %s/%s timed out (>%ss), recovering",
                             req_id, task_name, self.task_timeout)
-                self._recover(req_id, task_name, reason="timeout")
+                self._recover(req_id, task_name, meta, reason="timeout")
                 continue
 
     def _alive_agents(self) -> set:
@@ -99,7 +104,8 @@ class Watchdog:
         except Exception:
             return False
 
-    def _recover(self, req_id: str, task_name: str, reason: str = "agent_dead") -> None:
+    def _recover(self, req_id: str, task_name: str, meta: dict,
+                 reason: str = "agent_dead") -> None:
         base = f"workflows/{req_id}/tasks/{task_name}"
         # 记录回收原因
         self.consul.kv_put(f"{base}/last_recovery_reason", reason)
@@ -110,10 +116,18 @@ class Watchdog:
         retry_count = int(cur or "0") + 1
         self.consul.kv_put(f"{base}/retry_count", str(retry_count))
 
-        if retry_count >= 5:
+        if retry_count >= self.max_retry:
             self.consul.kv_put(f"{base}/status", "FAILED")
             self.consul.kv_put(f"{base}/error_message",
                                f"Recovered {retry_count} times, exceeded limit")
+            # 写入告警到 alerts/ 路径
+            alert_key = f"alerts/{req_id}/{task_name}"
+            self.consul.kv_put(alert_key, json.dumps({
+                "reason": reason,
+                "retry_count": retry_count,
+                "failed_at": _now_iso(),
+                "agent_id": meta.get("assigned_agent", ""),
+            }))
             log.error("task %s/%s permanently failed after %d recoveries",
                       req_id, task_name, retry_count)
         else:

@@ -10,6 +10,7 @@ feedback_listen.py — 服务 Agent 监听测试反馈（阻塞式）
   2. CAS 抢占：将状态置为 FIXING，并写入 fixer = AGENT_ID
   3. stdout 输出 payload JSON，由调用方（编码智能体）执行实际修复
   4. 修复完成后，调用方应再次调用 feedback_resolve.py 写入 FIXED
+  5. 每次阻塞唤醒时检查 ABORT 信号，收到则立即退出（码 7）
 """
 import argparse
 import json
@@ -24,6 +25,15 @@ from _consul import (  # noqa: E402
 )
 
 
+def _check_abort(req_id: str) -> bool:
+    """检查需求级 ABORT 信号，收到则退出。"""
+    ctl, _ = kv_get(f"workflows/{req_id}/control")
+    if ctl == "ABORT":
+        emit_json({"ok": True, "signal": "ABORT", "reason": "workflow_abort"})
+        return True
+    return False
+
+
 def main():
     p = argparse.ArgumentParser(description="监听并抢占测试反馈")
     p.add_argument("req_id")
@@ -35,6 +45,10 @@ def main():
     agent_id = env("AGENT_ID", required=True)
     base = feedback_base(args.req_id, args.service_name)
 
+    # 进入时先检查 ABORT
+    if _check_abort(args.req_id):
+        die("收到 ABORT，退出feedback监听", code=7)
+
     deadline = time.time() + args.timeout
     index = 0
 
@@ -44,6 +58,11 @@ def main():
             f"{base}/status", index=index, wait="30s"
         )
         index = new_index
+
+        # 每轮唤醒都检查 ABORT
+        if _check_abort(args.req_id):
+            die("收到 ABORT，退出feedback监听", code=7)
+
         if status != "PENDING_FIX":
             continue
 

@@ -100,6 +100,13 @@ class Aggregator:
                         tasks_meta: dict, deps: dict) -> None:
         meta = tasks_meta.get(task_name, {})
         cur_status = meta.get("status", "")
+        node_type = info.get("type", "task")
+
+        # Parallel / Aggregate 节点由独立逻辑处理
+        if node_type in ("parallel", "aggregate"):
+            self._maybe_activate_composite(req_id, task_name, info, tasks_meta, deps)
+            return
+
         # 只有未初始化或 BLOCKED 的任务可以被激活
         if cur_status not in ("", "BLOCKED"):
             return
@@ -116,6 +123,59 @@ class Aggregator:
         self.consul.kv_put(f"workflows/{req_id}/tasks/{task_name}/status", "PENDING")
         self.consul.kv_put(f"workflows/{req_id}/tasks/{task_name}/activated_at",
                            _now_iso())
+
+    def _maybe_activate_composite(self, req_id: str, task_name: str,
+                                  info: dict, tasks_meta: dict, deps: dict) -> None:
+        """处理 parallel / aggregate 复合节点。"""
+        meta = tasks_meta.get(task_name, {})
+        cur_status = meta.get("status", "")
+        node_type = info.get("type", "task")
+
+        upstream = info.get("depends_on", [])
+        all_up_done = all(
+            tasks_meta.get(u, {}).get("status") == "DONE"
+            for u in upstream
+        )
+
+        if node_type == "parallel":
+            # Parallel 节点：依赖全部 DONE 时，将 children 全部激活为 PENDING
+            if all_up_done and cur_status != "DONE":
+                children = info.get("children", [])
+                for child in children:
+                    child_meta = tasks_meta.get(child, {})
+                    if child_meta.get("status") in ("", "BLOCKED"):
+                        self.consul.kv_put(
+                            f"workflows/{req_id}/tasks/{child}/status", "PENDING")
+                        self.consul.kv_put(
+                            f"workflows/{req_id}/tasks/{child}/activated_at",
+                            _now_iso())
+                        log.info("parallel激活 child %s/%s", req_id, child)
+                # 标记 parallel 自身为 DONE（children 已全部激活）
+                self.consul.kv_put(
+                    f"workflows/{req_id}/tasks/{task_name}/status", "DONE")
+                log.info("parallel节点 %s/%s 完成", req_id, task_name)
+
+        elif node_type == "aggregate":
+            # Aggregate 节点：上游 parallel 全部 DONE 时，自身 DONE 并激活下游
+            if all_up_done and cur_status != "DONE":
+                self.consul.kv_put(
+                    f"workflows/{req_id}/tasks/{task_name}/status", "DONE")
+                log.info("aggregate节点 %s/%s 完成，激活下游", req_id, task_name)
+                # 激活下游任务（depends_on 指向此 aggregate 的任务）
+                for downstream, dinfo in tasks_meta.items():
+                    # 跳过自身
+                    if downstream == task_name:
+                        continue
+                    down_info = deps.get(downstream, {})
+                    if task_name in down_info.get("depends_on", []):
+                        if dinfo.get("status") in ("", "BLOCKED"):
+                            self.consul.kv_put(
+                                f"workflows/{req_id}/tasks/{downstream}/status",
+                                "PENDING")
+                            self.consul.kv_put(
+                                f"workflows/{req_id}/tasks/{downstream}/activated_at",
+                                _now_iso())
+                            log.info("aggregate激活下游 %s/%s", req_id, downstream)
 
     def _maybe_retest(self, req_id: str, task_name: str, info: dict,
                       tasks_meta: dict) -> None:

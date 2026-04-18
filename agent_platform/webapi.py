@@ -51,6 +51,13 @@ class APIHandler(BaseHTTPRequestHandler):
             if path.startswith("/api/workflow/"):
                 req_id = path.split("/")[-1]
                 return self._get_workflow(req_id)
+            if path.startswith("/api/sessions/"):
+                # /api/sessions/<req_id>/<task>
+                parts = path.split("/")
+                if len(parts) >= 4:
+                    req_id, task_name = parts[2], parts[3]
+                    return self._get_session_events(req_id, task_name)
+                return self._send_json(400, {"error": "invalid sessions path"})
             if path == "/api/agents":
                 return self._list_agents()
             if path == "/api/health":
@@ -161,6 +168,28 @@ class APIHandler(BaseHTTPRequestHandler):
             "feedback": feedback,
             "context": context,
         })
+
+    def _get_session_events(self, req_id: str, task_name: str):
+        """返回指定任务的 Session 事件流。"""
+        items, _ = self.consul.kv_get(
+            f"workflows/{req_id}/sessions/{task_name}/", recurse=True
+        )
+        events = []
+        if items:
+            prefix = f"workflows/{req_id}/sessions/{task_name}/"
+            for it in items:
+                rel = it["Key"][len(prefix):] if it["Key"].startswith(prefix) else it["Key"]
+                parts = rel.split("/")
+                # 格式：<session_id>/events/<seq>
+                if len(parts) >= 3 and parts[1] == "events":
+                    events.append({
+                        "session_id": parts[0],
+                        "seq": int(parts[2]) if parts[2].isdigit() else 0,
+                        "key": "/".join(parts[3:]),
+                        "value": it.get("_decoded", ""),
+                    })
+        events.sort(key=lambda x: (x["session_id"], x["seq"]))
+        self._send_json(200, {"req_id": req_id, "task": task_name, "events": events})
 
     def _list_agents(self):
         services = self.consul.list_services("agent-worker")

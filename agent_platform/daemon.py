@@ -42,8 +42,12 @@ def main() -> None:
     p.add_argument("--port", type=int, default=8080, help="WebAPI 端口")
     p.add_argument("--aggregator-interval", type=int, default=5)
     p.add_argument("--watchdog-interval", type=int, default=30)
-    p.add_argument("--task-timeout", type=int, default=3600,
+    p.add_argument("--task-timeout", type=int, default=120,
                    help="单个任务最长执行时间（秒）")
+    p.add_argument("--heartbeat-timeout", type=int, default=120,
+                   help="Agent 心跳超时（秒）")
+    p.add_argument("--max-retry", type=int, default=3,
+                   help="任务最大重试次数")
     p.add_argument("--log-level", default="INFO")
     p.add_argument("--no-aggregator", action="store_true")
     p.add_argument("--no-watchdog", action="store_true")
@@ -78,7 +82,9 @@ def main() -> None:
     # Watchdog
     if not args.no_watchdog:
         wd = Watchdog(consul, poll_interval=args.watchdog_interval,
-                      task_timeout_seconds=args.task_timeout)
+                      task_timeout_seconds=args.task_timeout,
+                      heartbeat_timeout=args.heartbeat_timeout,
+                      max_retry=args.max_retry)
         components.append(wd)
         t = threading.Thread(target=wd.run, name="watchdog", daemon=True)
         t.start()
