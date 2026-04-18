@@ -11,6 +11,7 @@ import { fetchWorkflows as fetchWorkflowsMock, sendControlSignal as sendControlS
 import DagGraph from '@/components/DagGraph.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
 import PhaseBadge from '@/components/PhaseBadge.vue'
+import WorkflowListItem from '@/components/WorkflowListItem.vue'
 import ControlDialog from '@/components/ControlDialog.vue'
 import TaskDrawer from '@/components/TaskDrawer.vue'
 import {
@@ -32,8 +33,7 @@ import {
   BarChart3,
 } from 'lucide-vue-next'
 import { cn } from '@/lib/utils'
-
-type ControlSignal = 'PAUSE' | 'RESUME' | 'ABORT' | 'RETRY'
+import type { ControlSignal } from '@/lib/constants'
 type MobileTab = 'dag' | 'tasks' | 'stats'
 
 // ─── State ───────────────────────────────────────────────────────────────────
@@ -67,6 +67,16 @@ const totalAgents = computed(() => {
   ).size
 })
 
+const taskStats = computed(() => {
+  const tasks = Object.values(selectedWorkflow.value?.tasks ?? {})
+  return {
+    done: tasks.filter((t) => t.status === 'DONE').length,
+    inProgress: tasks.filter((t) => t.status === 'IN_PROGRESS').length,
+    failed: tasks.filter((t) => t.status === 'FAILED' || t.status === 'BLOCKED').length,
+    total: tasks.length,
+  }
+})
+
 // ─── Data loading ────────────────────────────────────────────────────────────
 async function load(silent = false) {
   if (!silent) loading.value = true
@@ -86,7 +96,7 @@ async function load(silent = false) {
     if (!usedConsul || data.length === 0) {
       data = await fetchWorkflowsMock()
     }
-    dataSource.value = usedConsul ? 'consul' : 'mock'
+    dataSource.value = usedConsul && data.length > 0 ? 'consul' : 'mock'
     workflows.value = data
     if (data.length > 0 && !selectedId.value) {
       selectedId.value = data[0].id
@@ -225,33 +235,14 @@ function selectWorkflow(id: string) {
           </button>
         </div>
         <div class="flex-1 overflow-y-auto py-1">
-          <button
+          <WorkflowListItem
             v-for="wf in workflows"
             :key="wf.id"
-            class="w-full text-left px-4 py-3 transition-colors border-r-2"
-            :class="wf.id === selectedId ? 'bg-blue-500/10 border-blue-400' : 'hover:bg-accent border-transparent'"
-            @click="selectWorkflow(wf.id); sheetOpen = false"
-          >
-            <div class="flex items-center justify-between mb-1">
-              <span
-                :class="cn('font-mono text-xs font-medium', wf.id === selectedId ? 'text-blue-400' : 'text-muted-foreground')"
-              >
-                {{ wf.id }}
-              </span>
-              <AlertCircle v-if="Object.values(wf.tasks).some(t => t.status === 'FAILED' || t.status === 'BLOCKED')" :size="11" class="text-red-400" />
-            </div>
-            <div class="text-xs font-medium leading-tight mb-1.5 truncate">{{ wf.title }}</div>
-            <div class="flex items-center justify-between">
-              <span
-                :class="cn('text-xs font-mono px-1.5 py-0.5 rounded', PHASE_CONFIG[wf.phase].bgColor, PHASE_CONFIG[wf.phase].color)"
-              >
-                {{ PHASE_CONFIG[wf.phase].label }}
-              </span>
-              <span class="text-xs text-muted-foreground font-mono">
-                {{ Object.values(wf.tasks).filter(t => t.status === 'DONE').length }}/{{ Object.values(wf.tasks).length }}
-              </span>
-            </div>
-          </button>
+            :workflow="wf"
+            :selected="wf.id === selectedId"
+            variant="mobile"
+            @select="(id) => { selectWorkflow(id); sheetOpen = false }"
+          />
         </div>
       </div>
     </Teleport>
@@ -265,33 +256,14 @@ function selectWorkflow(id: string) {
           <span class="ml-2 text-xs font-mono text-muted-foreground">{{ workflows.length }}</span>
         </div>
         <div class="flex-1 overflow-y-auto py-1">
-          <button
+          <WorkflowListItem
             v-for="wf in workflows"
             :key="wf.id"
-            class="w-full text-left px-3 py-2.5 transition-colors border-r-2"
-            :class="wf.id === selectedId ? 'bg-blue-500/10 border-blue-400' : 'hover:bg-accent border-transparent'"
-            @click="selectWorkflow(wf.id)"
-          >
-            <div class="flex items-center justify-between mb-1">
-              <span
-                :class="cn('font-mono text-xs font-medium', wf.id === selectedId ? 'text-blue-400' : 'text-muted-foreground')"
-              >
-                {{ wf.id }}
-              </span>
-              <AlertCircle v-if="Object.values(wf.tasks).some(t => t.status === 'FAILED' || t.status === 'BLOCKED')" :size="10" class="text-red-400" />
-            </div>
-            <div class="text-xs font-medium leading-tight mb-1.5 truncate">{{ wf.title }}</div>
-            <div class="flex items-center justify-between">
-              <span
-                :class="cn('text-xs font-mono px-1.5 py-0.5 rounded', PHASE_CONFIG[wf.phase].bgColor, PHASE_CONFIG[wf.phase].color)"
-              >
-                {{ PHASE_CONFIG[wf.phase].label }}
-              </span>
-              <span class="text-xs text-muted-foreground font-mono">
-                {{ Object.values(wf.tasks).filter(t => t.status === 'DONE').length }}/{{ Object.values(wf.tasks).length }}
-              </span>
-            </div>
-          </button>
+            :workflow="wf"
+            :selected="wf.id === selectedId"
+            variant="desktop"
+            @select="selectWorkflow"
+          />
         </div>
       </aside>
 
@@ -394,26 +366,26 @@ function selectWorkflow(id: string) {
                     <div class="space-y-1.5">
                       <div class="flex items-center justify-between text-xs">
                         <span class="text-muted-foreground font-mono">
-                          {{ Object.values(selectedWorkflow.tasks).filter(t => t.status === 'DONE').length }}/{{ Object.values(selectedWorkflow.tasks).length }} 任务完成
+                          {{ taskStats.done }}/{{ taskStats.total }} 任务完成
                         </span>
                         <span class="text-muted-foreground font-mono">
-                          {{ Math.round(Object.values(selectedWorkflow.tasks).filter(t => t.status === 'DONE').length / Object.values(selectedWorkflow.tasks).length * 100) }}%
+                          {{ taskStats.total > 0 ? Math.round(taskStats.done / taskStats.total * 100) : 0 }}%
                         </span>
                       </div>
                       <div class="h-1.5 bg-[oklch(0.22_0.01_264)] rounded-full overflow-hidden">
                         <div
                           class="h-full bg-emerald-500 rounded-full transition-all duration-700"
-                          :style="{ width: `${Math.round(Object.values(selectedWorkflow.tasks).filter(t => t.status === 'DONE').length / Object.values(selectedWorkflow.tasks).length * 100)}%` }"
+                          :style="{ width: `${taskStats.total > 0 ? Math.round(taskStats.done / taskStats.total * 100) : 0}%` }"
                         />
                       </div>
                       <div class="flex gap-3 text-xs text-muted-foreground">
-                        <span v-if="Object.values(selectedWorkflow.tasks).filter(t => t.status === 'IN_PROGRESS').length > 0" class="flex items-center gap-1 text-blue-400">
+                        <span v-if="taskStats.inProgress > 0" class="flex items-center gap-1 text-blue-400">
                           <span class="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
-                          {{ Object.values(selectedWorkflow.tasks).filter(t => t.status === 'IN_PROGRESS').length }} 进行中
+                          {{ taskStats.inProgress }} 进行中
                         </span>
-                        <span v-if="Object.values(selectedWorkflow.tasks).filter(t => t.status === 'FAILED' || t.status === 'BLOCKED').length > 0" class="flex items-center gap-1 text-red-400">
+                        <span v-if="taskStats.failed > 0" class="flex items-center gap-1 text-red-400">
                           <span class="w-1.5 h-1.5 rounded-full bg-red-400" />
-                          {{ Object.values(selectedWorkflow.tasks).filter(t => t.status === 'FAILED' || t.status === 'BLOCKED').length }} 失败
+                          {{ taskStats.failed }} 失败
                         </span>
                       </div>
                     </div>
@@ -456,7 +428,7 @@ function selectWorkflow(id: string) {
                     >
                       <div class="flex items-start justify-between gap-2">
                         <div class="flex items-center gap-2 min-w-0">
-                          <span class="text-muted-foreground text-sm flex-shrink-0">{{ TASK_TYPE_ICON[task.type ?? ''] ?? '◇' }}</span>
+                          <span class="text-muted-foreground text-sm flex-shrink-0">{{ TASK_TYPE_ICON[task.type ?? ''] }}</span>
                           <div class="min-w-0">
                             <div class="text-xs font-medium text-foreground truncate">{{ task.name }}</div>
                             <div class="font-mono text-xs text-muted-foreground truncate">{{ task.assigned_agent }}</div>
@@ -499,7 +471,7 @@ function selectWorkflow(id: string) {
                         >
                           <td class="px-4 py-3">
                             <div class="flex items-center gap-2">
-                              <span class="text-muted-foreground text-xs">{{ TASK_TYPE_ICON[task.type ?? ''] ?? '◇' }}</span>
+                              <span class="text-muted-foreground text-xs">{{ TASK_TYPE_ICON[task.type ?? ''] }}</span>
                               <div>
                                 <div class="font-medium text-xs text-foreground">{{ task.name }}</div>
                                 <div class="font-mono text-xs text-muted-foreground">{{ task.id }}</div>

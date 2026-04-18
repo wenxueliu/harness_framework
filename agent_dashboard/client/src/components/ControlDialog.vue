@@ -1,5 +1,5 @@
 <script setup lang="ts">
-type ControlSignal = 'PAUSE' | 'RESUME' | 'ABORT' | 'RETRY'
+import type { ControlSignal } from '@/lib/constants'
 
 const props = defineProps<{
   open: boolean

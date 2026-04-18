@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { Task } from '@/lib/mockData'
-import { TASK_TYPE_ICON } from '@/lib/mockData'
+import { TASK_TYPE_ICON, TASK_TYPE_ORDER } from '@/lib/mockData'
 
 const props = defineProps<{
   tasks: Record<string, Task>
@@ -43,7 +43,7 @@ function computeLevels(tasks: Record<string, Task>): Record<string, number> {
   return levels
 }
 
-const { positions, svgWidth, svgHeight } = computed(() => {
+const positions = computed<Record<string, NodePosition>>(() => {
   const levels = computeLevels(props.tasks)
   const maxLevel = Math.max(...Object.values(levels), 0)
 
@@ -53,20 +53,19 @@ const { positions, svgWidth, svgHeight } = computed(() => {
     byLevel[lvl].push(id)
   })
 
-  const typeOrder = ['design', 'backend', 'frontend', 'test']
   Object.values(byLevel).forEach((ids) => {
     ids.sort((a, b) => {
-      const ta = typeOrder.indexOf(props.tasks[a]?.type ?? '')
-      const tb = typeOrder.indexOf(props.tasks[b]?.type ?? '')
+      const ta = TASK_TYPE_ORDER.indexOf((props.tasks[a]?.type ?? '') as typeof TASK_TYPE_ORDER[number])
+      const tb = TASK_TYPE_ORDER.indexOf((props.tasks[b]?.type ?? '') as typeof TASK_TYPE_ORDER[number])
       return ta - tb
     })
   })
 
-  const positions: Record<string, NodePosition> = {}
+  const result: Record<string, NodePosition> = {}
   for (let lvl = 0; lvl <= maxLevel; lvl++) {
     const ids = byLevel[lvl] ?? []
     ids.forEach((id, i) => {
-      positions[id] = {
+      result[id] = {
         x: PAD_X + lvl * (NODE_W + COL_GAP),
         y: PAD_Y + i * (NODE_H + ROW_GAP),
         task: props.tasks[id],
@@ -74,17 +73,31 @@ const { positions, svgWidth, svgHeight } = computed(() => {
     })
   }
 
+  return result
+})
+
+const svgWidth = computed(() => {
+  const levels = computeLevels(props.tasks)
+  const maxLevel = Math.max(...Object.values(levels), 0)
+  return PAD_X * 2 + (maxLevel + 1) * (NODE_W + COL_GAP) - COL_GAP
+})
+
+const svgHeight = computed(() => {
+  const levels = computeLevels(props.tasks)
+  const byLevel: Record<number, string[]> = {}
+  Object.entries(levels).forEach(([id, lvl]) => {
+    if (!byLevel[lvl]) byLevel[lvl] = []
+    byLevel[lvl].push(id)
+  })
   const maxRows = Math.max(...Object.values(byLevel).map((ids) => ids.length), 0)
-  const w = PAD_X * 2 + (maxLevel + 1) * (NODE_W + COL_GAP) - COL_GAP
-  const h = PAD_Y * 2 + maxRows * (NODE_H + ROW_GAP) - ROW_GAP
-  return { positions, svgWidth: w, svgHeight: h }
-}).value
+  return PAD_Y * 2 + maxRows * (NODE_H + ROW_GAP) - ROW_GAP
+})
 
 const edges = computed(() => {
   const result: { from: string; to: string }[] = []
   Object.entries(props.tasks).forEach(([id, task]) => {
     task.depends_on.forEach((dep) => {
-      if (positions[dep] && positions[id]) {
+      if (positions.value[dep] && positions.value[id]) {
         result.push({ from: dep, to: id })
       }
     })
@@ -92,15 +105,21 @@ const edges = computed(() => {
   return result
 })
 
-function getNodeBorderColor(status: Task['status']): string {
-  const map: Record<string, string> = {
-    DONE: '#34d399',
-    IN_PROGRESS: '#60a5fa',
-    PENDING: '#fbbf24',
-    FAILED: '#f87171',
-    BLOCKED: '#f87171',
-  }
-  return map[status] ?? '#4b5563'
+function getEdgePath(from: string, to: string): string {
+  const fx = positions.value[from].x + NODE_W
+  const fy = positions.value[from].y + NODE_H / 2
+  const tx = positions.value[to].x
+  const ty = positions.value[to].y + NODE_H / 2
+  const cx = (fx + tx) / 2
+  return `M ${fx} ${fy} C ${cx} ${fy}, ${cx} ${ty}, ${tx} ${ty}`
+}
+
+const STATUS_COLORS: Record<Task['status'], string> = {
+  DONE: '#34d399',
+  IN_PROGRESS: '#60a5fa',
+  PENDING: '#fbbf24',
+  FAILED: '#f87171',
+  BLOCKED: '#f87171',
 }
 </script>
 
@@ -116,11 +135,7 @@ function getNodeBorderColor(status: Task['status']): string {
       <path
         v-for="({ from, to }) in edges"
         :key="`${from}-${to}`"
-        :d="`M ${positions[from].x + NODE_W} ${positions[from].y + NODE_H / 2} C ${
-          (positions[from].x + NODE_W + positions[to].x) / 2
-        } ${positions[from].y + NODE_H / 2}, ${
-          (positions[from].x + NODE_W + positions[to].x) / 2
-        } ${positions[to].y + NODE_H / 2}, ${positions[to].x} ${positions[to].y + NODE_H / 2}`"
+        :d="getEdgePath(from, to)"
         fill="none"
         :stroke="positions[from].task.status === 'DONE' ? '#34d399' : '#6b7280'"
         :stroke-opacity="positions[from].task.status === 'DONE' ? 0.8 : 0.4"
@@ -141,7 +156,7 @@ function getNodeBorderColor(status: Task['status']): string {
           :height="NODE_H"
           rx="6"
           fill="oklch(0.16 0.01 264)"
-          :stroke="getNodeBorderColor(pos.task.status)"
+          :stroke="STATUS_COLORS[pos.task.status]"
           :stroke-width="pos.task.status === 'IN_PROGRESS' ? 1.5 : 1"
           :stroke-opacity="pos.task.status === 'IN_PROGRESS' ? 1 : 0.6"
         />
@@ -152,7 +167,7 @@ function getNodeBorderColor(status: Task['status']): string {
           :height="NODE_H"
           rx="6"
           fill="none"
-          :stroke="getNodeBorderColor(pos.task.status)"
+          :stroke="STATUS_COLORS[pos.task.status]"
           stroke-width="4"
           stroke-opacity="0.15"
         />
@@ -162,10 +177,10 @@ function getNodeBorderColor(status: Task['status']): string {
           :y="NODE_H / 2 + 1"
           dominant-baseline="middle"
           font-size="14"
-          :fill="getNodeBorderColor(pos.task.status)"
+          :fill="STATUS_COLORS[pos.task.status]"
           opacity="0.9"
         >
-          {{ TASK_TYPE_ICON[pos.task.type ?? ''] ?? '◇' }}
+          {{ TASK_TYPE_ICON[pos.task.type ?? ''] }}
         </text>
         <!-- Task name -->
         <text
@@ -195,7 +210,7 @@ function getNodeBorderColor(status: Task['status']): string {
           :cx="NODE_W - 12"
           :cy="NODE_H / 2"
           r="4"
-          :fill="getNodeBorderColor(pos.task.status)"
+          :fill="STATUS_COLORS[pos.task.status]"
           opacity="0.9"
         />
         <!-- Failed indicator -->

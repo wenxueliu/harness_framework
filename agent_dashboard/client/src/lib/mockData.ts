@@ -354,4 +354,7 @@ export const TASK_TYPE_ICON: Record<string, string> = {
   backend: '⬡',
   frontend: '◈',
   test: '◎',
+  '': '◇',
 };
+
+export const TASK_TYPE_ORDER = ['design', 'backend', 'frontend', 'test'] as const;
