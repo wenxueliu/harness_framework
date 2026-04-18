@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useToast } from 'vue-toastification'
-const toast = useToast()
 import type { Workflow, Task } from '@/lib/mockData'
 import {
   fetchWorkflowsFromConsul,
@@ -50,6 +49,7 @@ const refreshing = ref(false)
 const sheetOpen = ref(false)
 const mobileTab = ref<MobileTab>('dag')
 const taskDrawerOpen = ref(false)
+const toast = useToast()
 
 // ─── Derived ────────────────────────────────────────────────────────────────
 const selectedWorkflow = computed(() => workflows.value.find((w) => w.id === selectedId.value) ?? null)
@@ -202,7 +202,7 @@ function selectWorkflow(id: string) {
           <RefreshCw :size="11" :class="refreshing ? 'animate-spin' : ''" />
           <span class="hidden sm:inline">刷新</span>
         </button>
-        <span class="text-xs text-muted-foreground font-mono hidden sm:inline">
+        <span class="text-xs text-muted-foreground font-mono hidden sm:inline ms-2">
           {{ new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) }}
         </span>
       </div>
