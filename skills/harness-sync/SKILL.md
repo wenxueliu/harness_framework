@@ -34,17 +34,18 @@ Sync workflow tasks to Consul KV for the Harness Framework.
 
 ## Core Script: `sync_to_consul.py`
 
-The main script is at `scripts/sync_to_consul.py` (relative to the project root). It reads a dependencies JSON file and syncs it to Consul.
+The main script is bundled in this skill at `scripts/sync_to_consul.py`. It reads a dependencies JSON file and syncs it to Consul.
 
 ### Usage
 
+From the project root (Harness Framework repository):
 ```bash
-python3 scripts/sync_to_consul.py <req_id> <dependencies.json> [--title "需求标题"]
+python3 skills/harness-sync/scripts/sync_to_consul.py <req_id> <dependencies.json> [--title "需求标题"]
 ```
 
-Or from the Harness Framework project directory:
+Example:
 ```bash
-python3 scripts/sync_to_consul.py <req_id> examples/dependencies.example.json --title "需求标题"
+python3 skills/harness-sync/scripts/sync_to_consul.py req-001 examples/dependencies.example.json --title "用户登录功能"
 ```
 
 ### Example dependencies.json Format
@@ -110,7 +111,7 @@ curl -s http://127.0.0.1:8500/v1/status/leader
 
 **Option A: Use existing file**
 ```bash
-python scripts/sync_to_consul.py req-001 examples/dependencies.example.json --title "用户登录功能"
+python3 skills/harness-sync/scripts/sync_to_consul.py req-001 examples/dependencies.example.json --title "用户登录功能"
 ```
 
 **Option B: Create new file interactively**
@@ -129,7 +130,7 @@ Help user define the workflow by asking for:
 
 Run the sync command:
 ```bash
-python scripts/sync_to_consul.py <req_id> <deps_file> [--title "标题"]
+python3 skills/harness-sync/scripts/sync_to_consul.py <req_id> <deps_file> [--title "标题"]
 ```
 
 ### Step 4: Verify
@@ -190,5 +191,5 @@ Assistant:
   }
 
   Ready to sync? Run:
-  python scripts/sync_to_consul.py req-002 /tmp/deps.json --title "用户注册功能"
+  python3 skills/harness-sync/scripts/sync_to_consul.py req-002 /tmp/deps.json --title "用户注册功能"
 ```
