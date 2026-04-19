@@ -41,9 +41,14 @@ workflows/<req_id>/
 
 | 阶段 | 命令 | 调用时机 |
 | :--- | :--- | :--- |
-| 注册 | `register_agent.py --capabilities <c1,c2> [--service <name>]` | Agent 进程启动后立刻 |
-| 心跳 | `heartbeat.py --loop 10` | 注册后启动后台循环 |
-| 抢占 | `claim_task.py <req_id> <task_name>` | 检测到 PENDING 任务 |
+| 注册（后台） | `auto_register.py --capabilities <c1,c2> [--service <name>]` | **推荐**：一键后台注册 + 心跳循环 |
+| 状态 | `auto_register.py --status` | 查看后台进程状态 |
+| 停止 | `auto_register.py --stop` | 停止后台进程 |
+| 注册（前台） | `auto_register.py --capabilities <c1,c2> --foreground` | 调试模式，日志输出到 stderr |
+| 注册（旧） | `register_agent.py --capabilities <c1,c2>` | 单独注册（需配合 heartbeat.py） |
+| 抢占（指定） | `claim_task.py <req_id> <task_name>` | 抢占指定的任务 |
+| 抢占（自动） | `claim_next_task.py [--capabilities c1,c2] [--loop] [--max-tasks N]` | 自动查找并抢占下一个可用任务 |
+| 列出任务 | `claim_next_task.py --list-only` | 仅查看所有 PENDING 任务 |
 | 读上下文 | `read_context.py <req_id> [<key>] [--wait]` | 抢占成功后读取上游产物 |
 | 记录日志 | `log_step.py <req_id> "<message>" [--level info]` | 任意关键步骤完成后 |
 | 写产物 | `write_artifact.py <req_id> <key> <value> [--scope context]` | 产生需向下游传递的数据 |
@@ -58,6 +63,32 @@ workflows/<req_id>/
 
 必传环境变量：`AGENT_ID`（全局唯一）、`CONSUL_ADDR`（默认 127.0.0.1:8500）；任务相关命令额外需要 `REQ_ID`、`TASK_NAME`。
 
+## .env 配置文件
+
+除环境变量外，脚本支持从 `.env` 文件读取配置。配置优先级：**命令行参数 > 环境变量 > .env 文件 > 默认值**。
+
+`.env` 文件搜索路径（按顺序）：
+1. 当前工作目录：`./.env`
+2. skill 目录：`~/.claude/skills/stage-bridge/.env`
+3. scripts 父目录：`skills/stage-bridge/.env`
+4. 固定目录：`~/.claude/stage-bridge/.env`
+
+示例 `.env` 文件：
+```bash
+# Consul 连接
+CONSUL_ADDR=127.0.0.1:8500
+CONSUL_TOKEN=
+
+# Agent 配置
+AGENT_ID=my-agent
+SERVICE_NAME=user-service
+REPO_PATH=/path/to/your/service
+
+# 任务配置（可选）
+REQ_ID=req-001
+TASK_NAME=implement-api
+```
+
 ## 错误处理与退出码
 
 所有命令遵循统一约定：退出码 0 表示操作成功；退出码 1 表示业务错误（如 CAS 抢占失败、key 不存在），应视为正常分支按业务逻辑处理；退出码 2 表示系统错误（如 Consul 不可达），应重试 3 次后中止任务。业务错误信息走 stderr，stdout 始终是 JSON（成功时）或为空（失败时）。
@@ -67,18 +98,50 @@ workflows/<req_id>/
 ### 开发 Agent（绑定一个微服务仓库）
 
 ```bash
-# === 启动阶段 ===
-python scripts/register_agent.py \
+# === 启动阶段（推荐：使用 auto_register.py 后台运行） ===
+AGENT_ID="my-agent" \
+python scripts/auto_register.py \
   --capabilities backend \
   --service user-service \
   --max-concurrent 1 \
   --repo-path "$REPO_PATH"
+# 输出 JSON: {"ok": true, "agent_id": "...", "pid": 12345, "mode": "daemon"}
+# 进程在后台运行，日志写入 ~/.claude/stage-bridge/<agent_id>.log
+# PID 文件: ~/.claude/stage-bridge/<agent_id>.pid
 
-python scripts/heartbeat.py --loop 10 &
+# 查看状态
+AGENT_ID="my-agent" python scripts/auto_register.py --status
 
-# === 任务执行阶段（每个任务循环一次）===
+# 停止后台进程
+AGENT_ID="my-agent" python scripts/auto_register.py --stop
+
+# 调试模式（前台运行，日志输出到 stderr）
+AGENT_ID="my-agent" python scripts/auto_register.py --capabilities backend --foreground
+
+# === 或者分步执行（旧方式） ===
+# python scripts/register_agent.py \
+#   --capabilities backend \
+#   --service user-service \
+#   --max-concurrent 1 \
+#   --repo-path "$REPO_PATH"
+# python scripts/heartbeat.py --loop 10 &
+
+# === 任务执行阶段（两种模式）===
+
+## 模式 A：抢占指定任务
 python scripts/claim_task.py "$REQ_ID" "$TASK_NAME"
 
+## 模式 B：自动依次执行多个任务（推荐）===
+python scripts/claim_next_task.py --capabilities backend,translate --loop
+
+# Agent 会自动：
+# 1. 查找所有 PENDING 任务
+# 2. 过滤匹配 capabilities 和 service_name 的任务
+# 3. 按优先级抢占（依赖少的先执行）
+# 4. 执行完成后再次抢占下一个任务
+# 5. 直到没有可用任务
+
+# === 单个任务执行流程 ===
 python scripts/read_context.py "$REQ_ID" api_spec_url --wait
 
 # 在 $REPO_PATH 下执行实际编码工作（智能体核心能力）：
@@ -93,6 +156,9 @@ python scripts/complete_task.py "$REQ_ID" "$TASK_NAME" \
   --await-review \
   --pr-url "https://gitlab.example.com/.../merge_requests/42" \
   --meta '{"branch":"feature/req-001-auth","commit":"a1b2c3d"}'
+
+# === 抢占下一个任务 ===
+python scripts/claim_next_task.py --capabilities backend
 ```
 
 ### 测试 Agent（无服务绑定）
@@ -134,7 +200,9 @@ python scripts/feedback_resolve.py "$REQ_ID" "user-service" \
 
 ## 重要约束
 
-任务一旦被 `claim_task.py` 抢占成功，必须以 `complete_task.py` 或 `fail_task.py` 之一收尾，否则 Watchdog 会在超时后判定为僵尸任务并自动重试。心跳必须持续，注册后若 30 秒内未收到心跳，Consul 会标记你为 critical，2 分钟后自动注销，**强烈建议**通过 `heartbeat.py --loop 10 &` 启动后台心跳进程。写产物时使用 `--scope context` 跨任务共享，否则只对当前任务可见，例如 API Spec 应该写到 context，PR URL 写到 task。日志记录粒度应聚焦每个**用户可感知的步骤**（如"创建分支"、"实现接口 X"、"通过单元测试"），不要每行代码都记录。
+任务一旦被 `claim_task.py` 抢占成功，必须以 `complete_task.py` 或 `fail_task.py` 之一收尾，否则 Watchdog 会在超时后判定为僵尸任务并自动重试。
+
+心跳必须持续，注册后若 30 秒内未收到心跳，Consul 会标记你为 critical，2 分钟后自动注销，**强烈建议**通过 `heartbeat.py --loop 10 &` 启动后台心跳进程。写产物时使用 `--scope context` 跨任务共享，否则只对当前任务可见，例如 API Spec 应该写到 context，PR URL 写到 task。日志记录粒度应聚焦每个**用户可感知的步骤**（如"创建分支"、"实现接口 X"、"通过单元测试"），不要每行代码都记录。
 
 ## 集成提示模板
 
@@ -145,6 +213,8 @@ python scripts/feedback_resolve.py "$REQ_ID" "user-service" \
 | 现象 | 可能原因 | 解决 |
 | :--- | :--- | :--- |
 | `claim_task.py` 总是 exit 1 | 任务非 PENDING 或被抢先 | `curl http://$CONSUL_ADDR/v1/kv/workflows/$REQ_ID/tasks/$TASK_NAME/status?raw` 检查状态 |
-| `register_agent.py` exit 2 | Consul 不可达 | 确认 dev mode 已启动：`consul members` |
-| 心跳报 404 | 服务已被自动注销 | 重新执行 `register_agent.py` |
+| `register_agent.py` / `auto_register.py` exit 2 (HTTP 503) | urllib 代理问题 | 使用 `auto_register.py`（已修复）或确保无代理设置 |
+| `register_agent.py` / `auto_register.py` exit 2 | Consul 不可达 | 确认 dev mode 已启动：`consul members` |
+| 心跳报 404 | 服务已被自动注销 | 重新执行 `auto_register.py` 或 `register_agent.py` |
 | `feedback_listen.py` 一直阻塞 | 当前无失败需修复 | 这是正常状态，按 Ctrl+C 退出或等待超时 |
+| Consul 连接 503 但 curl 正常 | urllib 默认代理设置 | 使用 `auto_register.py`（内置禁用代理） |

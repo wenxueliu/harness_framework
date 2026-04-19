@@ -30,7 +30,7 @@ Sync workflow tasks to Consul KV for the Harness Framework.
 ## Prerequisites
 
 - Consul must be running at `127.0.0.1:8500` (or set `CONSUL_ADDR` env var)
-- Python 3 with the harness_framework module available
+- Python 3 with the `requests` library (`pip install requests`)
 
 ## Core Script: `sync_to_consul.py`
 
@@ -45,23 +45,25 @@ python3 skills/harness-sync/scripts/sync_to_consul.py <req_id> <dependencies.jso
 
 Example:
 ```bash
-python3 skills/harness-sync/scripts/sync_to_consul.py req-001 examples/dependencies.example.json --title "用户登录功能"
+python3 skills/harness-sync/scripts/sync_to_consul.py req-001 /tmp/dependencies.json --title "用户登录功能"
 ```
 
 ### Example dependencies.json Format
+
+> **Note:** `service_name` and `description` are **required** fields for every task.
 
 ```json
 {
   "design-api": {
     "type": "design",
     "depends_on": [],
-    "service_name": null,
+    "service_name": "platform",
     "description": "为登录功能设计 API 契约"
   },
   "review-design": {
     "type": "review",
     "depends_on": ["design-api"],
-    "service_name": null,
+    "service_name": "platform",
     "description": "评审 API 设计"
   },
   "build-user-service": {
@@ -73,7 +75,7 @@ python3 skills/harness-sync/scripts/sync_to_consul.py req-001 examples/dependenc
   "test-e2e": {
     "type": "test",
     "depends_on": ["build-user-service"],
-    "service_name": null,
+    "service_name": "platform",
     "description": "端到端登录流程测试"
   }
 }
@@ -100,19 +102,11 @@ python3 skills/harness-sync/scripts/sync_to_consul.py req-001 examples/dependenc
 
 ## Workflow
 
-### Step 1: Check Consul Status
+### Step 1: Check Consul Status (Optional)
 
-Verify Consul is running:
-```bash
-curl -s http://127.0.0.1:8500/v1/status/leader
-```
+Consul is ready if you can reach it at 127.0.0.1:8500. The script will report any connection errors.
 
 ### Step 2: Create or Use dependencies.json
-
-**Option A: Use existing file**
-```bash
-python3 skills/harness-sync/scripts/sync_to_consul.py req-001 examples/dependencies.example.json --title "用户登录功能"
-```
 
 **Option B: Create new file interactively**
 
@@ -123,8 +117,8 @@ Help user define the workflow by asking for:
    - `task_name` - 任务名称（唯一标识）
    - `type` - 任务类型 (design/review/backend/test/deploy)
    - `depends_on` - 依赖任务列表（数组）
-   - `service_name` - 关联服务名（可选）
-   - `description` - 任务描述
+   - `service_name` - 关联服务名（必填）
+   - `description` - 任务描述（必填）
 
 ### Step 3: Sync to Consul
 
@@ -135,10 +129,7 @@ python3 skills/harness-sync/scripts/sync_to_consul.py <req_id> <deps_file> [--ti
 
 ### Step 4: Verify
 
-Check the synced workflow:
-```bash
-curl -s http://127.0.0.1:8080/api/workflow/<req_id>
-```
+The script will print success/failure status. No manual curl verification needed.
 
 ## Consul KV Structure
 
@@ -153,8 +144,8 @@ workflows/<req_id>/
 └── tasks/<task_name>/
     ├── status              # BLOCKED | PENDING | IN_PROGRESS | DONE | FAILED
     ├── type                # design | review | backend | test | deploy
-    ├── service_name        # 关联服务（可选）
-    ├── description         # 任务描述
+    ├── service_name        # 关联服务（必填）
+    ├── description         # 任务描述（必填）
     └── created_at          # 创建时间
 ```
 
@@ -168,8 +159,8 @@ If user doesn't have a JSON file, help them create one:
    - Task name
    - Task type (select from list)
    - Dependencies (which tasks must complete first?)
-   - Service name (optional)
-   - Description
+   - Service name (required)
+   - Description (required)
 
 After collecting all tasks, save as JSON and run sync.
 
@@ -191,5 +182,5 @@ Assistant:
   }
 
   Ready to sync? Run:
-  python3 skills/harness-sync/scripts/sync_to_consul.py req-002 /tmp/deps.json --title "用户注册功能"
+  python3 .claude/skills/harness-sync/scripts/sync_to_consul.py req-002 deps.json --title "用户注册功能"
 ```

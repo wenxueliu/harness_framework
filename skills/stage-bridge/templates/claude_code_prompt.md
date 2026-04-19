@@ -74,4 +74,6 @@ python $STAGE_BRIDGE_DIR/scripts/feedback_resolve.py "$REQ_ID" "${SERVICE_NAME}"
 
 ### 硬性约束
 
-绝不在未抢占任务前开始编码。绝不直接 push 到 `main`，必须使用 `feature/${REQ_ID}-<desc>` 分支。绝不跳过 `complete_task.py` 或 `fail_task.py`，否则会被 Watchdog 判定为僵尸任务并强制重试。绝不绕过 stage-bridge 脚本直接 `curl` Consul，路径约定可能在框架层调整。
+绝不在未抢占任务前开始编码。绝不直接 push 到 `main`，必须使用 `feature/${REQ_ID}-<desc>` 分支。
+绝不跳过 `complete_task.py` 或 `fail_task.py`，否则会被 Watchdog 判定为僵尸任务并强制重试。
+绝不绕过 stage-bridge 脚本直接 `curl` Consul，路径约定可能在框架层调整。

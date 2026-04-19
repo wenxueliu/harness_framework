@@ -23,13 +23,87 @@ import urllib.request
 from typing import Any, Optional
 
 
-# ── 环境读取 ──────────────────────────────────────────────────────────────────
+# ── .env 文件读取 ─────────────────────────────────────────────────────────────
+
+_env_cache: dict[str, str] = {}
+
+
+def _load_env_file(skill_dir: Optional[str] = None) -> dict[str, str]:
+    """
+    加载 .env 文件到缓存。
+    优先级：环境变量 > .env 文件 > 默认值
+    """
+    if _env_cache:
+        return _env_cache
+
+    # 查找 .env 文件路径
+    env_paths = []
+
+    # 1. 优先从 skill 目录读取
+    if skill_dir:
+        env_paths.append(os.path.join(skill_dir, ".env"))
+
+    # 2. 从当前工作目录读取
+    env_paths.append(os.path.join(os.getcwd(), ".env"))
+
+    # 3. 从 scripts 目录的父目录读取（stage-bridge 场景）
+    scripts_dir = os.path.dirname(os.path.abspath(__file__))
+    stage_bridge_dir = os.path.dirname(scripts_dir)  # skill/stage-bridge
+    env_paths.append(os.path.join(stage_bridge_dir, ".env"))
+
+    # 4. 从 ~/.claude/stage-bridge 读取
+    home_env = os.path.expanduser("~/.claude/stage-bridge/.env")
+    env_paths.append(home_env)
+
+    for env_path in env_paths:
+        if os.path.isfile(env_path):
+            try:
+                with open(env_path, "r") as f:
+                    for line in f:
+                        line = line.strip()
+                        # 跳过注释和空行
+                        if not line or line.startswith("#"):
+                            continue
+                        # 解析 KEY=VALUE 格式
+                        if "=" in line:
+                            key, value = line.split("=", 1)
+                            key = key.strip()
+                            value = value.strip().strip('"').strip("'")
+                            if key and key not in _env_cache:
+                                _env_cache[key] = value
+            except (IOError, OSError):
+                pass
+
+    return _env_cache
+
+
+def get_env_value(name: str, default: Optional[str] = None, from_file: bool = True) -> str:
+    """
+    获取环境变量值。
+    优先级：os.environ > .env 文件 > default
+    """
+    # 1. 优先从环境变量读取
+    v = os.environ.get(name)
+    if v is not None:
+        return v
+
+    # 2. 从 .env 文件读取
+    if from_file:
+        _load_env_file()
+        v = _env_cache.get(name)
+        if v is not None:
+            return v
+
+    # 3. 返回默认值
+    return default or ""
+
 
 def env(name: str, default: Optional[str] = None, required: bool = False) -> str:
-    v = os.environ.get(name, default)
+    """兼容旧接口：获取环境变量（支持 .env 文件）。"""
+    v = get_env_value(name, default)
     if required and not v:
         die(f"环境变量 {name} 未设置", code=2)
-    return v or ""
+    return v
 
 
 def consul_base_url() -> str:
@@ -40,7 +114,10 @@ def consul_base_url() -> str:
 
 
 def consul_headers() -> dict:
-    h = {"Content-Type": "application/json"}
+    h = {
+        "Content-Type": "application/json",
+        "User-Agent": "stage-bridge/1.0",
+    }
     token = env("CONSUL_TOKEN", "")
     if token:
         h["X-Consul-Token"] = token
@@ -48,6 +125,10 @@ def consul_headers() -> dict:
 
 
 # ── HTTP 调用 ─────────────────────────────────────────────────────────────────
+
+# 创建禁用代理的 opener（Consul 通常在本地运行）
+_consul_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
 
 def http_request(
     method: str,
@@ -67,7 +148,8 @@ def http_request(
     data = None
     if body is not None:
         if isinstance(body, (dict, list)):
-            data = json.dumps(body).encode("utf-8")
+            # 使用紧凑 JSON 格式，避免额外空格
+            data = json.dumps(body, separators=(',', ':')).encode("utf-8")
         elif isinstance(body, str):
             data = body.encode("utf-8")
         else:
@@ -75,7 +157,7 @@ def http_request(
 
     req = urllib.request.Request(url, data=data, method=method, headers=consul_headers())
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _consul_opener.open(req, timeout=timeout) as resp:
             return resp.status, resp.read(), dict(resp.headers)
     except urllib.error.HTTPError as e:
         return e.code, e.read(), dict(e.headers or {})
@@ -162,9 +244,21 @@ def kv_blocking_get(
 # ── 服务注册 ──────────────────────────────────────────────────────────────────
 
 def service_register(payload: dict) -> None:
+    """注册服务到 Consul（致命模式，失败时退出）"""
     code, body, _ = http_request("PUT", "/agent/service/register", body=payload)
     if code != 200:
         die(f"服务注册失败: HTTP {code} {body[:200]}", code=2)
+
+
+def service_register_safe(payload: dict) -> tuple[bool, str]:
+    """
+    注册服务到 Consul（非致命模式）
+    返回 (success, message)
+    """
+    code, body, _ = http_request("PUT", "/agent/service/register", body=payload)
+    if code == 200:
+        return True, "注册成功"
+    return False, f"HTTP {code}: {body[:200].decode('utf-8', errors='replace')}"
 
 
 def service_deregister(service_id: str) -> None:
@@ -173,12 +267,40 @@ def service_deregister(service_id: str) -> None:
         die(f"服务注销失败 {service_id}: HTTP {code}", code=2)
 
 
+def service_deregister_safe(service_id: str) -> tuple[bool, str]:
+    """注销服务（非致命模式）"""
+    code, body, _ = http_request("PUT", f"/agent/service/deregister/{service_id}")
+    if code == 200:
+        return True, "注销成功"
+    return False, f"HTTP {code}: {body[:200].decode('utf-8', errors='replace')}"
+
+
 def health_check_pass(check_id: str, note: str = "") -> None:
     params = {"note": note} if note else None
     code, _, _ = http_request("PUT", f"/agent/check/pass/{check_id}", params=params)
     if code != 200 and code != 404:
         # 404 表示 Check 不存在，记日志但不致命
         sys.stderr.write(f"[warn] health check pass 失败 {check_id}: HTTP {code}\n")
+
+
+def health_check_pass_safe(check_id: str, note: str = "") -> tuple[bool, str]:
+    """心跳上报（非致命模式）"""
+    params = {"note": note} if note else None
+    code, body, _ = http_request("PUT", f"/agent/check/pass/{check_id}", params=params)
+    if code in (200, 404):
+        return True, "心跳成功" if code == 200 else "Check 不存在"
+    return False, f"HTTP {code}: {body[:200].decode('utf-8', errors='replace')}"
+
+
+def consul_health_check() -> tuple[bool, str]:
+    """检查 Consul 连接状态"""
+    try:
+        code, body, _ = http_request("GET", "/status/leader", timeout=5)
+        if code == 200:
+            return True, body.decode("utf-8")
+        return False, f"HTTP {code}"
+    except Exception as e:
+        return False, str(e)
 
 
 # ── 输出辅助 ──────────────────────────────────────────────────────────────────
