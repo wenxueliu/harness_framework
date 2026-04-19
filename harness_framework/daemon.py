@@ -1,12 +1,12 @@
 """
-agent-platform daemon — 框架主进程
+harness-framework daemon — 框架主进程
 
 功能：在单个 Python 进程中并发运行 Aggregator、Watchdog、WebAPI 三大组件。
 通过线程隔离，统一日志输出，单一信号即可优雅退出。
 
 启动方式：
-  python -m agent_platform.daemon                       # 默认配置
-  python -m agent_platform.daemon --port 8080 \
+  python -m harness_framework.daemon                       # 默认配置
+  python -m harness_framework.daemon --port 8080 \
     --consul 127.0.0.1:8500 --task-timeout 3600
 
 退出：发送 SIGTERM 或 SIGINT (Ctrl+C)，三大组件协同退出。
@@ -35,7 +35,7 @@ def setup_logging(level: str) -> None:
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(description="agent-platform 框架主进程")
+    p = argparse.ArgumentParser(description="harness-framework 框架主进程")
     p.add_argument("--consul", default=os.environ.get("CONSUL_ADDR", "127.0.0.1:8500"))
     p.add_argument("--token", default=os.environ.get("CONSUL_TOKEN", ""))
     p.add_argument("--host", default="0.0.0.0", help="WebAPI 监听地址")
@@ -115,7 +115,7 @@ def main() -> None:
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
 
-    log.info("agent-platform daemon 已启动，按 Ctrl+C 退出")
+    log.info("harness-framework daemon 已启动，按 Ctrl+C 退出")
     try:
         stopping.wait()
     except KeyboardInterrupt:

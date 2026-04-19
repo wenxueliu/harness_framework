@@ -61,7 +61,7 @@ class APIHandler(BaseHTTPRequestHandler):
             if path == "/api/agents":
                 return self._list_agents()
             if path == "/api/health":
-                return self._send_json(200, {"ok": True, "service": "agent-platform"})
+                return self._send_json(200, {"ok": True, "service": "harness-framework"})
             self._send_json(404, {"error": "not found"})
         except Exception as e:
             log.exception("GET %s failed", self.path)

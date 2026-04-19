@@ -4,12 +4,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 概述
 
-`agent-platform` 是一个多 Agent 软件开发平台的**框架层**，在一个 Python 进程中通过线程并发运行三大组件，所有协作状态存储在 **Consul KV** 中。
+`harness-framework` 是一个多 Agent 软件开发平台的**框架层**，在一个 Python 进程中通过线程并发运行三大组件，所有协作状态存储在 **Consul KV** 中。
 
 ## 架构
 
 ```
-agent_platform/
+harness_framework/
 ├── daemon.py          # 主进程入口，启动 Aggregator + Watchdog + WebAPI 线程
 ├── aggregator.py      # 监听 DAG 状态变更，依赖满足时激活下游任务
 ├── watchdog.py        # 检测 IN_PROGRESS 任务的 Agent 存活和超时，自动恢复
@@ -24,21 +24,25 @@ agent_platform/
 
 ## 常用命令
 
+consul 安装在 consul_server
+
+# 启动 consul server
+consul_server/consul agent -server -ui -bootstrap-expect=1 --node harness_framework_master -data-dir="consul_server/data" -bind="127.0.0.1" -client="0.0.0.0"
 ```bash
 # 启动 Consul dev mode
 ./scripts/start_consul_dev.sh
 
 # 启动框架主进程（默认 8080 端口）
-python -m agent_platform.daemon
+python -m harness_framework.daemon
 
 # 指定端口和其他参数
-python -m agent_platform.daemon --port 9000 --consul 127.0.0.1:8500 --task-timeout 1800
+python -m harness_framework.daemon --port 9000 --consul 127.0.0.1:8500 --task-timeout 1800
 
 # 初始化一个需求（写入 Consul）
 python scripts/sync_to_consul.py req-001 examples/dependencies.example.json --title "用户登录功能"
 
 # 带日志级别启动
-python -m agent_platform.daemon --log-level DEBUG
+python -m harness_framework.daemon --log-level DEBUG
 ```
 
 **配置方式**：命令行参数 > 环境变量 `CONSUL_ADDR` / `CONSUL_TOKEN`
@@ -79,3 +83,65 @@ workflows/<req_id>/
 - 零外部依赖，仅使用 Python 标准库
 - 类型注解使用 `from __future__ import annotations`
 - 日志格式：`%(asctime)s [%(name)s] %(levelname)s %(message)s`
+
+# Superpowers + gstack 搭配配置
+
+## Superpowers（思考与流程层）
+负责所有 plan、brainstorm、debug、TDD、verify、code review。
+触发方式：自动触发。
+
+
+## gstack（执行与外部世界层）
+负责浏览器操作、QA、ship、deploy、canary、安全审计。
+触发方式：斜杠命令手动触发。
+
+## 浏览器规则
+使用 /browse 作为唯一浏览器入口。
+禁止使用 mcp__claude-in-chrome__* 操作浏览器。
+
+## 分工裁决
+- 计划撰写 → Superpowers: writing-plans
+- 计划多视角审查 → gstack: /autoplan
+- 编码 → Superpowers: test-driven-development
+- 调试 → Superpowers: systematic-debugging
+- 真实环境验证 → gstack: /qa
+- 代码审查 → Superpowers: requesting-code-review
+- 发布 → gstack: /ship
+- 安全审计 → gstack: /cso
+
+## Web Browsing
+
+Available gstack skills:
+- `/office-hours` - Schedule office hours
+- `/plan-ceo-review` - CEO review planning
+- `/plan-eng-review` - Engineering review planning
+- `/plan-design-review` - Design review planning
+- `/design-consultation` - Design consultation
+- `/design-shotgun` - Design shotgun
+- `/design-html` - Design HTML
+- `/review` - Code review
+- `/ship` - Ship feature
+- `/land-and-deploy` - Land and deploy
+- `/canary` - Canary deployment
+- `/benchmark` - Benchmark
+- `/browse` - Web browsing
+- `/connect-chrome` - Connect Chrome
+- `/qa` - QA testing
+- `/qa-only` - QA only
+- `/design-review` - Design review
+- `/setup-browser-cookies` - Setup browser cookies
+- `/setup-deploy` - Setup deployment
+- `/retro` - Retrospective
+- `/investigate` - Investigate
+- `/document-release` - Document release
+- `/codex` - Codex
+- `/cso` - CSO
+- `/autoplan` - Auto plan
+- `/plan-devex-review` - DevEx review planning
+- `/devex-review` - DevEx review
+- `/careful` - Careful mode
+- `/freeze` - Freeze
+- `/guard` - Guard
+- `/unfreeze` - Unfreeze
+- `/gstack-upgrade` - Upgrade gstack
+- `/learn` - Learn

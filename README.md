@@ -1,4 +1,4 @@
-# agent-platform 框架层
+# Harness Framework
 
 多 Agent 软件开发平台的**框架层**（Framework Layer）实现，本地 MVP 形态。
 
@@ -40,7 +40,7 @@ unzip consul_*.zip && sudo mv consul /usr/local/bin/
 ### 3. 启动框架主进程
 
 ```bash
-python -m agent_platform.daemon
+python -m harness_framework.daemon
 ```
 
 默认在 `8080` 端口提供 WebAPI，可通过 `--port` 修改。
