@@ -1,8 +1,6 @@
 <script setup lang="ts">
 import { onErrorCaptured } from 'vue'
 import { RouterView } from 'vue-router'
-import Toast from 'vue-toastification'
-import 'vue-toastification/dist/index.css'
 
 // Error boundary via onErrorCaptured
 const error = defineModel<Error | null>('appError', { default: null })

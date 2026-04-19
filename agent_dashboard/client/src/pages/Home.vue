@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { useToast } from 'vue-toastification'
 import type { Workflow, Task } from '@/lib/mockData'
 import {
   fetchWorkflowsFromConsul,
@@ -49,7 +48,6 @@ const refreshing = ref(false)
 const sheetOpen = ref(false)
 const mobileTab = ref<MobileTab>('dag')
 const taskDrawerOpen = ref(false)
-const toast = useToast()
 
 // ─── Derived ────────────────────────────────────────────────────────────────
 const selectedWorkflow = computed(() => workflows.value.find((w) => w.id === selectedId.value) ?? null)
@@ -138,15 +136,9 @@ async function handleConfirm() {
     } else {
       await sendControlSignalMock(selectedId.value, pendingSignal.value)
     }
-    const labels: Record<ControlSignal, string> = {
-      PAUSE: '暂停指令已发送',
-      RESUME: '恢复指令已发送',
-      ABORT: '中止指令已发送',
-      RETRY: '重试指令已发送',
-    }
-    toast.success(labels[pendingSignal.value])
+    console.log(`控制信号已发送: ${pendingSignal.value}`)
   } catch {
-    toast.error('指令发送失败，请检查 Consul 连接')
+    console.error('指令发送失败，请检查 Consul 连接')
   }
   pendingSignal.value = null
   pendingTaskName.value = null

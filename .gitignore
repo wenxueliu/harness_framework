@@ -113,3 +113,4 @@ client/public/__manus__/version.json
 .gstack/
 
 **/__pycache__/
+consul_server
