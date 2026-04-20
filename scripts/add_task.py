@@ -9,9 +9,9 @@ add_task.py — 向已有 workflow 增量添加单个任务
   add_task.py req-001 api-gateway --description "实现 API 网关" --type backend --depends-on backend
   add_task.py req-001 e2e-test --description "端到端测试" --type test --depends-on deploy
 
-约束：
-  新任务的 depends_on 不能指向已结束的任务（DONE / FAILED / ABORTED），
-  否则下游已结束的任务不会重新执行。
+约束（两个方向都要检查）：
+  1. 新任务的 depends_on 不能指向 FAILED/ABORTED 的任务（那些任务永远不会完成）
+  2. 已完成（DONE/FAILED/ABORTED）的现有任务不能依赖新任务（它们不会重新跑）
 """
 import argparse
 import datetime
@@ -25,6 +25,7 @@ except ImportError:
     raise SystemExit(1)
 
 TERMINAL_STATUSES = {"DONE", "FAILED", "ABORTED"}
+FAIL_STATUSES = {"FAILED", "ABORTED"}
 
 
 class ConsulClient:
@@ -59,6 +60,22 @@ class ConsulClient:
                     result[task_name] = status
         return result
 
+    def kv_get_all_tasks_deps(self, req_id: str) -> dict[str, list[str]]:
+        base = f"workflows/{req_id}/tasks"
+        url = f"{self.base_url}/{base}?keys=true"
+        resp = requests.get(url)
+        if resp.status_code != 200:
+            return {}
+        keys = resp.json()
+        result = {}
+        for key in keys:
+            if key.endswith("/depends_on"):
+                task_name = key.replace(f"{base}/", "").replace("/depends_on", "")
+                raw = self.kv_get(key)
+                if raw:
+                    result[task_name] = [x.strip() for x in raw.split(",") if x.strip()]
+        return result
+
 
 def _now_iso() -> str:
     from datetime import datetime, timezone
@@ -90,24 +107,36 @@ def main():
         sys.exit(1)
 
     upstream = [x.strip() for x in args.depends_on.split(",") if x.strip()]
+    all_statuses = consul.kv_get_all_tasks_status(args.req_id)
+    all_deps = consul.kv_get_all_tasks_deps(args.req_id)
 
-    if upstream:
-        all_statuses = consul.kv_get_all_tasks_status(args.req_id)
-        blocked_by = []
-        for dep in upstream:
-            dep_status = all_statuses.get(dep, "")
-            if dep_status in TERMINAL_STATUSES:
-                blocked_by.append(f"{dep} ({dep_status})")
-        if blocked_by:
-            print(
-                f"Error: Cannot add task. The following dependencies are already in terminal state: "
-                + ", ".join(blocked_by),
-                file=sys.stderr,
-            )
-            print("Hint: If the upstream task is already done, downstream tasks won't re-run automatically.", file=sys.stderr)
-            sys.exit(1)
+    broken_deps = []
+    for dep in upstream:
+        dep_status = all_statuses.get(dep, "")
+        if dep_status in FAIL_STATUSES:
+            broken_deps.append(f"{dep} ({dep_status})")
+    if broken_deps:
+        print(
+            f"Error: Cannot add task. The following dependencies will never complete: "
+            + ", ".join(broken_deps),
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
-    initial_status = "BLOCKED" if upstream else "PENDING"
+    blocked_by_done = []
+    for task_name, deps in all_deps.items():
+        if args.task_name in deps and all_statuses.get(task_name, "") in TERMINAL_STATUSES:
+            blocked_by_done.append(f"{task_name} ({all_statuses[task_name]})")
+    if blocked_by_done:
+        print(
+            f"Error: Cannot add task. The following already-completed tasks depend on it: "
+            + ", ".join(blocked_by_done),
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    all_done = all(all_statuses.get(dep, "") in TERMINAL_STATUSES for dep in upstream)
+    initial_status = "PENDING" if (not upstream or all_done) else "BLOCKED"
 
     consul.kv_put(f"{t_base}/status", initial_status)
     consul.kv_put(f"{t_base}/type", args.type)

@@ -157,7 +157,11 @@ python scripts/add_task.py req-001 api-gateway \
   --depends-on backend
 ```
 
-**Constraint**: A new task's `depends_on` must not reference any task that is already in a terminal state (`DONE` / `FAILED` / `ABORTED`). Otherwise, downstream tasks that have already finished won't re-run automatically. The script will reject such additions with a clear error message.
+**Constraints** (both directions are checked):
+1. The new task's `depends_on` must not point to any task in `FAILED` or `ABORTED` state — those will never complete
+2. No existing task that is already in a terminal state (`DONE` / `FAILED` / `ABORTED`) may depend on the new task — completed tasks won't re-run
+
+If all dependencies are `DONE`, the new task becomes `PENDING` immediately. If dependencies are still running, it starts as `BLOCKED`.
 
 ### Configuration
 
@@ -350,7 +354,11 @@ python scripts/add_task.py req-001 api-gateway \
   --depends-on backend
 ```
 
-**约束**：新任务的 `depends_on` 不能指向已处于终止状态的任务（DONE / FAILED / ABORTED）。否则下游已完成的任务不会自动重新执行。脚本会拒绝此类添加并给出明确错误提示。
+**约束（双向检查）**：
+1. 新任务的 `depends_on` 不能指向 `FAILED` 或 `ABORTED` 状态的任务（那些任务永远不会完成）
+2. 已处于终止状态（DONE / FAILED / ABORTED）的现有任务不能依赖新任务（已完成的任务不会重新跑）
+
+若所有依赖均为 DONE，新任务直接设为 PENDING；若依赖仍在执行中，新任务设为 BLOCKED。
 
 ### 配置项
 
