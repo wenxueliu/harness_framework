@@ -121,6 +121,44 @@ python scripts/sync_to_consul.py req-001 examples/dependencies.example.json \
 
 Visit [http://127.0.0.1:8500/ui](http://127.0.0.1:8500/ui) to view the Consul UI.
 
+#### How to Define Tasks
+
+Tasks are defined in `dependencies.json` and synced to Consul via `sync_to_consul.py`. Each task's `description` field tells the Agent **what to do**:
+
+```json
+{
+  "backend": {
+    "type": "backend",
+    "depends_on": ["design"],
+    "description": "Implement user login API: register / login / logout. Reference: docs/login-api.md"
+  },
+  "test": {
+    "type": "test",
+    "depends_on": ["backend"],
+    "description": "Integration test for /api/login: happy path, wrong password, account not found. Tests at: tests/test_login.py"
+  }
+}
+```
+
+**Best practices for `description`**:
+- State the goal directly: what to implement, test, or deploy
+- Reference specific files or documents when relevant
+- Keep it concise but actionable — the Agent will read this and execute autonomously
+
+#### Incremental Task Addition
+
+During execution, if the plan diverges from expectations, you can add new tasks to an existing workflow without re-initializing everything. Completed tasks remain untouched.
+
+```bash
+# Add a new task to an existing workflow
+python scripts/add_task.py req-001 api-gateway \
+  --description "Implement API gateway for authentication" \
+  --type backend \
+  --depends-on backend
+```
+
+**Constraint**: A new task's `depends_on` must not reference any task that is already in a terminal state (`DONE` / `FAILED` / `ABORTED`). Otherwise, downstream tasks that have already finished won't re-run automatically. The script will reject such additions with a clear error message.
+
 ### Configuration
 
 | Parameter | Default | Description |
@@ -275,6 +313,44 @@ python scripts/sync_to_consul.py req-001 examples/dependencies.example.json \
 ```
 
 访问 [http://127.0.0.1:8500/ui](http://127.0.0.1:8500/ui) 查看 Consul 自带 UI。
+
+#### 如何定义任务
+
+任务在 `dependencies.json` 中定义，通过 `sync_to_consul.py` 同步到 Consul。每个任务的 `description` 字段告诉 Agent **要做什么**：
+
+```json
+{
+  "backend": {
+    "type": "backend",
+    "depends_on": ["design"],
+    "description": "实现用户登录 API：注册 / 登录 / 登出。参考：docs/login-api.md"
+  },
+  "test": {
+    "type": "test",
+    "depends_on": ["backend"],
+    "description": "对 /api/login 做集成测试：正常登录、密码错误、账号不存在。测试文件：tests/test_login.py"
+  }
+}
+```
+
+**`description` 编写建议**：
+- 直接说明目标：实现什么、测试什么、部署什么
+- 引用具体文件或文档时给出路径
+- 简洁但可执行 — Agent 会读取并自主执行
+
+#### 增量添加任务
+
+执行过程中，如果计划偏离预期，可以向已有 workflow 增量添加新任务，无需重新初始化。已完成的任务保持不变。
+
+```bash
+# 向已有 workflow 添加新任务
+python scripts/add_task.py req-001 api-gateway \
+  --description "实现认证 API 网关" \
+  --type backend \
+  --depends-on backend
+```
+
+**约束**：新任务的 `depends_on` 不能指向已处于终止状态的任务（DONE / FAILED / ABORTED）。否则下游已完成的任务不会自动重新执行。脚本会拒绝此类添加并给出明确错误提示。
 
 ### 配置项
 
