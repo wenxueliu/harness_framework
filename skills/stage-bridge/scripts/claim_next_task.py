@@ -31,6 +31,12 @@ from _consul import (  # noqa: E402
 )
 
 
+def req_priority(req_id: str) -> int:
+    """获取需求的优先级，默认 0"""
+    pri, _ = kv_get(f"workflows/{req_id}/priority")
+    return int(pri) if pri else 0
+
+
 def find_pending_tasks() -> list[dict]:
     """查找所有 PENDING 状态的任务"""
     items, _ = kv_get("workflows", recurse=True)
@@ -64,6 +70,7 @@ def find_pending_tasks() -> list[dict]:
 
             pending_tasks.append({
                 "req_id": req_id,
+                "req_priority": req_priority(req_id),
                 "task_name": task_name,
                 "status": status,
                 "type": meta.get("type", "generic"),
@@ -177,6 +184,9 @@ def filter_and_rank_tasks(
         task_type = task.get("type", "generic")
 
         score = 0
+
+        # 需求优先级（权重最大）
+        score += task.get("req_priority", 0) * 100
 
         # 匹配 service_name（高优先级）
         if service_name and task_service == service_name:

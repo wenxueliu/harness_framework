@@ -50,7 +50,14 @@ class Aggregator:
             if len(parts) >= 2 and parts[0] == "workflows":
                 req_ids.add(parts[1])
 
-        for req_id in req_ids:
+        # 按 priority 降序排列需求，高优先级先处理
+        def req_priority(req_id: str) -> int:
+            val, _ = self.consul.kv_get(f"workflows/{req_id}/priority")
+            return int(val) if val else 0
+
+        sorted_reqs = sorted(req_ids, key=req_priority, reverse=True)
+
+        for req_id in sorted_reqs:
             try:
                 self._process_requirement(req_id)
             except Exception as e:

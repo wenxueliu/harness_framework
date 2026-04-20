@@ -52,6 +52,7 @@ python -m harness_framework.daemon --log-level DEBUG
 ```
 workflows/<req_id>/
 ├── title                    # 需求标题
+├── priority                 # 整数优先级，越大越优先，默认 0
 ├── control                  # 控制信号：PAUSE | RESUME | ABORT
 ├── dependencies            # JSON，任务依赖拓扑
 ├── created_at
