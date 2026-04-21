@@ -10,6 +10,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **状态管理**：统一的任务状态机（BLOCKED → PENDING → IN_PROGRESS → DONE/FAILED），支持人工干预（PAUSE/RESUME/ABORT）
 - **反馈闭环**：test 失败时等待所有 feedback FIXED 后自动重测，形成"失败→修复→验证"的完整闭环
 - **容错恢复**：Agent 死亡或任务超时时自动回滚重试，保障任务最终完成
+- **人工接管**：任何时刻可人工介入（重分配任务、强制状态变更），实现人机协同
 
 ## 架构
 
