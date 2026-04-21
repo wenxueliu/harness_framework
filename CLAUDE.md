@@ -47,31 +47,6 @@ harness_framework/
 4. **质量门禁**：test 失败 → 等待 feedback.FIXED → 自动重测（≤3次重试）
 5. **流程终止**：所有任务 DONE → 流程结束；超过重试上限 → FAILED
 
-## 常用命令
-
-consul 安装在 consul_server
-
-# 启动 consul server
-consul_server/consul agent -server -ui -bootstrap-expect=1 --node harness_framework_master -data-dir="consul_server/data" -bind="127.0.0.1" -client="0.0.0.0"
-```bash
-# 启动 Consul dev mode
-./scripts/start_consul_dev.sh
-
-# 启动框架主进程（默认 8080 端口）
-python -m harness_framework.daemon
-
-# 指定端口和其他参数
-python -m harness_framework.daemon --port 9000 --consul 127.0.0.1:8500 --task-timeout 1800
-
-# 初始化一个需求（写入 Consul）
-python scripts/sync_to_consul.py req-001 examples/dependencies.example.json --title "用户登录功能"
-
-# 带日志级别启动
-python -m harness_framework.daemon --log-level DEBUG
-```
-
-**配置方式**：命令行参数 > 环境变量 `CONSUL_ADDR` / `CONSUL_TOKEN`
-
 ## Consul KV 结构
 
 ```
@@ -103,6 +78,31 @@ workflows/<req_id>/
 **Aggregator 重测逻辑**：test 任务 FAILED → 检查所有 feedback.status == FIXED → 清除 feedback → 重置任务为 PENDING → retry_count++（Aggregator 上限 3 次）
 
 **Watchdog 恢复逻辑**：Agent 死亡或任务超时 → retry_count++ → retry_count >= 5 则 FAILED，否则回滚为 PENDING（Watchdog 上限 5 次）
+
+## 常用命令
+
+consul 安装在 consul_server
+
+# 启动 consul server
+consul_server/consul agent -server -ui -bootstrap-expect=1 --node harness_framework_master -data-dir="consul_server/data" -bind="127.0.0.1" -client="0.0.0.0"
+```bash
+# 启动 Consul dev mode
+./scripts/start_consul_dev.sh
+
+# 启动框架主进程（默认 8080 端口）
+python -m harness_framework.daemon
+
+# 指定端口和其他参数
+python -m harness_framework.daemon --port 9000 --consul 127.0.0.1:8500 --task-timeout 1800
+
+# 初始化一个需求（写入 Consul）
+python scripts/sync_to_consul.py req-001 examples/dependencies.example.json --title "用户登录功能"
+
+# 带日志级别启动
+python -m harness_framework.daemon --log-level DEBUG
+```
+
+**配置方式**：命令行参数 > 环境变量 `CONSUL_ADDR` / `CONSUL_TOKEN`
 
 ## 代码风格
 
