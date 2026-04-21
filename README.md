@@ -81,6 +81,15 @@ This design makes the platform **agent-agnostic**. Any Agent that implements the
 
 The framework layer enforces **what must happen** (dependencies, retry logic, timeouts), while the capability layer focuses on **how it gets done** (code generation, testing, debugging).
 
+### Usage Steps
+
+1. **Define dependencies**: Write `dependencies.json` describing task topology
+2. **Start Consul**: `./scripts/start_consul_dev.sh`
+3. **Start framework**: `python -m harness_framework.daemon`
+4. **Initialize requirement**: `python scripts/sync_to_consul.py <req_id> dependencies.json --title "Title"`
+5. **Monitor status**: Access WebAPI or Consul UI
+6. **Manual intervention**: Modify task status or reassign via API
+
 ### Quick Start
 
 #### 1. Install Consul
@@ -162,6 +171,18 @@ python scripts/add_task.py req-001 api-gateway \
 2. No existing task that is already in a terminal state (`DONE` / `FAILED` / `ABORTED`) may depend on the new task — completed tasks won't re-run
 
 If all dependencies are `DONE`, the new task becomes `PENDING` immediately. If dependencies are still running, it starts as `BLOCKED`.
+
+#### Execution Flow
+
+The framework runs these steps automatically:
+
+| Step | Trigger | Action |
+|------|---------|--------|
+| **Task Activation** | All dependencies become DONE | Aggregator sets downstream task to PENDING |
+| **Task Execution** | Agent picks up PENDING task | Agent writes IN_PROGRESS → DONE |
+| **Fault Recovery** | Agent dies or task times out | Watchdog rolls back to PENDING (≤5 retries) |
+| **Quality Gate** | Test fails | Wait for all feedback.FIXED → auto re-test (≤3 retries) |
+| **Flow Termination** | All tasks DONE | Workflow complete; retry limit exceeded → FAILED |
 
 ### Configuration
 
@@ -355,6 +376,15 @@ Harness Engineer 由两层组成：
 
 框架层负责约束**必须发生什么**（依赖、重试逻辑、超时），能力层负责实现**如何完成**（代码生成、测试、调试）。
 
+### 使用步骤
+
+1. **定义依赖**：编写 `dependencies.json`，描述任务拓扑及依赖关系
+2. **启动 Consul**：`./scripts/start_consul_dev.sh`
+3. **启动框架**：`python -m harness_framework.daemon`
+4. **初始化需求**：`python scripts/sync_to_consul.py <req_id> dependencies.json --title "需求标题"`
+5. **查看状态**：访问 WebAPI 或 Consul UI 查看任务进度
+6. **人工干预**：如需调整，通过 API 修改任务状态或重分配
+
 ### 快速开始
 
 #### 1. 安装 Consul
@@ -436,6 +466,18 @@ python scripts/add_task.py req-001 api-gateway \
 2. 已处于终止状态（DONE / FAILED / ABORTED）的现有任务不能依赖新任务（已完成的任务不会重新跑）
 
 若所有依赖均为 DONE，新任务直接设为 PENDING；若依赖仍在执行中，新任务设为 BLOCKED。
+
+#### 执行流程
+
+框架内部自动执行的逻辑：
+
+| 步骤 | 触发条件 | 执行动作 |
+|------|----------|----------|
+| **任务激活** | 所有依赖 DONE | Aggregator 将下游任务设为 PENDING |
+| **任务执行** | Agent 领取 PENDING 任务 | Agent 写入 IN_PROGRESS → DONE |
+| **故障恢复** | Agent 死亡或任务超时 | Watchdog 回滚为 PENDING（≤5次重试） |
+| **质量门禁** | test 失败 | 等待所有 feedback.FIXED → 自动重测（≤3次重试） |
+| **流程终止** | 所有任务 DONE | 流程结束；超过重试上限 → FAILED |
 
 ### 配置项
 
