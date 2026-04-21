@@ -30,14 +30,22 @@ harness_framework/
 
 ## 使用步骤
 
-1. **启动 Consul**：运行 `./scripts/start_consul_dev.sh` 或手动启动 Consul agent
-2. **启动框架**：`python -m harness_framework.daemon`，三大组件（Aggregator、Watchdog、WebAPI）开始运行
-3. **创建需求**：通过 API 或 `sync_to_consul.py` 脚本写入需求定义（含任务依赖拓扑）
-4. **分配任务**：Agent 从 WebAPI 获取 PENDING 状态任务，执行后更新状态为 IN_PROGRESS
-5. **自动流转**：Aggregator 监听状态变化，依赖全部 DONE 时自动激活下游任务
-6. **故障恢复**：Watchdog 检测超时或 Agent 死亡时自动回滚重试
-7. **质量门禁**：test 失败后等待 feedback 全部 FIXED，再自动重测
-8. **人工干预**：通过 WebAPI 随时修改任务状态或重分配，实现人机协同
+1. **定义依赖**：编写 `dependencies.json`，描述任务拓扑及依赖关系
+2. **启动 Consul**：`./scripts/start_consul_dev.sh`
+3. **启动框架**：`python -m harness_framework.daemon`
+4. **初始化需求**：`python scripts/sync_to_consul.py <req_id> dependencies.json --title "需求标题"`
+5. **查看状态**：访问 WebAPI 或 Consul UI 查看任务进度
+6. **人工干预**：如需调整，通过 API 修改任务状态或重分配
+
+## 执行流程
+
+框架内部自动执行的核心逻辑：
+
+1. **任务激活**：Aggregator 检测所有依赖 DONE → 激活下游任务为 PENDING
+2. **任务执行**：Agent 领取 PENDING 任务 → 写入 IN_PROGRESS → 执行完成写入 DONE
+3. **故障恢复**：Watchdog 检测超时/Agent 死亡 → 回滚任务为 PENDING（≤5次重试）
+4. **质量门禁**：test 失败 → 等待 feedback.FIXED → 自动重测（≤3次重试）
+5. **流程终止**：所有任务 DONE → 流程结束；超过重试上限 → FAILED
 
 ## 常用命令
 
