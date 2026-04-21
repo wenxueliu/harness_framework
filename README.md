@@ -188,6 +188,39 @@ They complement each other.
 
 When upgrading from dev mode to a production 3-node Consul cluster, no code changes are needed. Just point `--consul` to the cluster address and configure the ACL Token.
 
+### Enterprise-Level Complex Applications
+
+The framework is designed to handle large-scale enterprise workflows with high parallelism and resilience:
+
+**Horizontal Scaling**
+- Run multiple framework instances (daemon processes) with different ports, each connecting to the same Consul cluster
+- No single-point bottleneck — each instance operates independently on different workflows
+- Task-level parallelism: multiple tasks across the DAG can execute simultaneously
+
+**Multi-Workflow Orchestration**
+- Support multiple concurrent requirements (`req-001`, `req-002`, ...) in the same Consul cluster
+- Each requirement has its own DAG, isolated by prefix `workflows/<req_id>/`
+- Aggregator automatically discovers and manages all workflows
+
+**Resilience & Fault Tolerance**
+- Watchdog detects agent crashes and task timeouts independently per task
+- Automatic rollback to PENDING with retry count tracking (max 5 retries)
+- Aggregator handles re-test logic when all feedback is fixed (max 3 retries)
+- Consul's Raft consensus ensures state durability across node failures
+
+**Operational Confidence**
+- All state in Consul KV — easy to inspect, replay, and debug
+- Control signals (PAUSE/RESUME/ABORT) allow manual intervention at any time
+- REST API exposes aggregated view for dashboards without querying raw KV
+
+**Deployment Topologies**
+
+| Scenario | Consul | Framework Instances |
+|----------|--------|---------------------|
+| Development | Single node dev mode | 1 instance |
+| Staging | 3-node cluster | 1-2 instances |
+| Production | 5-node cluster + ACL | Multiple instances, distributed agents |
+
 ### How to Contribute
 
 1. Fork the repository
@@ -202,6 +235,50 @@ For major changes, please open an issue first to discuss.
 ---
 
 ## 中文
+
+### 企业级复杂应用
+
+框架设计用于处理大规模企业级工作流，具备高并行性和高韧性：
+
+**水平扩展**
+- 运行多个框架实例（守护进程），每个实例使用不同端口，连接到同一个 Consul 集群
+- 无单点瓶颈 — 每个实例独立操作不同的 workflow
+- 任务级并行：DAG 中多个任务可同时执行
+
+**多工作流编排**
+- 支持同一个 Consul 集群中多个并发需求（`req-001`、`req-002`、...）
+- 每个需求有独立的 DAG，通过前缀 `workflows/<req_id>/` 隔离
+- Aggregator 自动发现并管理所有 workflow
+
+**韧性与容错**
+- Watchdog 独立检测每个任务的 Agent 崩溃和超时
+- 自动回滚到 PENDING 并跟踪重试次数（最多 5 次重试）
+- Aggregator 处理所有 feedback 修复后的重测逻辑（最多 3 次重试）
+- Consul 的 Raft 一致性保证节点故障时状态持久化
+
+**运营信心**
+- 所有状态存储在 Consul KV — 易于检查、重放和调试
+- 控制信号（PAUSE/RESUME/ABORT）支持随时人工干预
+- REST API 提供聚合视图，看板无需查询原始 KV
+
+**部署拓扑**
+
+| 场景 | Consul | 框架实例数 |
+|------|--------|-----------|
+| 开发 | 单节点 dev mode | 1 个实例 |
+| 预发 | 3 节点集群 | 1-2 个实例 |
+| 生产 | 5 节点集群 + ACL | 多个实例，分布式 Agent |
+
+### 如何贡献
+
+1. Fork 本仓库
+2. 创建功能分支：`git checkout -b feature/your-feature`
+3. 进行修改（记住：零外部 Python 依赖）
+4. 如有测试，运行测试
+5. 提交并附上清晰的 commit message
+6. 提交 Pull Request
+
+重大变更请先开 issue 讨论。
 
 ### 什么是 Harness Framework？
 
