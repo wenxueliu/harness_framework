@@ -4,7 +4,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 概述
 
-`harness-framework` 是一个多 Agent 软件开发平台的**框架层**，在一个 Python 进程中通过线程并发运行三大组件，所有协作状态存储在 **Consul KV** 中。
+`harness-framework` 是多 Agent 协作的**核心引擎**，解决分布式 Agent 之间的流程控制、状态管理与反馈闭环问题。核心能力：
+
+- **流程控制**：基于 DAG 拓扑的任务依赖调度，依赖满足自动激活下游任务
+- **状态管理**：统一的任务状态机（BLOCKED → PENDING → IN_PROGRESS → DONE/FAILED），支持人工干预（PAUSE/RESUME/ABORT）
+- **反馈闭环**：test 失败时等待所有 feedback FIXED 后自动重测，形成"失败→修复→验证"的完整闭环
+- **容错恢复**：Agent 死亡或任务超时时自动回滚重试，保障任务最终完成
 
 ## 架构
 
@@ -81,7 +86,7 @@ workflows/<req_id>/
 
 ## 代码风格
 
-- 零外部依赖，仅使用 Python 标准库
+- 仅使用 Python 标准库
 - 类型注解使用 `from __future__ import annotations`
 - 日志格式：`%(asctime)s [%(name)s] %(levelname)s %(message)s`
 
