@@ -28,6 +28,17 @@ harness_framework/
 - **Watchdog**：轮询 Consul Health 检测 Agent 是否存活，检测任务超时（默认 1h），超时或 Agent 死亡时将任务回滚为 PENDING（最多 5 次重试，超过则 FAILED）。
 - **WebAPI**：基于标准库 `http.server` 的 ThreadingHTTPServer，提供 `/api/workflows`、`/api/workflow/<req_id>`、`/api/agents` 等端点。
 
+## 使用步骤
+
+1. **启动 Consul**：运行 `./scripts/start_consul_dev.sh` 或手动启动 Consul agent
+2. **启动框架**：`python -m harness_framework.daemon`，三大组件（Aggregator、Watchdog、WebAPI）开始运行
+3. **创建需求**：通过 API 或 `sync_to_consul.py` 脚本写入需求定义（含任务依赖拓扑）
+4. **分配任务**：Agent 从 WebAPI 获取 PENDING 状态任务，执行后更新状态为 IN_PROGRESS
+5. **自动流转**：Aggregator 监听状态变化，依赖全部 DONE 时自动激活下游任务
+6. **故障恢复**：Watchdog 检测超时或 Agent 死亡时自动回滚重试
+7. **质量门禁**：test 失败后等待 feedback 全部 FIXED，再自动重测
+8. **人工干预**：通过 WebAPI 随时修改任务状态或重分配，实现人机协同
+
 ## 常用命令
 
 consul 安装在 consul_server
