@@ -5,6 +5,7 @@ WebAPI — 为业务看板提供 HTTP 接口
 - /api/workflows                  ← 一次性返回所有需求的聚合视图（看板首屏）
 - /api/workflow/<req_id>          ← 单个需求的完整状态
 - /api/workflow/<req_id>/control  ← POST 写入 PAUSE / RESUME / ABORT / RETRY
+- /api/workflow/<req_id>/proposals ← GET 查看提案 / POST 确认或拒绝
 - /api/agents                     ← 当前所有注册 Agent 列表
 
 零外部依赖，使用标准库 http.server。
@@ -19,13 +20,14 @@ from urllib.parse import urlparse, parse_qs
 
 from .consul_client import ConsulClient
 from .message_bus import MessageBus, MessageStatus
+from .workflow_skills import WorkflowSkills
 
 log = logging.getLogger("webapi")
 
 
 class APIHandler(BaseHTTPRequestHandler):
-    consul: ConsulClient = None  # 由 server 实例注入
-    message_bus: MessageBus = None  # 由 server 实例注入
+    consul: ConsulClient = None
+    message_bus: MessageBus = None
 
     def log_message(self, format, *args):
         log.info("%s - %s", self.address_string(), format % args)
@@ -53,16 +55,17 @@ class APIHandler(BaseHTTPRequestHandler):
             if path.startswith("/api/workflow/"):
                 parts = path.split("/")
                 if "/messages/" in path:
-                    if len(parts) >= 6 and "messages" in parts:
-                        msg_idx = parts.index("messages")
-                        if len(parts) > msg_idx + 1:
-                            req_id = parts[msg_idx - 1]
-                            task_name = parts[msg_idx + 1]
-                            return self._get_messages(req_id, task_name)
+                    msg_idx = parts.index("messages")
+                    if len(parts) > msg_idx + 1:
+                        req_id = parts[msg_idx - 1]
+                        task_name = parts[msg_idx + 1]
+                        return self._get_messages(req_id, task_name)
+                if "/proposals" in path:
+                    req_id = parts[-2]
+                    return self._get_proposals(req_id)
                 req_id = parts[-1]
                 return self._get_workflow(req_id)
             if path.startswith("/api/sessions/"):
-                # /api/sessions/<req_id>/<task>
                 parts = path.split("/")
                 if len(parts) >= 4:
                     req_id, task_name = parts[2], parts[3]
@@ -91,12 +94,14 @@ class APIHandler(BaseHTTPRequestHandler):
             if path.startswith("/api/workflow/") and path.endswith("/messages"):
                 req_id = path.split("/")[-2]
                 return self._send_message(req_id, body)
+            if path.startswith("/api/workflow/") and path.endswith("/proposals"):
+                req_id = path.split("/")[-2]
+                return self._confirm_proposal(req_id, body)
             self._send_json(404, {"error": "not found"})
         except Exception as e:
             log.exception("POST %s failed", self.path)
             self._send_json(500, {"error": str(e)})
 
-    # ── 业务接口 ────────────────────────────────────────────────────────────
     def _list_workflows(self):
         items, _ = self.consul.kv_get("workflows/", recurse=True)
         if not items:
@@ -117,7 +122,6 @@ class APIHandler(BaseHTTPRequestHandler):
             elif len(parts) == 3 and parts[2] == "title":
                 w["title"] = it.get("_decoded", "")
 
-        # 计算 phase 与进度
         result = []
         for req_id, w in wfs.items():
             tasks = w["tasks"]
@@ -156,9 +160,9 @@ class APIHandler(BaseHTTPRequestHandler):
         dependencies = json.loads(deps_str) if deps_str else {}
 
         tasks: dict = {}
-        feedback: dict = {}
         context: dict = {}
         control = ""
+        status = ""
 
         prefix = f"workflows/{req_id}/"
         for it in items:
@@ -166,24 +170,23 @@ class APIHandler(BaseHTTPRequestHandler):
             parts = rel.split("/")
             if len(parts) >= 3 and parts[0] == "tasks":
                 tasks.setdefault(parts[1], {})[parts[2]] = it.get("_decoded", "")
-            elif len(parts) >= 3 and parts[0] == "feedback":
-                feedback.setdefault(parts[1], {})[parts[2]] = it.get("_decoded", "")
             elif len(parts) >= 2 and parts[0] == "context":
                 context["/".join(parts[1:])] = it.get("_decoded", "")
             elif rel == "control":
                 control = it.get("_decoded", "")
+            elif rel == "status":
+                status = it.get("_decoded", "")
 
         self._send_json(200, {
             "req_id": req_id,
+            "status": status,
             "control": control,
             "dependencies": dependencies,
             "tasks": tasks,
-            "feedback": feedback,
             "context": context,
         })
 
     def _get_session_events(self, req_id: str, task_name: str):
-        """返回指定任务的 Session 事件流。"""
         items, _ = self.consul.kv_get(
             f"workflows/{req_id}/sessions/{task_name}/", recurse=True
         )
@@ -193,7 +196,6 @@ class APIHandler(BaseHTTPRequestHandler):
             for it in items:
                 rel = it["Key"][len(prefix):] if it["Key"].startswith(prefix) else it["Key"]
                 parts = rel.split("/")
-                # 格式：<session_id>/events/<seq>
                 if len(parts) >= 3 and parts[1] == "events":
                     events.append({
                         "session_id": parts[0],
@@ -238,7 +240,6 @@ class APIHandler(BaseHTTPRequestHandler):
         self._send_json(200, {"ok": True, "action": action, "req_id": req_id})
 
     def _get_messages(self, req_id: str, task_name: str):
-        """获取指定任务队列中的消息"""
         status_str = parse_qs(urlparse(self.path).query).get("status", [None])[0]
         status = MessageStatus(status_str) if status_str else None
 
@@ -250,7 +251,6 @@ class APIHandler(BaseHTTPRequestHandler):
         })
 
     def _send_message(self, req_id: str, body: dict):
-        """发送消息到目标任务队列"""
         from_task = body.get("from")
         to_task = body.get("to")
         action = body.get("action")
@@ -262,6 +262,33 @@ class APIHandler(BaseHTTPRequestHandler):
 
         msg = self.message_bus.send(req_id, from_task, to_task, action, params, timeout)
         self._send_json(200, {"ok": True, "msg_id": msg.msg_id, "message": msg.to_dict()})
+
+    def _get_proposals(self, req_id: str):
+        """获取当前待确认的提案"""
+        skills = WorkflowSkills(self.consul)
+        proposals = skills.list_pending_proposals(req_id)
+        status = skills.check_workflow_status(req_id)
+        self._send_json(200, {
+            "req_id": req_id,
+            "status": status,
+            "proposals": proposals,
+        })
+
+    def _confirm_proposal(self, req_id: str, body: dict):
+        """确认或拒绝 Proposal"""
+        skills = WorkflowSkills(self.consul)
+        action = body.get("action", "").lower()
+
+        if action == "reject":
+            result = skills.reject_proposal(req_id)
+        else:
+            accepted = body.get("accepted_tasks")
+            rejected = body.get("rejected_tasks")
+            result = skills.confirm_proposal(req_id, accepted, rejected)
+
+        if result["success"]:
+            return self._send_json(200, result)
+        return self._send_json(400, result)
 
 
 def serve(consul: ConsulClient, host: str = "0.0.0.0", port: int = 8080) -> ThreadingHTTPServer:

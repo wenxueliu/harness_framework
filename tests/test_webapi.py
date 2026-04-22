@@ -198,7 +198,6 @@ class TestWebAPI:
         assert resp["code"] == 200
         assert resp["body"]["req_id"] == "req-001"
         assert "backend" in resp["body"]["tasks"]
-        assert "feedback" in resp["body"]
         assert "context" in resp["body"]
 
     def test_get_workflow_not_found(self):
@@ -461,3 +460,119 @@ class TestWebAPI:
 
         assert resp["code"] == 400
         assert "error" in resp["body"]
+
+    def test_get_proposals_empty(self):
+        """没有提案时返回空列表"""
+        store = {
+            "workflows/req-001/status": "CONFIRMED",
+            "workflows/req-001/dependencies": json.dumps({
+                "design": {"type": "design"},
+            }),
+        }
+        handler, _, _, _ = make_handler(store)
+
+        resp = call_do_method(handler, "GET", "/api/workflow/req-001/proposals")
+
+        assert resp["code"] == 200
+        assert resp["body"]["req_id"] == "req-001"
+        assert resp["body"]["status"] == "CONFIRMED"
+        assert resp["body"]["proposals"] == []
+
+    def test_get_proposals_with_pending(self):
+        """有提案时返回提案列表"""
+        store = {
+            "workflows/req-001/status": "Proposal",
+            "workflows/req-001/dependencies": json.dumps({
+                "design": {"type": "design"},
+                "perf-opt": {
+                    "type": "task",
+                    "depends_on": ["design"],
+                    "proposed_by": "test",
+                    "proposed_at": "2025-04-23T10:00:00Z",
+                    "reason": "performance test failed",
+                },
+            }),
+        }
+        handler, _, _, _ = make_handler(store)
+
+        resp = call_do_method(handler, "GET", "/api/workflow/req-001/proposals")
+
+        assert resp["code"] == 200
+        assert resp["body"]["status"] == "Proposal"
+        assert len(resp["body"]["proposals"]) == 1
+        assert resp["body"]["proposals"][0]["task_name"] == "perf-opt"
+
+    def test_confirm_proposal(self):
+        """确认提案"""
+        store = {
+            "workflows/req-001/status": "Proposal",
+            "workflows/req-001/dependencies": json.dumps({
+                "perf-opt": {"type": "task", "proposed_by": "test"},
+            }),
+        }
+        handler, consul, _, _ = make_handler(store)
+
+        resp = call_do_method(
+            handler, "POST",
+            "/api/workflow/req-001/proposals",
+            json.dumps({"action": "confirm"}).encode()
+        )
+
+        assert resp["code"] == 200
+        assert resp["body"]["success"] is True
+        assert resp["body"]["status"] == "CONFIRMED"
+
+    def test_confirm_proposal_with_rejected_tasks(self):
+        """确认时拒绝部分任务"""
+        store = {
+            "workflows/req-001/status": "Proposal",
+            "workflows/req-001/dependencies": json.dumps({
+                "perf-opt": {"type": "task", "proposed_by": "test"},
+                "sec-fix": {"type": "task", "proposed_by": "test"},
+            }),
+        }
+        handler, consul, _, _ = make_handler(store)
+
+        resp = call_do_method(
+            handler, "POST",
+            "/api/workflow/req-001/proposals",
+            json.dumps({"action": "confirm", "rejected_tasks": ["sec-fix"]}).encode()
+        )
+
+        assert resp["code"] == 200
+
+    def test_reject_proposal(self):
+        """拒绝提案"""
+        store = {
+            "workflows/req-001/status": "Proposal",
+            "workflows/req-001/dependencies": json.dumps({
+                "perf-opt": {"type": "task", "proposed_by": "test"},
+            }),
+        }
+        handler, consul, _, _ = make_handler(store)
+
+        resp = call_do_method(
+            handler, "POST",
+            "/api/workflow/req-001/proposals",
+            json.dumps({"action": "reject"}).encode()
+        )
+
+        assert resp["code"] == 200
+        assert resp["body"]["success"] is True
+        assert resp["body"]["status"] == "CONFIRMED"
+
+    def test_confirm_proposal_not_in_proposal_state(self):
+        """非 Proposal 状态确认失败"""
+        store = {
+            "workflows/req-001/status": "CONFIRMED",
+            "workflows/req-001/dependencies": json.dumps({}),
+        }
+        handler, _, _, _ = make_handler(store)
+
+        resp = call_do_method(
+            handler, "POST",
+            "/api/workflow/req-001/proposals",
+            json.dumps({"action": "confirm"}).encode()
+        )
+
+        assert resp["code"] == 400
