@@ -50,6 +50,9 @@ workflows/<req_id>/
 | 写反馈 | `feedback_write.sh <req_id> <service> --error "..."` | 测试 Agent 专用 |
 | 听反馈 | `feedback_listen.sh <req_id> <service>` | 服务 Agent 专用：监听修复请求 |
 | 解反馈 | `feedback_resolve.sh <req_id> <service> --summary "..."` | 服务 Agent 专用：完成修复 |
+| 查需求状态 | 见 Proposal 一节 | 检查需求当前状态 |
+| 提出新任务 | 见 Proposal 一节 | Agent 发现遗漏任务时提出提案 |
+| 确认提案 | 见 Proposal 一节（人工） | 接受或拒绝新任务提案 |
 
 必传环境变量：`AGENT_ID`（全局唯一）；任务相关命令额外需要 `REQ_ID`、`TASK_NAME`。
 
@@ -255,6 +258,143 @@ curl -s -X PUT "http://$CONSUL_ADDR/v1/kv/workflows/$REQ_ID/feedback/$SERVICE/fi
 curl -s -X PUT "http://$CONSUL_ADDR/v1/kv/workflows/$REQ_ID/feedback/$SERVICE/fixer" -d "$AGENT_ID"
 curl -s -X PUT "http://$CONSUL_ADDR/v1/kv/workflows/$REQ_ID/feedback/$SERVICE/status" -d "FIXED"
 ```
+
+## Dependencies Proposal（动态任务提案）
+
+Agent 在执行过程中发现需要新增任务（如测试发现遗漏工作）时，可以通过 Proposal 机制向人工申请。
+
+### 需求状态机
+
+```
+DRAFT → CONFIRMED → IN_PROGRESS → DONE
+         ↑
+       Proposal（中间态）
+```
+
+| 状态 | 含义 |
+|------|------|
+| DRAFT | 草稿，尚未启动 |
+| Proposal | 有 Agent 发现需要新任务，暂停调度，等待人工确认 |
+| CONFIRMED | 人工确认后，正常调度 |
+| IN_PROGRESS | 执行中 |
+
+### Agent 检查需求状态
+
+```bash
+# 读取需求当前状态
+curl -s "http://$CONSUL_ADDR/v1/kv/workflows/$REQ_ID/status?raw"
+# 返回: DRAFT | Proposal | CONFIRMED | IN_PROGRESS | DONE
+```
+
+### Agent 等待 Proposal 解决（阻塞轮询）
+
+```bash
+# 循环检查直到状态不再是 Proposal
+while true; do
+  STATUS=$(curl -s "http://$CONSUL_ADDR/v1/kv/workflows/$REQ_ID/status?raw")
+  if [ "$STATUS" != "Proposal" ]; then
+    echo "Proposal 已解决，当前状态: $STATUS"
+    break
+  fi
+  echo "等待人工确认提案，休息 5 秒..."
+  sleep 5
+done
+```
+
+### Agent 提出新任务（Proposal）
+
+```bash
+# 1. 读取当前 dependencies
+DEPS=$(curl -s "http://$CONSUL_ADDR/v1/kv/workflows/$REQ_ID/dependencies?raw")
+
+# 2. 用 jq 或 python 添加新任务（示例：添加 perf-opt 任务）
+echo "$DEPS" | python3 -c "
+import sys, json
+deps = json.load(sys.stdin)
+deps['perf-opt'] = {
+    'type': 'backend',
+    'depends_on': ['build-user-service'],
+    'proposed_by': '$TASK_NAME',
+    'reason': '测试发现性能瓶颈，需要优化',
+    'description': '性能优化：登录接口响应时间 > 200ms'
+}
+print(json.dumps(deps, ensure_ascii=False))
+" > /tmp/new_deps.json
+
+# 3. 写回 dependencies
+curl -s -X PUT "http://$CONSUL_ADDR/v1/kv/workflows/$REQ_ID/dependencies" -d @/tmp/new_deps.json
+
+# 4. CAS 设置状态为 Proposal（若已有 Proposal 则跳过）
+INDEX=$(curl -s "http://$CONSUL_ADDR/v1/kv/workflows/$REQ_ID/status" | python3 -c "import sys,json; print(json.load(sys.stdin)[0]['ModifyIndex'])")
+curl -s -X PUT "http://$CONSUL_ADDR/v1/kv/workflows/$REQ_ID/status?cas=$INDEX" -d "Proposal"
+
+# 5. 写入提案元数据
+curl -s -X PUT "http://$CONSUL_ADDR/v1/kv/workflows/$REQ_ID/tasks/perf-opt/proposed_by" -d "$TASK_NAME"
+curl -s -X PUT "http://$CONSUL_ADDR/v1/kv/workflows/$REQ_ID/tasks/perf-opt/proposed_at" -d "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+# 6. 退出当前任务，等人工确认
+echo "提案已提交，等待人工确认..."
+exit 0
+```
+
+### 查看所有待确认的提案
+
+```bash
+# 从 dependencies 中筛选 proposed_by 不为空的任务
+curl -s "http://$CONSUL_ADDR/v1/kv/workflows/$REQ_ID/dependencies?raw" | python3 -c "
+import sys, json
+deps = json.load(sys.stdin)
+for task, info in deps.items():
+    if info.get('proposed_by'):
+        print(f\"任务: {task}\")
+        print(f\"  提出者: {info['proposed_by']}\")
+        print(f\"  提出时间: {info.get('proposed_at', 'N/A')}\")
+        print(f\"  依赖: {info.get('depends_on', [])}\")
+        print(f\"  类型: {info.get('type', 'task')}\")
+        print(f\"  原因: {info.get('reason', 'N/A')}\")
+        print()
+"
+```
+
+### 人工确认或拒绝提案
+
+```bash
+# === 确认全部提案 ===
+INDEX=$(curl -s "http://$CONSUL_ADDR/v1/kv/workflows/$REQ_ID/status" | python3 -c "import sys,json; print(json.load(sys.stdin)[0]['ModifyIndex'])")
+curl -s -X PUT "http://$CONSUL_ADDR/v1/kv/workflows/$REQ_ID/status?cas=$INDEX" -d "CONFIRMED"
+
+# === 拒绝指定提案（从 dependencies 中删除） ===
+DEPS=$(curl -s "http://$CONSUL_ADDR/v1/kv/workflows/$REQ_ID/dependencies?raw")
+echo "$DEPS" | python3 -c "
+import sys, json
+deps = json.load(sys.stdin)
+deps.pop('perf-opt', None)  # 删除被拒绝的任务
+print(json.dumps(deps, ensure_ascii=False))
+" > /tmp/deps_filtered.json
+curl -s -X PUT "http://$CONSUL_ADDR/v1/kv/workflows/$REQ_ID/dependencies" -d @/tmp/deps_filtered.json
+INDEX=$(curl -s "http://$CONSUL_ADDR/v1/kv/workflows/$REQ_ID/status" | python3 -c "import sys,json; print(json.load(sys.stdin)[0]['ModifyIndex'])")
+curl -s -X PUT "http://$CONSUL_ADDR/v1/kv/workflows/$REQ_ID/status?cas=$INDEX" -d "CONFIRMED"
+
+# === 仅接受部分提案 ===
+DEPS=$(curl -s "http://$CONSUL_ADDR/v1/kv/workflows/$REQ_ID/dependencies?raw")
+echo "$DEPS" | python3 -c "
+import sys, json
+deps = json.load(sys.stdin)
+# 删除所有 proposed_by 的任务，重新写入只保留不需要人工确认的
+keep = {k: v for k, v in deps.items() if not v.get('proposed_by')}
+print(json.dumps(keep, ensure_ascii=False))
+" > /tmp/deps_accepted.json
+curl -s -X PUT "http://$CONSUL_ADDR/v1/kv/workflows/$REQ_ID/dependencies" -d @/tmp/deps_accepted.json
+INDEX=$(curl -s "http://$CONSUL_ADDR/v1/kv/workflows/$REQ_ID/status" | python3 -c "import sys,json; print(json.load(sys.stdin)[0]['ModifyIndex'])")
+curl -s -X PUT "http://$CONSUL_ADDR/v1/kv/workflows/$REQ_ID/status?cas=$INDEX" -d "CONFIRMED"
+```
+
+### 流程总结
+
+1. **Agent 发现遗漏** → 提出新任务（status → Proposal）
+2. **Aggregator 暂停调度** → 等待人工确认
+3. **人工确认** → status → CONFIRMED，新任务按依赖激活
+4. **人工拒绝** → 删除提案，status → CONFIRMED，Agent 可重新发起
 
 ## 三类 Agent 的典型工作流
 
