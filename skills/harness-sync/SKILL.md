@@ -5,18 +5,8 @@ description: |
   with task dependencies from JSON files, or help users define task DAGs interactively.
   Use when user wants to create tasks, initialize workflows, sync dependencies to Consul,
   or set up new requirements for the agent workflow system. Triggers for phrases like:
-  "create task", "sync to consul", "new requirement", "add workflow", "initialize task",
-  "sync dependencies", or when working with workflows/req_id in Harness Framework.
-triggers:
-  - create task
-  - sync to consul
-  - sync to harness
-  - new requirement
-  - add workflow
-  - initialize task
-  - sync dependencies
-  - create workflow
-  - harness framework task
+  "create task", "sync to consul", "sync to harness", "new requirement", "add workflow",
+  "initialize task", "sync dependencies", "create workflow".
 allowed-tools:
   - Bash
   - Read
@@ -27,30 +17,15 @@ allowed-tools:
 
 Sync workflow tasks to Consul KV for the Harness Framework.
 
-## Prerequisites
+## Consul 地址
 
-- Consul must be running at `127.0.0.1:8500` (or set `CONSUL_ADDR` env var)
-- Python 3 with the `requests` library (`pip install requests`)
+默认 `127.0.0.1:8500`，可通过环境变量 `CONSUL_ADDR` 覆盖。
 
-## Core Script: `sync_to_consul.py`
+## 同步到 Consul（curl 版）
 
-The main script is bundled in this skill at `scripts/sync_to_consul.py`. It reads a dependencies JSON file and syncs it to Consul.
+### 一、准备 dependencies.json
 
-### Usage
-
-From the project root (Harness Framework repository):
-```bash
-python3 skills/harness-sync/scripts/sync_to_consul.py <req_id> <dependencies.json> [--title "需求标题"]
-```
-
-Example:
-```bash
-python3 skills/harness-sync/scripts/sync_to_consul.py req-001 /tmp/dependencies.json --title "用户登录功能"
-```
-
-### Example dependencies.json Format
-
-> **Note:** `service_name` and `description` are **required** fields for every task.
+> **注意：** `service_name` 和 `description` 是每个任务的**必填字段**。
 
 ```json
 {
@@ -81,7 +56,57 @@ python3 skills/harness-sync/scripts/sync_to_consul.py req-001 /tmp/dependencies.
 }
 ```
 
-### Task Types
+### 二、用 curl 同步到 Consul
+
+```bash
+CONSUL=http://127.0.0.1:8500
+REQ_ID=req-001
+TITLE="用户登录功能"
+DEPS_FILE=/tmp/dependencies.json
+
+# 1. 写入需求元数据
+curl -s -X PUT "$CONSUL/v1/kv/workflows/$REQ_ID/title" -d "$TITLE"
+curl -s -X PUT "$CONSUL/v1/kv/workflows/$REQ_ID/dependencies" -d "$(cat $DEPS_FILE)"
+curl -s -X PUT "$CONSUL/v1/kv/workflows/$REQ_ID/created_at" -d "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+# 2. 批量写入任务（遍历 JSON keys）
+cat $DEPS_FILE | python3 -c "
+import sys, json, subprocess
+consul = 'http://127.0.0.1:8500'
+deps = json.load(sys.stdin)
+for task, info in deps.items():
+    upstream = info.get('depends_on', [])
+    status = 'PENDING' if not upstream else 'BLOCKED'
+    base = f'workflows/$/REQ_ID/tasks/{task}'
+    cmds = [
+        f'curl -s -X PUT {consul}/v1/kv/{base}/status -d {status}',
+        f'curl -s -X PUT {consul}/v1/kv/{base}/type -d {info.get(\"type\",\"generic\")}',
+        f'curl -s -X PUT {consul}/v1/kv/{base}/service_name -d {info.get(\"service_name\",\"\")}',
+        f'curl -s -X PUT {consul}/v1/kv/{base}/description -d {info.get(\"description\",\"\")}',
+        f'curl -s -X PUT {consul}/v1/kv/{base}/created_at -d $(date -u +%Y-%m-%dT%H:%M:%SZ)',
+    ]
+    if upstream:
+        cmds.append(f'curl -s -X PUT {consul}/v1/kv/{base}/depends_on -d {\",\".join(upstream)}')
+    for cmd in cmds:
+        subprocess.run(cmd, shell=True)
+"
+
+# 3. 草稿模式：设为 false（默认），或发布：设为 true
+curl -s -X PUT "$CONSUL/v1/kv/workflows/$REQ_ID/published" -d "false"
+```
+
+### 三、用 Python 脚本同步（备选）
+
+```bash
+python3 skills/harness-sync/scripts/sync_to_consul.py <req_id> <dependencies.json> [--title "需求标题"]
+```
+
+示例：
+```bash
+python3 skills/harness-sync/scripts/sync_to_consul.py req-001 /tmp/dependencies.json --title "用户登录功能"
+```
+
+## 任务类型
 
 | Type | Description |
 |------|-------------|
@@ -91,7 +116,7 @@ python3 skills/harness-sync/scripts/sync_to_consul.py req-001 /tmp/dependencies.
 | `test` | 测试任务 |
 | `deploy` | 部署任务 |
 
-### Task Status Flow
+## 任务状态流转
 
 - **BLOCKED**: 有依赖项的任务，初始状态
 - **PENDING**: 无依赖的叶子任务，或被 Aggregator 激活
@@ -100,46 +125,16 @@ python3 skills/harness-sync/scripts/sync_to_consul.py req-001 /tmp/dependencies.
 - **FAILED**: 任务失败
 - **ABORTED**: 任务中止
 
-## Workflow
+## Consul KV 结构
 
-### Step 1: Check Consul Status (Optional)
-
-Consul is ready if you can reach it at 127.0.0.1:8500. The script will report any connection errors.
-
-### Step 2: Create or Use dependencies.json
-
-**Option B: Create new file interactively**
-
-Help user define the workflow by asking for:
-1. `req_id` - 需求唯一标识符
-2. `title` - 需求标题
-3. Tasks with:
-   - `task_name` - 任务名称（唯一标识）
-   - `type` - 任务类型 (design/review/backend/test/deploy)
-   - `depends_on` - 依赖任务列表（数组）
-   - `service_name` - 关联服务名（必填）
-   - `description` - 任务描述（必填）
-
-### Step 3: Sync to Consul
-
-Run the sync command:
-```bash
-python3 skills/harness-sync/scripts/sync_to_consul.py <req_id> <deps_file> [--title "标题"]
-```
-
-### Step 4: Verify
-
-The script will print success/failure status. No manual curl verification needed.
-
-## Consul KV Structure
-
-After syncing, the following keys are created:
+同步后在 Consul 中创建以下 key：
 
 ```
 workflows/<req_id>/
 ├── title                    # 需求标题
 ├── control                  # PAUSE | RESUME | ABORT
-├── dependencies            # 任务依赖拓扑 JSON
+├── dependencies             # 任务依赖拓扑 JSON
+├── published                # false（草稿模式，需发布后才激活）
 ├── created_at              # 创建时间
 └── tasks/<task_name>/
     ├── status              # BLOCKED | PENDING | IN_PROGRESS | DONE | FAILED
@@ -149,22 +144,22 @@ workflows/<req_id>/
     └── created_at          # 创建时间
 ```
 
-## Interactive Mode
+## 交互式创建依赖文件
 
-If user doesn't have a JSON file, help them create one:
+如果没有现成的 JSON 文件，按以下步骤帮助用户定义：
 
-1. Ask for the requirement ID (req_id)
-2. Ask for the requirement title
-3. For each task, ask:
-   - Task name
-   - Task type (select from list)
-   - Dependencies (which tasks must complete first?)
-   - Service name (required)
-   - Description (required)
+1. `req_id` - 需求唯一标识符
+2. `title` - 需求标题
+3. 每个任务：
+   - `task_name` - 任务名称（唯一标识）
+   - `type` - 任务类型 (design/review/backend/test/deploy)
+   - `depends_on` - 依赖任务列表（数组）
+   - `service_name` - 关联服务名（必填）
+   - `description` - 任务描述（必填）
 
-After collecting all tasks, save as JSON and run sync.
+收集完成后保存为 JSON，然后执行 sync 命令。
 
-## Example Session
+## 示例会话
 
 ```
 User: create a new workflow for user registration
@@ -176,11 +171,13 @@ Assistant:
   Let me create the dependencies.json:
 
   {
-    "design-api": {"type": "design", "depends_on": [], ...},
-    "build-backend": {"type": "backend", "depends_on": ["design-api"], ...},
+    "design-api": {"type": "design", "depends_on": [], "service_name": "platform", "description": "..."},
+    "build-backend": {"type": "backend", "depends_on": ["design-api"], "service_name": "user-service", "description": "..."},
     ...
   }
 
   Ready to sync? Run:
-  python3 .claude/skills/harness-sync/scripts/sync_to_consul.py req-002 deps.json --title "用户注册功能"
+  curl -s -X PUT "http://127.0.0.1:8500/v1/kv/workflows/req-002/title" -d "用户注册功能"
+  curl -s -X PUT "http://127.0.0.1:8500/v1/kv/workflows/req-002/dependencies" -d @deps.json
+  curl -s -X PUT "http://127.0.0.1:8500/v1/kv/workflows/req-002/published" -d "true"
 ```

@@ -106,7 +106,26 @@ def env(name: str, default: Optional[str] = None, required: bool = False) -> str
     return v
 
 
+def _ensure_consul_addr_in_env() -> None:
+    """若 CONSUL_ADDR 未设置，自动写入 ./.env"""
+    if os.environ.get("CONSUL_ADDR"):
+        return
+    _load_env_file()
+    if _env_cache.get("CONSUL_ADDR"):
+        return
+    cwd_env = os.path.join(os.getcwd(), ".env")
+    if os.path.isfile(cwd_env):
+        return
+    try:
+        with open(cwd_env, "w") as f:
+            f.write("CONSUL_ADDR=127.0.0.1:8500\n")
+        _env_cache["CONSUL_ADDR"] = "127.0.0.1:8500"
+    except (IOError, OSError):
+        pass
+
+
 def consul_base_url() -> str:
+    _ensure_consul_addr_in_env()
     addr = env("CONSUL_ADDR", "127.0.0.1:8500")
     if not addr.startswith(("http://", "https://")):
         addr = "http://" + addr
