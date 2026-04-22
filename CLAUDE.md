@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 - **流程控制**：基于 DAG 拓扑的任务依赖调度，依赖满足自动激活下游任务
 - **状态管理**：统一的任务状态机（BLOCKED → PENDING → IN_PROGRESS → DONE/FAILED），支持人工干预（PAUSE/RESUME/ABORT）
-- **反馈闭环**：test 失败时等待所有 feedback FIXED 后自动重测，形成"失败→修复→验证"的完整闭环
+- **反馈闭环**：test 失败时通过 Message Bus 通知相关服务修复，收到修复完成消息后自动重测，形成"失败→修复→验证"的完整闭环
 - **容错恢复**：Agent 死亡或任务超时时自动回滚重试，保障任务最终完成
 - **人工接管**：任何时刻可人工介入（重分配任务、强制状态变更），实现人机协同
 
@@ -25,7 +25,7 @@ harness_framework/
 ```
 
 **三大组件：**
-- **Aggregator**：仅处理 `published=true` 的 workflow，轮询任务状态，当依赖全部 DONE 时将下游任务设为 PENDING；当 test 任务 FAILED 且所有 feedback FIXED 时触发重测。
+- **Aggregator**：仅处理 `published=true` 的 workflow，轮询任务状态，当依赖全部 DONE 时将下游任务设为 PENDING。**重测逻辑由 Test Agent 通过 Message Bus 自行管理**。
 - **Watchdog**：仅处理 `published=true` 的 workflow，轮询 Consul Health 检测 Agent 是否存活，检测任务超时（默认 1h），超时或 Agent 死亡时将任务回滚为 PENDING（最多 5 次重试，超过则 FAILED）。
 - **WebAPI**：基于标准库 `http.server` 的 ThreadingHTTPServer，提供 `/api/workflows`、`/api/workflow/<req_id>`、`/api/agents` 等端点。
 
@@ -45,7 +45,7 @@ harness_framework/
 1. **任务激活**：Aggregator 检测所有依赖 DONE → 激活下游任务为 PENDING
 2. **任务执行**：Agent 领取 PENDING 任务 → 写入 IN_PROGRESS → 执行完成写入 DONE
 3. **故障恢复**：Watchdog 检测超时/Agent 死亡 → 回滚任务为 PENDING（≤5次重试）
-4. **质量门禁**：test 失败 → 等待 feedback.FIXED → 自动重测（≤3次重试）
+4. **质量门禁**：test 失败 → 发送 FIX 消息到相关服务 → 轮询消息状态 → 所有修复完成后重测（≤3次重试）
 5. **流程终止**：所有任务 DONE → 流程结束；超过重试上限 → FAILED
 
 ## Consul KV 结构
@@ -66,10 +66,10 @@ workflows/<req_id>/
 │   ├── assigned_agent
 │   ├── started_at / activated_at / retry_count / error_message
 │   └── last_recovery_reason / last_recovery_at
-├── feedback/<service>/
-│   └── status              # FIXED | OPEN
 └── context/...             # 任意上下文键值
 ```
+
+> **注**：旧版 `feedback/<service>/status` 字段已废弃，重测逻辑由 Message Bus 取代。
 
 ## 任务类型与状态流转
 
@@ -77,7 +77,11 @@ workflows/<req_id>/
 
 **核心状态**：空白/已终止任务初始为 `BLOCKED`（叶子任务直接 `PENDING`）；`IN_PROGRESS` 由 Agent 手动写入；所有依赖 DONE 时由 Aggregator 激活为 `PENDING`。
 
-**Aggregator 重测逻辑**：test 任务 FAILED → 检查所有 feedback.status == FIXED → 清除 feedback → 重置任务为 PENDING → retry_count++（Aggregator 上限 3 次）
+**Task Agent 重测逻辑**（由 Test Agent 自己管理）：
+- test 任务 FAILED → 通过 MessageBus 发送 FIX 消息到相关服务
+- 轮询消息状态，等待所有消息 DONE
+- 重测成功写入 DONE，失败则重试（上限 3 次）
+- 重试 3 次仍失败则写入 FAILED
 
 **Watchdog 恢复逻辑**：Agent 死亡或任务超时 → retry_count++ → retry_count >= 5 则 FAILED，否则回滚为 PENDING（Watchdog 上限 5 次）
 

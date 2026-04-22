@@ -1,11 +1,11 @@
 """
-Aggregator — DAG 状态聚合与任务推进
-
 负责：
 - 监听 workflows/<req_id>/tasks/*/status 变更
 - 当某任务进入 DONE 时，检查下游任务的依赖是否全部满足，满足则将其设为 PENDING
-- 当 test 任务 FAILED 且所有 feedback FIXED 时，重置 test 任务为 PENDING
 - 处理 control 信号：PAUSE / RESUME / ABORT
+
+重测逻辑由 Test Agent 通过 Message Bus 自行管理，不在此组件中处理。
+
 """
 from __future__ import annotations
 
@@ -90,7 +90,6 @@ class Aggregator:
 
         for task_name, info in deps.items():
             self._maybe_activate(req_id, task_name, info, tasks_meta, deps)
-            self._maybe_retest(req_id, task_name, info, tasks_meta)
 
     def _load_tasks(self, req_id: str) -> dict:
         """读取 req_id 下所有 tasks/<name>/status 等元数据。"""
@@ -188,47 +187,6 @@ class Aggregator:
                                 f"workflows/{req_id}/tasks/{downstream}/activated_at",
                                 _now_iso())
                             log.info("aggregate激活下游 %s/%s", req_id, downstream)
-
-    def _maybe_retest(self, req_id: str, task_name: str, info: dict,
-                      tasks_meta: dict) -> None:
-        """若 test 任务 FAILED 且所有 feedback FIXED，则重置为 PENDING。"""
-        meta = tasks_meta.get(task_name, {})
-        if meta.get("status") != "FAILED":
-            return
-        if info.get("type") != "test":
-            return
-
-        # 检查反馈状态
-        items, _ = self.consul.kv_get(f"workflows/{req_id}/feedback/", recurse=True)
-        if not items:
-            return
-
-        services = {}
-        for it in items:
-            parts = it["Key"].split("/")
-            if len(parts) >= 5 and parts[4] == "status":
-                services[parts[3]] = it.get("_decoded", "")
-
-        if not services:
-            return
-        if not all(s == "FIXED" for s in services.values()):
-            return
-
-        # 检查重试次数
-        retry_count = int(meta.get("retry_count", "0") or "0")
-        if retry_count >= 3:
-            log.warning("task %s/%s exceeded retry limit", req_id, task_name)
-            return
-
-        log.info("re-triggering test task %s/%s (retry=%d)", req_id, task_name,
-                 retry_count + 1)
-        # 清除反馈
-        self.consul.kv_delete(f"workflows/{req_id}/feedback/", recurse=True)
-        # 重置任务
-        self.consul.kv_put(f"workflows/{req_id}/tasks/{task_name}/status", "PENDING")
-        self.consul.kv_put(f"workflows/{req_id}/tasks/{task_name}/retry_count",
-                           str(retry_count + 1))
-        self.consul.kv_delete(f"workflows/{req_id}/tasks/{task_name}/error_message")
 
     def _abort(self, req_id: str) -> None:
         """ABORT 信号：将所有非终态任务设为 ABORTED。"""

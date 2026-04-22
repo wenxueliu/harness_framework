@@ -5,11 +5,10 @@ Aggregator 单元测试
 - activate_blocked_task: 依赖全部 DONE → 状态→PENDING
 - keep_blocked_when_deps_pending: 部分依赖未完成 → 保持 BLOCKED
 - activate_parallel_children: parallel 节点激活所有 children
-- retest_when_feedback_fixed: test FAILED + 所有 feedback FIXED → 重置为 PENDING
-- skip_retest_when_feedback_open: 有 feedback 未 FIXED → 不重置
-- skip_retest_exceed_limit: retry_count >= 3 → 不重置
 - abort_workflow: control=ABORT → 所有非终态任务→ABORTED
 - pause_workflow: control=PAUSE → 不推进任务
+
+注：重测逻辑由 Test Agent 通过 Message Bus 自行管理，不在 Aggregator 中处理。
 """
 from __future__ import annotations
 
@@ -102,80 +101,6 @@ class TestAggregator:
             for c in consul.kv_put.call_args_list
         )
         assert not backend_pending, "backend should stay BLOCKED"
-
-    def test_retest_when_feedback_fixed(self):
-        """test FAILED + 所有 feedback FIXED → 重置为 PENDING。"""
-        store = {
-            "workflows/req-001/published": "true",
-            "workflows/req-001/dependencies": json.dumps({
-                "test": {"type": "test", "depends_on": ["backend"]},
-            }),
-            "workflows/req-001/tasks/test/status": "FAILED",
-            "workflows/req-001/tasks/test/retry_count": "1",
-            "workflows/req-001/feedback/login/status": "FIXED",
-            "workflows/req-001/feedback/login/reason": "password hash fixed",
-        }
-        consul = _make_store(store)
-        agg = Aggregator(consul, poll_interval=1)
-
-        agg._process_requirement("req-001")
-
-        test_pending = any(
-            "test" in str(c) and c[0][1] == "PENDING"
-            for c in consul.kv_put.call_args_list
-        )
-        assert test_pending, "test should be reset to PENDING"
-
-        retry_count_2 = any(
-            "retry_count" in str(c) and c[0][1] == "2"
-            for c in consul.kv_put.call_args_list
-        )
-        assert retry_count_2, "retry_count should be 2"
-
-        assert consul.kv_delete.called, "feedback should be deleted"
-
-    def test_skip_retest_when_feedback_open(self):
-        """有 feedback 状态为 OPEN → 不应重置。"""
-        store = {
-            "workflows/req-001/published": "true",
-            "workflows/req-001/dependencies": json.dumps({
-                "test": {"type": "test", "depends_on": ["backend"]},
-            }),
-            "workflows/req-001/tasks/test/status": "FAILED",
-            "workflows/req-001/feedback/login/status": "OPEN",
-        }
-        consul = _make_store(store)
-        agg = Aggregator(consul, poll_interval=1)
-
-        agg._process_requirement("req-001")
-
-        test_pending = any(
-            "test" in str(c) and c[0][1] == "PENDING"
-            for c in consul.kv_put.call_args_list
-        )
-        assert not test_pending, "test should NOT be reset when feedback is OPEN"
-
-    def test_skip_retest_exceed_limit(self):
-        """retry_count >= 3 → 不应重置。"""
-        store = {
-            "workflows/req-001/published": "true",
-            "workflows/req-001/dependencies": json.dumps({
-                "test": {"type": "test", "depends_on": ["backend"]},
-            }),
-            "workflows/req-001/tasks/test/status": "FAILED",
-            "workflows/req-001/tasks/test/retry_count": "3",
-            "workflows/req-001/feedback/login/status": "FIXED",
-        }
-        consul = _make_store(store)
-        agg = Aggregator(consul, poll_interval=1)
-
-        agg._process_requirement("req-001")
-
-        test_pending = any(
-            "test" in str(c) and c[0][1] == "PENDING"
-            for c in consul.kv_put.call_args_list
-        )
-        assert not test_pending, "test should NOT be reset when retry_count >= 3"
 
     def test_abort_workflow(self):
         """control=ABORT → 所有非终态任务→ABORTED。"""
