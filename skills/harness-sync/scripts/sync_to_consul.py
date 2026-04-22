@@ -63,6 +63,11 @@ def main():
     parser.add_argument("deps_file", help="dependencies.json 文件路径")
     parser.add_argument("--title", default="", help="需求标题")
     parser.add_argument(
+        "--publish",
+        action="store_true",
+        help="直接发布（设置 published=true）。默认草稿模式，需显式发布后才激活 watchdog/aggregator",
+    )
+    parser.add_argument(
         "--consul",
         default=__import__("os").environ.get("CONSUL_ADDR", "127.0.0.1:8500"),
         help="Consul 地址 (默认: 127.0.0.1:8500)",
@@ -100,7 +105,11 @@ def main():
 
         consul.kv_put(f"{t_base}/created_at", _now_iso())
 
-    print(f"已同步 req_id={args.req_id}，{len(deps)} 个任务")
+    # 草稿模式 vs 发布模式
+    published_val = "true" if args.publish else "false"
+    consul.kv_put(f"{base}/published", published_val)
+
+    print(f"已同步 req_id={args.req_id}，{len(deps)} 个任务 (published={published_val})")
 
 
 if __name__ == "__main__":

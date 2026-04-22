@@ -16,6 +16,14 @@ Harness Framework is the **framework layer** of a multi-Agent software developme
 - **Platform engineers** building AI-augmented software delivery pipelines
 - **Organizations** adopting AI coding agents that need orchestration and coordination
 
+### Scenario
+
+Before: A tech lead manages a team of 10 developers. Every morning is a status meeting—asking each person "what did you finish yesterday?", "what's blocking you today?". Tracking progress is manual, error-prone, and exhausting.
+
+After: You open the dashboard. Every requirement is visible on a DAG graph: which tasks are done, which are running, which are blocked. An agent just crashed on the "payment service" task, but the framework has already rolled it back and reassigned it. Test failed on "user service"? No problem—the framework waits for the fix, then automatically re-runs the test. You intervene only when you need to.
+
+**What used to be a daily status meeting is now a glance at a screen.**
+
 ### What problem does it solve?
 
 When multiple AI agents collaborate on software development tasks, challenges emerge:
@@ -250,6 +258,14 @@ Harness Framework 是一个多 Agent 软件开发平台的**框架层**实现，
 - 正在运行多 Agent 开发工作流的工程团队
 - 构建 AI 增强软件交付流水线的平台工程师
 - 引入 AI 编程 Agent 并需要编排协调能力的组织
+
+### 场景
+
+以前：技术 leader 带 10 个开发做需求，每天早上开站会——问每个人"昨天完成了什么？""今天有什么阻塞？"进度靠嘴问，状态靠脑记，身心俱疲。
+
+现在：打开看板，每个需求的状态一目了然。DAG 图上，done / running / blocked 清晰可见。payment service 的 Agent 刚崩溃了？别慌，框架已经自动回滚并重新分配。"user service" 测试失败了？没关系，等修复完自动重测。
+
+**以前靠开会追进度，现在靠看屏。**
 
 ### 解决了什么问题？
 

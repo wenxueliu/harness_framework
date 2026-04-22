@@ -64,6 +64,11 @@ class Aggregator:
                 log.exception("process %s failed: %s", req_id, e)
 
     def _process_requirement(self, req_id: str) -> None:
+        # 检查是否已发布
+        pub_val, _ = self.consul.kv_get(f"workflows/{req_id}/published")
+        if pub_val != "true":
+            return  # 草稿模式，跳过
+
         # 控制信号
         ctl, _ = self.consul.kv_get(f"workflows/{req_id}/control")
         if ctl == "PAUSE":

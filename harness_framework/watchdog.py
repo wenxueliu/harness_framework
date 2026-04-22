@@ -54,16 +54,26 @@ class Watchdog:
         if not items:
             return
 
-        # 按 (req_id, task_name) 聚合
+        # 按 (req_id, task_name) 聚合，收集每个 req_id 的 published 状态
         tasks: dict = {}
+        published_reqs: set = set()
         for it in items:
             parts = it["Key"].split("/")
-            if len(parts) < 5 or parts[2] != "tasks":
-                continue
-            key = (parts[1], parts[3])
-            tasks.setdefault(key, {})[parts[4]] = it.get("_decoded", "")
+            if len(parts) >= 2 and parts[0] == "workflows":
+                req_id = parts[1]
+                if len(parts) == 2 and parts[1] == "published":
+                    # workflows/<req_id>/published
+                    continue
+            if len(parts) >= 5 and parts[2] == "tasks":
+                key = (parts[1], parts[3])
+                tasks.setdefault(key, {})[parts[4]] = it.get("_decoded", "")
+            elif len(parts) == 3 and parts[2] == "published":
+                if it.get("_decoded", "") == "true":
+                    published_reqs.add(parts[1])
 
         for (req_id, task_name), meta in tasks.items():
+            if req_id not in published_reqs:
+                continue  # 草稿模式，跳过
             if meta.get("status") != "IN_PROGRESS":
                 continue
 

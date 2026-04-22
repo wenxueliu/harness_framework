@@ -20,12 +20,13 @@ harness_framework/
 ├── aggregator.py      # 监听 DAG 状态变更，依赖满足时激活下游任务
 ├── watchdog.py        # 检测 IN_PROGRESS 任务的 Agent 存活和超时，自动恢复
 ├── webapi.py          # HTTP API 为业务看板提供聚合查询与控制信号写入
+├── message_bus.py     # 任务间消息通信（发送、轮询、完成）
 └── consul_client.py   # Consul HTTP 客户端（仅标准库，无外部依赖）
 ```
 
 **三大组件：**
-- **Aggregator**：轮询 `workflows/<req_id>/tasks/*/status`，当依赖全部 DONE 时将下游任务设为 PENDING；当 test 任务 FAILED 且所有 feedback FIXED 时触发重测。
-- **Watchdog**：轮询 Consul Health 检测 Agent 是否存活，检测任务超时（默认 1h），超时或 Agent 死亡时将任务回滚为 PENDING（最多 5 次重试，超过则 FAILED）。
+- **Aggregator**：仅处理 `published=true` 的 workflow，轮询任务状态，当依赖全部 DONE 时将下游任务设为 PENDING；当 test 任务 FAILED 且所有 feedback FIXED 时触发重测。
+- **Watchdog**：仅处理 `published=true` 的 workflow，轮询 Consul Health 检测 Agent 是否存活，检测任务超时（默认 1h），超时或 Agent 死亡时将任务回滚为 PENDING（最多 5 次重试，超过则 FAILED）。
 - **WebAPI**：基于标准库 `http.server` 的 ThreadingHTTPServer，提供 `/api/workflows`、`/api/workflow/<req_id>`、`/api/agents` 等端点。
 
 ## 使用步骤
@@ -51,9 +52,10 @@ harness_framework/
 
 ```
 workflows/<req_id>/
-├── title                    # 需求标题
-├── priority                 # 整数优先级，越大越优先，默认 0
-├── control                  # 控制信号：PAUSE | RESUME | ABORT
+├── published               # true | false（草稿模式，默认 false），仅发布后 watchdog/aggregator 才会处理
+├── title                   # 需求标题
+├── priority                # 整数优先级，越大越优先，默认 0
+├── control                 # 控制信号：PAUSE | RESUME | ABORT
 ├── dependencies            # JSON，任务依赖拓扑
 ├── created_at
 ├── tasks/<task_name>/
@@ -78,6 +80,10 @@ workflows/<req_id>/
 **Aggregator 重测逻辑**：test 任务 FAILED → 检查所有 feedback.status == FIXED → 清除 feedback → 重置任务为 PENDING → retry_count++（Aggregator 上限 3 次）
 
 **Watchdog 恢复逻辑**：Agent 死亡或任务超时 → retry_count++ → retry_count >= 5 则 FAILED，否则回滚为 PENDING（Watchdog 上限 5 次）
+
+## 任务间消息通信
+
+详见 [docs/message-bus.md](docs/message-bus.md)。
 
 ## 常用命令
 
@@ -109,6 +115,102 @@ python -m harness_framework.daemon --log-level DEBUG
 - 仅使用 Python 标准库
 - 类型注解使用 `from __future__ import annotations`
 - 日志格式：`%(asctime)s [%(name)s] %(levelname)s %(message)s`
+
+## 测试
+
+### 测试文件结构
+
+```
+tests/
+├── __init__.py
+├── conftest.py              # 公共 fixtures（MockConsulStore, mock_consul）
+├── test_consul_client.py    # ConsulClient 单元测试
+├── test_aggregator.py       # Aggregator 单元测试
+├── test_watchdog.py         # Watchdog 单元测试
+├── test_webapi.py           # WebAPI 单元测试
+└── test_message_bus.py      # MessageBus 单元测试
+```
+
+### 运行测试
+
+```bash
+# 运行所有测试
+python -m pytest tests/ -v
+
+# 运行指定模块
+python -m pytest tests/test_aggregator.py -v
+
+# 带覆盖率
+python -m pytest tests/ --cov=harness_framework
+```
+
+### 测试数据构造
+
+**MockConsulStore**：内存 KV 模拟，接受初始字典 `{"key": "value"}`。
+通过 `conftest.py` 中的 `mock_consul` fixture 注入到各模块。
+
+**Aggregator 测试数据示例**：
+
+```python
+store = {
+    "workflows/req-001/dependencies": json.dumps({
+        "design": {"type": "design", "depends_on": []},
+        "backend": {"type": "backend", "depends_on": ["design"]},
+        "test": {"type": "test", "depends_on": ["backend"]},
+    }),
+    "workflows/req-001/tasks/design/status": "DONE",
+    "workflows/req-001/tasks/backend/status": "BLOCKED",
+    "workflows/req-001/tasks/test/status": "BLOCKED",
+}
+```
+
+**Watchdog 测试数据示例**：
+
+```python
+# Agent 死亡场景
+alive_agents = {"agent-001"}
+task = {
+    "status": "IN_PROGRESS",
+    "assigned_agent": "agent-002",  # 不在 alive list
+    "started_at": "2025-04-22T10:00:00",
+    "retry_count": "1",
+}
+
+# 超时场景（started_at 3小时前）
+old_time = (datetime.utcnow() - timedelta(hours=3)).isoformat() + "Z"
+task = {
+    "status": "IN_PROGRESS",
+    "assigned_agent": "agent-001",
+    "started_at": old_time,
+    "retry_count": "0",
+}
+```
+
+**WebAPI 测试数据示例**：
+
+```python
+# GET /api/workflows
+store = {
+    "workflows/req-001/title": "登录功能",
+    "workflows/req-001/tasks/design/status": "DONE",
+    "workflows/req-001/tasks/backend/status": "IN_PROGRESS",
+    "workflows/req-002/tasks/design/status": "DONE",
+    "workflows/req-002/tasks/backend/status": "DONE",
+}
+# 预期: req-001 phase=RUNNING progress=50.0
+#       req-002 phase=DONE progress=100.0
+
+# POST /api/workflow/req-001/control
+{"action": "PAUSE"}     # → kv_put("workflows/req-001/control", "PAUSE")
+{"action": "RESUME"}   # → kv_delete("workflows/req-001/control")
+{"action": "RETRY", "task_name": "backend"}  # → backend 重置为 PENDING
+{"action": "INVALID"}  # → 400
+```
+
+### 测试策略
+
+- **UT**：mock ConsulClient，用 `MockConsulStore` 模拟 KV 读写，验证状态流转逻辑
+- **E2E**：启动真实 Consul + daemon，构造 workflow 后验证 Consul KV 状态变更
 
 # Superpowers + gstack 搭配配置
 

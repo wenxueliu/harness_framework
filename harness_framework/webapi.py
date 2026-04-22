@@ -18,12 +18,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
 from .consul_client import ConsulClient
+from .message_bus import MessageBus, MessageStatus
 
 log = logging.getLogger("webapi")
 
 
 class APIHandler(BaseHTTPRequestHandler):
     consul: ConsulClient = None  # 由 server 实例注入
+    message_bus: MessageBus = None  # 由 server 实例注入
 
     def log_message(self, format, *args):
         log.info("%s - %s", self.address_string(), format % args)
@@ -49,7 +51,15 @@ class APIHandler(BaseHTTPRequestHandler):
             if path == "/api/workflows":
                 return self._list_workflows()
             if path.startswith("/api/workflow/"):
-                req_id = path.split("/")[-1]
+                parts = path.split("/")
+                if "/messages/" in path:
+                    if len(parts) >= 6 and "messages" in parts:
+                        msg_idx = parts.index("messages")
+                        if len(parts) > msg_idx + 1:
+                            req_id = parts[msg_idx - 1]
+                            task_name = parts[msg_idx + 1]
+                            return self._get_messages(req_id, task_name)
+                req_id = parts[-1]
                 return self._get_workflow(req_id)
             if path.startswith("/api/sessions/"):
                 # /api/sessions/<req_id>/<task>
@@ -78,6 +88,9 @@ class APIHandler(BaseHTTPRequestHandler):
             if path.startswith("/api/workflow/") and path.endswith("/control"):
                 req_id = path.split("/")[-2]
                 return self._control(req_id, body)
+            if path.startswith("/api/workflow/") and path.endswith("/messages"):
+                req_id = path.split("/")[-2]
+                return self._send_message(req_id, body)
             self._send_json(404, {"error": "not found"})
         except Exception as e:
             log.exception("POST %s failed", self.path)
@@ -224,9 +237,36 @@ class APIHandler(BaseHTTPRequestHandler):
 
         self._send_json(200, {"ok": True, "action": action, "req_id": req_id})
 
+    def _get_messages(self, req_id: str, task_name: str):
+        """获取指定任务队列中的消息"""
+        status_str = parse_qs(urlparse(self.path).query).get("status", [None])[0]
+        status = MessageStatus(status_str) if status_str else None
+
+        messages = self.message_bus.poll(req_id, task_name, status=status)
+        self._send_json(200, {
+            "req_id": req_id,
+            "task": task_name,
+            "messages": [m.to_dict() for m in messages],
+        })
+
+    def _send_message(self, req_id: str, body: dict):
+        """发送消息到目标任务队列"""
+        from_task = body.get("from")
+        to_task = body.get("to")
+        action = body.get("action")
+        params = body.get("params", {})
+        timeout = body.get("timeout", 300)
+
+        if not all([from_task, to_task, action]):
+            return self._send_json(400, {"error": "from, to, action are required"})
+
+        msg = self.message_bus.send(req_id, from_task, to_task, action, params, timeout)
+        self._send_json(200, {"ok": True, "msg_id": msg.msg_id, "message": msg.to_dict()})
+
 
 def serve(consul: ConsulClient, host: str = "0.0.0.0", port: int = 8080) -> ThreadingHTTPServer:
     APIHandler.consul = consul
+    APIHandler.message_bus = MessageBus(consul)
     server = ThreadingHTTPServer((host, port), APIHandler)
     log.info("WebAPI serving on http://%s:%d/", host, port)
     return server
