@@ -114,33 +114,43 @@ python scripts/fail_task.py req-001 build-backend \
   --retry-hint retry
 ```
 
-## 测试 Agent 反馈流程
+## 测试失败与重测流程
+
+测试 Agent 发现失败后，通过 Message Bus 通知相关服务修复，收到修复完成后自动重测。
 
 ```bash
+# === Test Agent ===
+
 # 抢占测试任务
 python scripts/claim_task.py req-001 test-e2e
 
-# 测试失败，归因到具体服务
-python scripts/feedback_write.py req-001 user-service \
-  --error "登录接口返回 500" \
-  --severity high
+# 测试失败，发送 FIX 消息给相关服务
+python scripts/message_send.py req-001 build-user-service fix \
+  --params '{"error": "登录接口返回 500", "severity": "high"}'
 
 # 标记任务失败
 python scripts/fail_task.py req-001 test-e2e \
-  --error "2 个服务失败: user-service, order-service"
+  --error "user-service 登录接口返回 500"
+
+# 等待修复完成后重测（Test Agent 自己管理，最多 3 次）
 ```
 
-服务 Agent 接收反馈：
+服务 Agent 接收修复请求：
 
 ```bash
-# 监听反馈（阻塞）
-python scripts/feedback_listen.py req-001 user-service --timeout 600
+# 轮询消息队列，监听 FIX 请求
+python scripts/message_poll.py req-001 --task build-user-service --status PENDING
 
-# 完成修复
-python scripts/feedback_resolve.py req-001 user-service \
-  --summary "修复了 NPE 异常" \
-  --commit "$(git rev-parse HEAD)"
+# 完成修复后，写入结果
+python scripts/message_complete.py req-001 <msg_id> \
+  --task build-user-service \
+  --result '{"fixed": true, "commit": "abc123", "summary": "修复了 NPE 异常"}'
 ```
+
+重测逻辑由 Test Agent 自己管理：
+- 测试失败 → 发送 FIX 消息 → 轮询等待所有 FIX 完成 → 重测
+- 重测成功 → `DONE`；失败则重试（≤3 次）
+- 3 次仍失败 → `FAILED`
 
 ## 动态任务提案（Proposal）
 
