@@ -43,6 +43,46 @@ Harness Framework solves these by providing:
 
 **异构多 Agent 编排引擎——声明式定义工作流，可视化追踪执行，端到端韧性交付**
 
+### Heterogeneous Agent Composition: Maximizing Delivery Quality
+
+Different phases of software development require different AI model capabilities:
+
+| Phase | Recommended Model | Strength |
+|-------|-----------------|---------|
+| Design & Planning | Claude | Deep reasoning, systematic analysis, architecture design |
+| Design Review | Claude + Gemini + MiniMax | Multi-perspective cross-validation, covering different blind spots |
+| UI Design | Gemini | Visual generation, multimodal understanding, design fidelity |
+| Requirement Development | MiniMax | Fast implementation, code completion, large-scale coding |
+| Bug Fixing | Codex | Precise localization, fast fix, context awareness |
+
+**Core project goal**: Use a unified orchestration framework to combine AI models with different capabilities and costs, achieving "the right work goes to the right model" — maximizing delivery quality while minimizing cost.
+
+```
+                    ┌─────────────────────────────────────────┐
+                    │           Harness Framework               │
+                    │  DAG Orchestration · State Mgmt · Recovery │
+                    └─────────────────────────────────────────┘
+                                          │
+          ┌──────────────────────────────┼──────────────────────────────┐
+          ↓                              ↓                              ↓
+   ┌─────────────┐              ┌─────────────┐              ┌─────────────┐
+   │ Claude      │              │ MiniMax     │              │ Gemini     │
+   │ Planning    │              │ Dev         │              │ UI Design  │
+   └─────────────┘              └─────────────┘              └─────────────┘
+          │                              │                              │
+          └──────────────────────────────┼──────────────────────────────┘
+                                         ↓
+                              ┌─────────────────────┐
+                              │  Codex              │
+                              │  Bug Fixing         │
+                              └─────────────────────┘
+```
+
+**The framework handles "what to coordinate", Agents handle "how to execute".**
+
+- Framework guarantees: correct dependency order, automatic fault recovery, auto-retry on test failures, human intervention anytime
+- Agent guarantees: code quality, implementation details, actual deliverables
+
 ### Architecture
 
 ```
@@ -285,6 +325,46 @@ Harness Framework 提供以下能力：
 ### 核心价值
 
 **异构多 Agent 编排引擎——声明式定义工作流，可视化追踪执行，端到端韧性交付**
+
+### 异构 Agent 组合：需求交付质量最大化
+
+不同阶段的软件开发任务，需要不同能力的 AI 模型：
+
+| 阶段 | 推荐模型 | 优势 |
+|------|---------|------|
+| 方案设计 | Claude | 深度思考、系统性分析、架构设计 |
+| 方案评审 | Claude + Gemini + MiniMax | 多视角交叉验证，覆盖不同思维盲区 |
+| UI 设计 | Gemini | 视觉生成、多模态理解、设计稿还原 |
+| 需求开发 | MiniMax | 快速实现、代码补全、大规模编码 |
+| Bug 修复 | Codex | 精准定位、快速修复、上下文理解 |
+
+**框架的核心出发点**：用一套统一的调度框架，将这些能力各异、成本不同的 AI 模型组合到一起，实现"合适的工作交给合适的模型"，最大化交付质量、最小化交付成本。
+
+```
+                    ┌─────────────────────────────────────────┐
+                    │           Harness Framework               │
+                    │  DAG 编排 · 状态管理 · 自动恢复 · 质量门禁  │
+                    └─────────────────────────────────────────┘
+                                          │
+          ┌──────────────────────────────┼──────────────────────────────┐
+          ↓                              ↓                              ↓
+   ┌─────────────┐              ┌─────────────┐              ┌─────────────┐
+   │ Claude      │              │ MiniMax     │              │ Gemini     │
+   │ 方案设计    │              │ 需求开发    │              │ UI 设计    │
+   └─────────────┘              └─────────────┘              └─────────────┘
+          │                              │                              │
+          └──────────────────────────────┼──────────────────────────────┘
+                                         ↓
+                              ┌─────────────────────┐
+                              │  Codex              │
+                              │  Bug 修复           │
+                              └─────────────────────┘
+```
+
+**框架负责"协调什么"（what），Agent 负责"如何执行"（how）**。
+
+- 框架保证：依赖顺序正确、故障自动恢复、测试失败自动重测、人工可随时干预
+- Agent 保证：代码质量、实现细节、实际产出
 
 ### 架构
 
