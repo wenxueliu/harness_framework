@@ -463,6 +463,72 @@ curl -s -X PUT "http://$CONSUL_ADDR/v1/kv/workflows/$REQ_ID/feedback/user-servic
 
 框架的 Aggregator 会自动检测：当所有 service 的反馈状态都是 FIXED 时，会清除反馈并将测试任务重置为 PENDING，触发重新测试。
 
+## Worker 持久化循环（推荐）
+
+让 Claude Code CLI 作为常驻 Worker，自动循环: 注册 → 心跳 → 抢任务 → 执行 → 完成 → 继续。
+
+```bash
+# 持久化循环模式（推荐）
+AGENT_ID=worker-user-service-01 python3 skills/stage-bridge/scripts/worker.py \
+  --service user-service \
+  --capabilities dev \
+  --repo-path /path/to/user-service \
+  --executor "python3 skills/stage-bridge/scripts/executor_placeholder.py"
+
+# 单次模式（抢一个任务执行后退出）
+AGENT_ID=worker-user-service-01 python3 skills/stage-bridge/scripts/worker.py \
+  --service user-service \
+  --capabilities dev \
+  --repo-path . \
+  --once
+```
+
+### Worker 约束
+
+- **同一需求串行化**: 正在执行 req-A 的任务时，不会抢 req-A 的其他任务（允许穿插其他需求的任务）
+- **服务匹配**: 优先抢 `service_name` 匹配的任务
+- **能力匹配**: 优先抢 `capability` 匹配的任务类型
+- **ABORT 检测**: 执行前检查控制信号，收到 ABORT 则标记失败
+- **心跳维持**: 后台线程每 10 秒上报 TTL
+
+### Executor 协议
+
+Worker 通过 stdin 向 `--executor` 传入 JSON，期望 stdout 返回 JSON:
+
+```json
+// stdin (worker → executor)
+{
+  "req_id": "REQ-001",
+  "task_name": "task-slug",
+  "task_meta": {
+    "type": "backend",
+    "service_name": "user-service",
+    "description": "实现用户注册API",
+    "capability": "dev",
+    "metadata": {
+      "test_bindings": {"ut_cases": ["UT-1"], "api_cases": ["API-1"]},
+      "review_requirements": [{"reviewer": "security"}]
+    }
+  },
+  "context": {
+    "api_spec_url": "https://..."
+  },
+  "config": {
+    "agent_id": "worker-01",
+    "service_name": "user-service",
+    "repo_path": "/path/to/repo",
+    "worktree_base": ".worktree"
+  }
+}
+
+// stdout (executor → worker)
+{
+  "status": "DONE",
+  "summary": "...",
+  "artifacts": {"branch": "hw-task-001", "pr_url": "https://..."}
+}
+```
+
 ## 重要约束
 
 - 任务一旦被抢占成功，必须以 **DONE** 或 **FAILED** 收尾，否则 Watchdog 会在超时后判定为僵尸任务并自动重试。
