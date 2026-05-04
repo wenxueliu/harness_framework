@@ -1,5 +1,8 @@
 # CLAUDE.md
 
+> This file delegates to the canonical `AGENTS.md` for comprehensive project guidelines.
+> @AGENTS.md
+
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## 工作原则

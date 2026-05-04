@@ -1,0 +1,40 @@
+{
+  "name": "harness-framework",
+  "version": "1.0.0",
+  "description": "Multi-agent workflow orchestration engine: Consul KV-based DAG scheduling, zombie task recovery, inter-agent message bus, and WebAPI dashboard. Zero external dependencies.",
+  "author": {
+    "name": "Harness Engineering",
+    "url": "https://github.com/wenxueliu/harness"
+  },
+  "homepage": "https://github.com/wenxueliu/harness",
+  "repository": "https://github.com/wenxueliu/harness",
+  "license": "MIT",
+  "keywords": [
+    "workflow",
+    "orchestration",
+    "dag",
+    "consul",
+    "multi-agent",
+    "task-scheduler"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Harness Framework Engine",
+    "shortDescription": "Multi-agent workflow engine with DAG scheduling and Consul KV state management",
+    "longDescription": "Harness Framework is the core orchestration engine for multi-agent development. It provides DAG-based task dependency scheduling, zombie task recovery via watchdog, inter-agent messaging, and a WebAPI dashboard for monitoring and control. Zero external Python dependencies — stdlib only.",
+    "developerName": "Harness Engineering",
+    "category": "Workflow",
+    "capabilities": [
+      "Read",
+      "Write",
+      "Bash"
+    ],
+    "defaultPrompt": [
+      "Start the Harness framework and initialize a workflow.",
+      "Set up a multi-agent development pipeline for this project.",
+      "Monitor the current workflow status across all agents."
+    ],
+    "brandColor": "#6366F1",
+    "screenshots": []
+  }
+}
