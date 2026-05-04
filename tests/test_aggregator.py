@@ -205,3 +205,89 @@ class TestAggregator:
         agg._tick()
 
         assert consul.kv_put.called
+
+    def test_non_blocking_dep(self):
+        """blocking=false 依赖：即使上游未 DONE，任务也应激活为 PENDING。"""
+        store = {
+            "workflows/req-001/published": "true",
+            "workflows/req-001/dependencies": json.dumps({
+                "design": {"type": "design", "depends_on": []},
+                "backend": {
+                    "type": "backend",
+                    "depends_on": ["design"],
+                    "blocking": False,
+                },
+            }),
+            "workflows/req-001/tasks/design/status": "BLOCKED",
+            "workflows/req-001/tasks/backend/status": "BLOCKED",
+        }
+        consul = _make_store(store)
+        agg = Aggregator(consul, poll_interval=1)
+
+        agg._process_requirement("req-001")
+
+        backend_pending = any(
+            "backend" in str(c) and c[0][1] == "PENDING"
+            for c in consul.kv_put.call_args_list
+        )
+        assert backend_pending, (
+            "backend should activate to PENDING even though design is BLOCKED "
+            "(blocking=false)"
+        )
+
+    def test_non_blocking_per_dep(self):
+        """per-dependency blocking: depends_on 使用 [{"task": "x", "blocking": false}] 格式。"""
+        store = {
+            "workflows/req-001/published": "true",
+            "workflows/req-001/dependencies": json.dumps({
+                "design": {"type": "design", "depends_on": []},
+                "review": {"type": "review", "depends_on": []},
+                "backend": {
+                    "type": "backend",
+                    "depends_on": [
+                        {"task": "design", "blocking": False},
+                        "review",
+                    ],
+                },
+            }),
+            "workflows/req-001/tasks/design/status": "BLOCKED",
+            "workflows/req-001/tasks/review/status": "DONE",
+            "workflows/req-001/tasks/backend/status": "BLOCKED",
+        }
+        consul = _make_store(store)
+        agg = Aggregator(consul, poll_interval=1)
+
+        agg._process_requirement("req-001")
+
+        backend_pending = any(
+            "backend" in str(c) and c[0][1] == "PENDING"
+            for c in consul.kv_put.call_args_list
+        )
+        assert backend_pending, (
+            "backend should activate: design is non-blocking (not needed), "
+            "review is DONE"
+        )
+
+    def test_blocking_default_true(self):
+        """未设置 blocking 字段时，默认为 true（向后兼容）。"""
+        store = {
+            "workflows/req-001/published": "true",
+            "workflows/req-001/dependencies": json.dumps({
+                "design": {"type": "design", "depends_on": []},
+                "backend": {"type": "backend", "depends_on": ["design"]},
+            }),
+            "workflows/req-001/tasks/design/status": "BLOCKED",
+            "workflows/req-001/tasks/backend/status": "BLOCKED",
+        }
+        consul = _make_store(store)
+        agg = Aggregator(consul, poll_interval=1)
+
+        agg._process_requirement("req-001")
+
+        backend_pending = any(
+            "backend" in str(c) and c[0][1] == "PENDING"
+            for c in consul.kv_put.call_args_list
+        )
+        assert not backend_pending, (
+            "backend should NOT activate when blocking dep (design) is not DONE"
+        )

@@ -123,8 +123,28 @@ class Aggregator:
             return
 
         upstream = info.get("depends_on", [])
-        if not all(tasks_meta.get(u, {}).get("status") == "DONE" for u in upstream):
-            # 依赖未全部完成，标记 BLOCKED
+        # 区分 blocking 和 non-blocking 依赖
+        # blocking 默认 true（向后兼容）。若为 false，所有依赖均不阻塞。
+        # 也支持 per-dependency 格式: depends_on 数组元素为 {"task": "x", "blocking": false}
+        blocking_deps = []
+        non_blocking_deps = []
+        all_non_blocking = not info.get("blocking", True)
+
+        for u in upstream:
+            if isinstance(u, dict):
+                task_name_u = u.get("task", "")
+                if u.get("blocking", True) and not all_non_blocking:
+                    blocking_deps.append(task_name_u)
+                else:
+                    non_blocking_deps.append(task_name_u)
+            else:
+                if all_non_blocking:
+                    non_blocking_deps.append(u)
+                else:
+                    blocking_deps.append(u)
+
+        if not all(tasks_meta.get(u, {}).get("status") == "DONE" for u in blocking_deps):
+            # 有阻塞依赖未完成，标记 BLOCKED
             if cur_status == "":
                 self.consul.kv_put(f"workflows/{req_id}/tasks/{task_name}/status", "BLOCKED")
             return

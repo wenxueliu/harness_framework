@@ -2,6 +2,10 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## 工作原则
+
+- **尽量使用 subagent**: 执行复杂的、多步骤的、需要跨文件搜索或分析的任务时，优先通过 Agent 工具启动 subagent 来并行处理，减少主上下文窗口的消耗。
+
 ## 概述
 
 `harness-framework` 是多 Agent 协作的**核心引擎**，解决分布式 Agent 之间的流程控制、状态管理与反馈闭环问题。核心能力：
