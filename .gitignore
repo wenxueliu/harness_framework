@@ -114,3 +114,4 @@ client/public/__manus__/version.json
 
 **/__pycache__/
 consul_server
+_bmad-output/

@@ -1,0 +1,199 @@
+# E2E 自动化测试 CI Workflow
+#
+# 参考 gstack 的 diff-aware 测试选择 + AutoCLI 的 CI/CD 集成模式
+# 仅在 agent_dashboard/ 目录或 E2E 测试文件变更时触发
+
+name: E2E Tests
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - "agent_dashboard/**"
+      - "tests/e2e/**"
+      - "tests/ui/**"
+  pull_request:
+    branches: [main, master]
+    paths:
+      - "agent_dashboard/**"
+      - "tests/e2e/**"
+      - "tests/ui/**"
+
+jobs:
+  e2e-functional:
+    name: Functional E2E Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Python dependencies
+        run: pip install playwright pytest pytest-xdist
+
+      - name: Install Playwright Chromium
+        run: playwright install chromium --with-deps
+
+      - name: Install Dashboard dependencies
+        run: npm ci
+        working-directory: agent_dashboard
+
+      - name: Build Dashboard
+        run: npm run build
+        working-directory: agent_dashboard
+
+      - name: Start Dashboard preview
+        run: npm run preview -- --port 3000 &
+        working-directory: agent_dashboard
+
+      - name: Wait for Dashboard
+        run: |
+          for i in $(seq 1 30); do
+            curl -s http://localhost:3000 && break
+            sleep 2
+          done
+
+      - name: Run Dashboard Functional Tests
+        run: |
+          python -m pytest tests/e2e/test_dashboard.py -v \
+            --junitxml=tests/e2e/reports/functional-junit.xml \
+            || true
+
+      - name: Run Smoke Tests
+        run: |
+          python -m pytest tests/e2e/test_dashboard.py -v -m smoke \
+            --junitxml=tests/e2e/reports/smoke-junit.xml \
+            || true
+
+      - name: Upload Screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-screenshots-functional
+          path: tests/e2e/reports/
+          retention-days: 7
+
+      - name: Upload Test Reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-reports-functional
+          path: tests/e2e/reports/*.xml
+          retention-days: 7
+
+  e2e-visual:
+    name: Visual Regression Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Python dependencies
+        run: pip install playwright pytest
+
+      - name: Install Playwright Chromium
+        run: playwright install chromium --with-deps
+
+      - name: Install Dashboard dependencies
+        run: npm ci
+        working-directory: agent_dashboard
+
+      - name: Build Dashboard
+        run: npm run build
+        working-directory: agent_dashboard
+
+      - name: Start Dashboard preview
+        run: npm run preview -- --port 3000 &
+        working-directory: agent_dashboard
+
+      - name: Wait for Dashboard
+        run: |
+          for i in $(seq 1 30); do
+            curl -s http://localhost:3000 && break
+            sleep 2
+          done
+
+      - name: Run Visual Regression Tests
+        run: |
+          python -m pytest tests/e2e/test_visual.py -v -m visual \
+            --junitxml=tests/e2e/reports/visual-junit.xml \
+            || true
+
+      - name: Upload Visual Diff Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-visual-diffs
+          path: |
+            tests/e2e/reports/
+            tests/e2e/baselines/screenshots/
+          retention-days: 30
+
+  e2e-a11y:
+    name: Accessibility Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Python dependencies
+        run: pip install playwright pytest
+
+      - name: Install Playwright Chromium
+        run: playwright install chromium --with-deps
+
+      - name: Install Dashboard dependencies
+        run: npm ci
+        working-directory: agent_dashboard
+
+      - name: Build Dashboard
+        run: npm run build
+        working-directory: agent_dashboard
+
+      - name: Start Dashboard preview
+        run: npm run preview -- --port 3000 &
+        working-directory: agent_dashboard
+
+      - name: Wait for Dashboard
+        run: |
+          for i in $(seq 1 30); do
+            curl -s http://localhost:3000 && break
+            sleep 2
+          done
+
+      - name: Run Accessibility Tests
+        run: |
+          python -m pytest tests/e2e/test_a11y.py -v -m a11y \
+            --junitxml=tests/e2e/reports/a11y-junit.xml \
+            || true
+
+      - name: Upload A11y Reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-a11y-reports
+          path: tests/e2e/reports/
+          retention-days: 7
