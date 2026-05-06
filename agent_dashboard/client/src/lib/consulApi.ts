@@ -10,10 +10,13 @@
  * Consul dev mode 已通过 start_consul_dev.sh 配置 CORS，浏览器可直连。
  */
 
-import type { Task, TaskStatus, Workflow, WorkflowPhase } from "./mockData";
+import type { Task, TaskStatus, Workflow, WorkflowPhase, TaskSessionEvents } from "./mockData";
 
 const CONSUL_BASE =
   (import.meta.env.VITE_CONSUL_URL as string) || "http://127.0.0.1:8500";
+
+const HARNESS_API =
+  (import.meta.env.VITE_HARNESS_API as string) || "http://127.0.0.1:8080";
 
 interface ConsulKVItem {
   Key: string;
@@ -236,4 +239,23 @@ export async function pingConsul(): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/**
+ * 获取指定任务的 Session 执行历史事件。
+ * 调用 Harness WebAPI: GET /api/sessions/{req_id}/{task_name}
+ */
+export async function fetchTaskSessionEvents(
+  reqId: string,
+  taskName: string
+): Promise<TaskSessionEvents> {
+  const url = `${HARNESS_API}/api/sessions/${encodeURIComponent(reqId)}/${encodeURIComponent(taskName)}`;
+  const resp = await fetch(url);
+  if (resp.status === 404) {
+    return { req_id: reqId, task: taskName, events: [], sessions: [] };
+  }
+  if (!resp.ok) {
+    throw new Error(`Sessions API failed: ${resp.status}`);
+  }
+  return resp.json();
 }

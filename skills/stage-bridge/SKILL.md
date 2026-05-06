@@ -43,9 +43,12 @@ workflows/<req_id>/
 | 列出任务 | `claim_next_task.sh --list-only` | 仅查看所有 PENDING 任务 |
 | 读上下文 | `read_context.sh <req_id> [<key>]` | 抢占成功后读取上游产物 |
 | 记录日志 | `log_step.sh <req_id> "<message>"` | 任意关键步骤完成后 |
+| 启动 Session | `record_session_start.sh <req_id> <task_name> <session_id>` | 任务执行前启动会话 |
+| 关闭 Session | `record_session_end.sh <req_id> <task_name> <session_id>` | 任务完成后关闭会话 |
+| 原生日志转换 | `native_log_to_sessions.sh <req_id> <task_name> <session_id> <log_file>` | 将 Agent 原生日志导入 Session |
 | 写产物 | `write_artifact.sh <req_id> <key> <value>` | 产生需向下游传递的数据 |
-| 完成 | `complete_task.sh <req_id> <task_name>` | 任务成功完成 |
-| 失败 | `fail_task.sh <req_id> <task_name> --error "..."` | 不可恢复错误 |
+| 完成 | `complete_task.sh <req_id> <task_name>` | 任务成功完成（支持 --session-id） |
+| 失败 | `fail_task.sh <req_id> <task_name> --error "..."` | 不可恢复错误（支持 --session-id） |
 | ABORT 检查 | `check_control.sh <req_id>` | LLM 调用前后 / verify 每轮 / feedback 唤醒时必检，收到 ABORT 立即退出 |
 | 写反馈 | `feedback_write.sh <req_id> <service> --error "..."` | 测试 Agent 专用 |
 | 听反馈 | `feedback_listen.sh <req_id> <service>` | 服务 Agent 专用：监听修复请求 |

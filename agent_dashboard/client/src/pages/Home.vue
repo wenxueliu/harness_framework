@@ -531,7 +531,7 @@ function selectWorkflow(id: string) {
 
               <!-- Desktop right task detail -->
               <div v-if="selectedTask" class="hidden md:flex w-64 flex-shrink-0 overflow-hidden border-l border-border">
-                <TaskDrawer :task="selectedTask" @close="selectedTask = null" />
+                <TaskDrawer :task="selectedTask" :req-id="selectedId ?? undefined" @close="selectedTask = null" />
               </div>
             </div>
           </div>
@@ -589,7 +589,7 @@ function selectWorkflow(id: string) {
           <div class="w-10 h-1 rounded-full bg-border" />
         </div>
         <div class="overflow-y-auto" :style="{ maxHeight: 'calc(75vh - 32px)' }">
-          <TaskDrawer :task="selectedTask" @close="taskDrawerOpen = false" />
+          <TaskDrawer :task="selectedTask" :req-id="selectedId ?? undefined" @close="taskDrawerOpen = false" />
         </div>
       </div>
     </Teleport>

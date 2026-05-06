@@ -1,6 +1,9 @@
 <script setup lang="ts">
-import type { Task } from '@/lib/mockData'
+import { ref, watch } from 'vue'
+import type { Task, SessionEvent } from '@/lib/mockData'
+import { fetchTaskSessionEvents } from '@/lib/consulApi'
 import StatusBadge from './StatusBadge.vue'
+import ExecutionTimeline from './ExecutionTimeline.vue'
 import {
   X,
   ExternalLink,
@@ -8,13 +11,44 @@ import {
   Server,
   FileText,
   Camera,
+  History,
+  RefreshCw,
 } from 'lucide-vue-next'
 import { cn } from '@/lib/utils'
 
 const props = defineProps<{
   task: Task | null
+  reqId?: string
   onClose: () => void
 }>()
+
+const sessionEvents = ref<SessionEvent[]>([])
+const sessionLoading = ref(false)
+const sessionError = ref('')
+
+async function loadSessions() {
+  if (!props.task || !props.reqId) return
+  sessionLoading.value = true
+  sessionError.value = ''
+  try {
+    const data = await fetchTaskSessionEvents(props.reqId, props.task.id)
+    sessionEvents.value = data.events
+  } catch (e) {
+    sessionError.value = '加载执行历史失败'
+    sessionEvents.value = []
+  } finally {
+    sessionLoading.value = false
+  }
+}
+
+// Reload sessions when task changes
+watch(() => props.task?.id, () => {
+  sessionEvents.value = []
+  sessionError.value = ''
+  if (props.task && props.reqId) {
+    loadSessions()
+  }
+}, { immediate: true })
 
 function formatDate(iso: string): string {
   return new Date(iso).toLocaleString('zh-CN', {
@@ -151,6 +185,36 @@ function formatDate(iso: string): string {
             {{ dep }}
           </span>
         </div>
+      </div>
+
+      <!-- Execution History -->
+      <div v-if="reqId" class="mt-3 py-2.5 border-t border-border/50">
+        <div class="flex items-center justify-between mb-2">
+          <div class="flex items-center gap-1.5">
+            <History :size="12" class="text-muted-foreground" />
+            <span class="text-xs text-muted-foreground font-medium">执行历史</span>
+            <span
+              v-if="sessionEvents.length > 0"
+              class="text-[10px] font-mono text-muted-foreground bg-accent px-1 rounded"
+            >
+              {{ sessionEvents.length }}
+            </span>
+          </div>
+          <button
+            class="text-muted-foreground hover:text-foreground transition-colors p-0.5 rounded hover:bg-accent"
+            :disabled="sessionLoading"
+            @click="loadSessions"
+          >
+            <RefreshCw :size="11" :class="sessionLoading ? 'animate-spin' : ''" />
+          </button>
+        </div>
+        <div v-if="sessionError" class="text-xs text-red-400 mb-2">
+          {{ sessionError }}
+        </div>
+        <ExecutionTimeline
+          :events="sessionEvents"
+          :loading="sessionLoading"
+        />
       </div>
     </div>
   </div>
