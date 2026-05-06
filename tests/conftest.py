@@ -19,7 +19,7 @@ class MockConsulStore:
         self._store: dict[str, str] = dict(initial) if initial else {}
         self._index = 100
 
-    def kv_get(self, key: str, recurse: bool = False) -> tuple[list[dict] | None, int]:
+    def kv_get(self, key: str, recurse: bool = False) -> tuple[list[dict] | str | None, int]:
         self._index += 1
         if recurse:
             matches = []
@@ -38,12 +38,7 @@ class MockConsulStore:
             v = self._store.get(key)
             if v is None:
                 return None, self._index
-            return {
-                "Key": key,
-                "Value": _encode(v),
-                "ModifyIndex": self._index,
-                "_decoded": v,
-            }, self._index
+            return v, self._index
 
     def kv_put(self, key: str, value: str, cas: int | None = None) -> bool:
         self._index += 1
@@ -81,6 +76,23 @@ def mock_consul(mock_store: MockConsulStore):
     consul.list_services = Mock(side_effect=mock_store.list_services)
     consul.kv_blocking_get = Mock(return_value=(None, 1))
     return consul
+
+
+def make_mock_run_manager():
+    """创建一个 mock RunManager，返回固定的 run_id。"""
+    rm = MagicMock()
+    rm.get_or_create_run.return_value = "run-test001"
+    rm.list_runs.return_value = []
+    rm.get_run.return_value = None
+    rm.get_transitions.return_value = []
+    rm.get_run_sessions.return_value = []
+    rm.export_run_sessions.return_value = {}
+    return rm
+
+
+@pytest.fixture
+def mock_run_manager():
+    return make_mock_run_manager()
 
 
 @pytest.fixture

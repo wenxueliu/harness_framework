@@ -15,7 +15,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _consul import (  # noqa: E402
-    env, kv_put, task_base, emit_json, die, now_iso
+    env, kv_get, kv_put, task_base, emit_json, die, now_iso,
+    ensure_run, record_transition, record_session_end,
 )
 
 
@@ -29,6 +30,8 @@ def main():
                    help="进入 AWAITING_REVIEW 状态而非 DONE")
     p.add_argument("--pr-url", default="",
                    help="配合 --await-review，记录 PR URL")
+    p.add_argument("--session-id", default="",
+                   help="当前 Session ID，提供则在任务完成前自动关闭 Session")
     args = p.parse_args()
 
     agent_id = env("AGENT_ID", required=True)
@@ -55,6 +58,27 @@ def main():
     kv_put(f"{base}/completed_by", agent_id)
 
     final_status = "AWAITING_REVIEW" if args.await_review else "DONE"
+
+    run_id = ensure_run(args.req_id)
+
+    # 关闭 Session（若提供 session-id）
+    if args.session_id:
+        record_session_end(
+            args.req_id, run_id, args.task_name,
+            status="completed",
+            summary=f"任务完成: {final_status}",
+        )
+
+    # 记录状态转换
+    prev_status, _ = kv_get(f"{base}/status")
+    record_transition(
+        args.req_id, run_id, args.task_name,
+        previous_state=prev_status or "IN_PROGRESS",
+        new_state=final_status,
+        actor=agent_id,
+        reason="task completed",
+    )
+
     kv_put(f"{base}/status", final_status)
 
     emit_json({

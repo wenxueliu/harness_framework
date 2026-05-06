@@ -1,0 +1,145 @@
+# Dashboard E2E Test Scenarios
+#
+# 参考 AutoCLI (nashsu/AutoCLI) 的声明式 YAML Pipeline 模式:
+# - 每个 scenario 是一个独立的测试场景
+# - steps 按顺序执行，每个 step 有 action/selector/value
+# - assertions 定义验证点
+#
+# AutoCLI 参考模式:
+# - selectors: CSS 选择器 + transform
+# - pagination: 翻页自动化
+# - cascade: 自动探测认证策略
+#
+# 运行: scenario 文件由 test_scenarios.py 加载执行
+
+scenarios:
+  # ---- 页面加载 ----
+  - name: "页面正常加载"
+    description: "确保看板首页正常渲染，无白屏"
+    tags: [smoke, load]
+    steps:
+      - action: goto
+        value: "/"
+      - action: wait
+        value: "networkidle"
+      - action: assert_visible
+        selector: "text=Agent Dashboard"
+        description: "标题可见"
+
+  # ---- 工作流列表 ----
+  - name: "工作流列表显示"
+    description: "侧边栏显示所有工作流"
+    tags: [smoke, workflow]
+    steps:
+      - action: goto
+        value: "/"
+      - action: wait
+        value: "networkidle"
+      - action: assert_visible
+        selector: "text=需求列表"
+        description: "侧边栏标题"
+      - action: assert_visible
+        selector: "text=REQ-2026-001"
+        description: "第一个工作流 ID 可见"
+      - action: assert_count_gt
+        selector: "aside button"
+        value: 1
+        description: "至少 2 个工作流列表项"
+
+  # ---- 工作流切换 ----
+  - name: "工作流切换"
+    description: "点击工作流切换到对应详情"
+    tags: [workflow, interaction]
+    steps:
+      - action: goto
+        value: "/"
+      - action: wait
+        value: "networkidle"
+      - action: click
+        selector: "text=REQ-2026-002"
+        description: "点击第二个工作流"
+      - action: wait
+        value: 500
+      - action: assert_visible
+        selector: "text=支付网关集成"
+        description: "切换后标题更新"
+      - action: assert_visible
+        selector: "text=支付服务"
+        description: "任务列表更新"
+
+  # ---- DAG 图 ----
+  - name: "DAG 拓扑图渲染"
+    description: "DAG 图正确渲染 SVG"
+    tags: [dag, visual]
+    steps:
+      - action: goto
+        value: "/"
+      - action: wait
+        value: "networkidle"
+      - action: assert_visible
+        selector: "text=任务依赖拓扑"
+        description: "DAG 区域标题"
+      - action: assert_visible
+        selector: "svg"
+        description: "SVG 图渲染"
+
+  # ---- 暂停控制 ----
+  - name: "暂停控制流程"
+    description: "点击暂停 → 确认对话框 → 确认"
+    tags: [control, interaction]
+    steps:
+      - action: goto
+        value: "/"
+      - action: wait
+        value: "networkidle"
+      - action: click
+        selector: "text=暂停"
+        description: "点击暂停按钮"
+      - action: wait
+        value: 300
+      - action: assert_visible
+        selector: "dialog[open]"
+        description: "确认对话框打开"
+      - action: assert_visible
+        selector: "text=暂停需求执行"
+        description: "对话框标题"
+      - action: click
+        selector: "text=确认暂停"
+        description: "确认暂停"
+      - action: wait
+        value: 500
+      - action: assert_hidden
+        selector: "dialog[open]"
+        description: "对话框关闭"
+
+  # ---- 空状态 ----
+  - name: "无工作流选择时的空状态"
+    description: "验证空状态提示"
+    tags: [edge-case]
+    steps:
+      - action: goto
+        value: "/"
+      - action: wait
+        value: "networkidle"
+      - action: assert_not_visible
+        selector: "text=请从左侧选择一个需求"
+        description: "mock 模式下不会出现空状态"
+
+  # ---- 响应式布局 ----
+  - name: "移动端布局"
+    description: "375px 视口下导航菜单可见"
+    tags: [responsive, mobile]
+    viewport:
+      width: 375
+      height: 812
+    steps:
+      - action: goto
+        value: "/"
+      - action: wait
+        value: "networkidle"
+      - action: assert_visible
+        selector: "text=Agent Dashboard"
+        description: "标题可见"
+      - action: assert_hidden
+        selector: "aside.hidden.md\\:flex"
+        description: "桌面端侧边栏隐藏"

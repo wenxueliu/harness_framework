@@ -21,6 +21,7 @@ from urllib.parse import urlparse, parse_qs
 from .consul_client import ConsulClient
 from .message_bus import MessageBus, MessageStatus
 from .workflow_skills import WorkflowSkills
+from .run_manager import RunManager
 
 log = logging.getLogger("webapi")
 
@@ -28,6 +29,7 @@ log = logging.getLogger("webapi")
 class APIHandler(BaseHTTPRequestHandler):
     consul: ConsulClient = None
     message_bus: MessageBus = None
+    run_manager: RunManager = None
 
     def log_message(self, format, *args):
         log.info("%s - %s", self.address_string(), format % args)
@@ -63,6 +65,21 @@ class APIHandler(BaseHTTPRequestHandler):
                 if "/proposals" in path:
                     req_id = parts[-2]
                     return self._get_proposals(req_id)
+                # /api/workflow/<req_id>/runs/<run_id>/sessions/export
+                if len(parts) >= 7 and parts[3] == "runs" and parts[5] == "sessions" and parts[-1] == "export":
+                    return self._export_run_sessions(parts[2], parts[4])
+                # /api/workflow/<req_id>/runs/<run_id>/sessions
+                if len(parts) >= 6 and parts[3] == "runs" and parts[5] == "sessions":
+                    return self._get_run_sessions(parts[2], parts[4])
+                # /api/workflow/<req_id>/runs/<run_id>/transitions
+                if len(parts) >= 6 and parts[3] == "runs" and parts[-1] == "transitions":
+                    return self._get_run_transitions(parts[2], parts[4])
+                # /api/workflow/<req_id>/runs/<run_id>
+                if len(parts) == 5 and parts[3] == "runs":
+                    return self._get_run(parts[2], parts[4])
+                # /api/workflow/<req_id>/runs
+                if len(parts) == 4 and parts[3] == "runs":
+                    return self._list_runs(parts[2])
                 req_id = parts[-1]
                 return self._get_workflow(req_id)
             if path.startswith("/api/sessions/"):
@@ -186,25 +203,101 @@ class APIHandler(BaseHTTPRequestHandler):
             "context": context,
         })
 
+    def _list_runs(self, req_id: str):
+        """GET /api/workflow/<req_id>/runs — 列出所有历史运行。"""
+        runs = self.run_manager.list_runs(req_id)
+        self._send_json(200, {"req_id": req_id, "runs": runs})
+
+    def _get_run(self, req_id: str, run_id: str):
+        """GET /api/workflow/<req_id>/runs/<run_id> — 获取运行详情。"""
+        run = self.run_manager.get_run(req_id, run_id)
+        if run is None:
+            return self._send_json(404, {"error": f"run {run_id} not found"})
+        transitions = self.run_manager.get_transitions(req_id, run_id)
+        run["transition_count"] = len(transitions)
+        self._send_json(200, {"req_id": req_id, "run": run})
+
+    def _get_run_transitions(self, req_id: str, run_id: str):
+        """GET /api/workflow/<req_id>/runs/<run_id>/transitions — 获取转换日志。"""
+        run = self.run_manager.get_run(req_id, run_id)
+        if run is None:
+            return self._send_json(404, {"error": f"run {run_id} not found"})
+        transitions = self.run_manager.get_transitions(req_id, run_id)
+        self._send_json(200, {
+            "req_id": req_id,
+            "run_id": run_id,
+            "transitions": transitions,
+        })
+
+    def _get_run_sessions(self, req_id: str, run_id: str):
+        """GET .../runs/<run_id>/sessions — 列出 run 下所有 session 元数据。"""
+        run = self.run_manager.get_run(req_id, run_id)
+        if run is None:
+            return self._send_json(404, {"error": f"run {run_id} not found"})
+        sessions = self.run_manager.get_run_sessions(req_id, run_id)
+        self._send_json(200, {
+            "req_id": req_id,
+            "run_id": run_id,
+            "run_status": run.get("status", ""),
+            "sessions": sessions,
+        })
+
+    def _export_run_sessions(self, req_id: str, run_id: str):
+        """GET .../runs/<run_id>/sessions/export — 导出完整 session 数据。"""
+        run = self.run_manager.get_run(req_id, run_id)
+        if run is None:
+            return self._send_json(404, {"error": f"run {run_id} not found"})
+        data = self.run_manager.export_run_sessions(req_id, run_id)
+        self._send_json(200, data)
+
     def _get_session_events(self, req_id: str, task_name: str):
         items, _ = self.consul.kv_get(
             f"workflows/{req_id}/sessions/{task_name}/", recurse=True
         )
-        events = []
-        if items:
-            prefix = f"workflows/{req_id}/sessions/{task_name}/"
-            for it in items:
-                rel = it["Key"][len(prefix):] if it["Key"].startswith(prefix) else it["Key"]
-                parts = rel.split("/")
-                if len(parts) >= 3 and parts[1] == "events":
-                    events.append({
-                        "session_id": parts[0],
-                        "seq": int(parts[2]) if parts[2].isdigit() else 0,
-                        "key": "/".join(parts[3:]),
-                        "value": it.get("_decoded", ""),
-                    })
-        events.sort(key=lambda x: (x["session_id"], x["seq"]))
-        self._send_json(200, {"req_id": req_id, "task": task_name, "events": events})
+        if not items:
+            return self._send_json(200, {"req_id": req_id, "task": task_name, "events": []})
+
+        prefix = f"workflows/{req_id}/sessions/{task_name}/"
+        # 按 session_id 分组
+        sessions: dict[str, dict] = {}
+        for it in items:
+            rel = it["Key"][len(prefix):] if it["Key"].startswith(prefix) else it["Key"]
+            parts = rel.split("/")
+            if len(parts) < 3 or parts[1] != "events":
+                continue
+            sid = parts[0]
+            sessions.setdefault(sid, {"session_id": sid, "events": {}})
+
+            if len(parts) == 3:
+                # 新格式: events/<seq> → JSON blob
+                try:
+                    data = json.loads(it.get("_decoded", "{}"))
+                    if isinstance(data, dict):
+                        data["seq"] = parts[2]
+                        sessions[sid]["events"][parts[2]] = data
+                except json.JSONDecodeError:
+                    pass
+            elif len(parts) > 3:
+                # 旧格式: events/<seq>/<field> → value
+                seq = parts[2]
+                field = "/".join(parts[3:])
+                entry = sessions[sid]["events"].setdefault(seq, {"seq": seq})
+                entry[field] = it.get("_decoded", "")
+
+        # 扁平化为有序列表
+        result: list[dict] = []
+        for sid_data in sessions.values():
+            evts = list(sid_data["events"].values())
+            evts.sort(key=lambda e: str(e.get("seq", "")))
+            result.extend(evts)
+
+        self._send_json(200, {
+            "req_id": req_id,
+            "task": task_name,
+            "events": result,
+            "sessions": [{"session_id": s["session_id"], "event_count": len(s["events"])}
+                         for s in sessions.values()],
+        })
 
     def _list_agents(self):
         services = self.consul.list_services("agent-worker")
@@ -232,12 +325,59 @@ class APIHandler(BaseHTTPRequestHandler):
             task = body.get("task_name", "")
             if not task:
                 return self._send_json(400, {"error": "task_name required for RETRY"})
+            prev_status, _ = self.consul.kv_get(
+                f"workflows/{req_id}/tasks/{task}/status")
             self.consul.kv_put(f"workflows/{req_id}/tasks/{task}/status", "PENDING")
             self.consul.kv_delete(f"workflows/{req_id}/tasks/{task}/error_message")
+            # 记录手动重试转换
+            run_id = self.run_manager.get_or_create_run(req_id, "webapi")
+            self.run_manager.record_transition(
+                req_id, run_id, task,
+                previous_state=prev_status or "",
+                new_state="PENDING",
+                actor="webapi",
+                reason="manual retry",
+            )
+        elif action == "ABORT":
+            self.consul.kv_put(f"workflows/{req_id}/control", action)
+            # 记录被 abort 的任务转换
+            run_id = self.run_manager.get_or_create_run(req_id, "webapi")
+            tasks_meta = self._load_tasks_for_abort(req_id)
+            for name, meta in tasks_meta.items():
+                if meta.get("status") in ("", "PENDING", "IN_PROGRESS", "BLOCKED",
+                                           "AWAITING_REVIEW"):
+                    prev = meta.get("status", "")
+                    self.run_manager.record_transition(
+                        req_id, run_id, name,
+                        previous_state=prev,
+                        new_state="ABORTED",
+                        actor="webapi",
+                        reason="ABORT control signal via API",
+                    )
+                    self.consul.kv_put(
+                        f"workflows/{req_id}/tasks/{name}/status", "ABORTED")
+            self.run_manager.check_run_completion(req_id, run_id)
         else:
             self.consul.kv_put(f"workflows/{req_id}/control", action)
 
         self._send_json(200, {"ok": True, "action": action, "req_id": req_id})
+
+    def _load_tasks_for_abort(self, req_id: str) -> dict:
+        """加载任务状态（用于 abort 时判断哪些任务需要标记为 ABORTED）。"""
+        items, _ = self.consul.kv_get(
+            f"workflows/{req_id}/tasks/", recurse=True
+        )
+        out: dict = {}
+        if not items:
+            return out
+        for it in items:
+            parts = it["Key"].split("/")
+            if len(parts) < 5:
+                continue
+            name = parts[3]
+            field = parts[4]
+            out.setdefault(name, {})[field] = it.get("_decoded", "")
+        return out
 
     def _get_messages(self, req_id: str, task_name: str):
         status_str = parse_qs(urlparse(self.path).query).get("status", [None])[0]
@@ -291,9 +431,11 @@ class APIHandler(BaseHTTPRequestHandler):
         return self._send_json(400, result)
 
 
-def serve(consul: ConsulClient, host: str = "0.0.0.0", port: int = 8080) -> ThreadingHTTPServer:
+def serve(consul: ConsulClient, host: str = "0.0.0.0", port: int = 8080,
+          run_manager: RunManager = None) -> ThreadingHTTPServer:
     APIHandler.consul = consul
     APIHandler.message_bus = MessageBus(consul)
+    APIHandler.run_manager = run_manager or RunManager(consul)
     server = ThreadingHTTPServer((host, port), APIHandler)
     log.info("WebAPI serving on http://%s:%d/", host, port)
     return server

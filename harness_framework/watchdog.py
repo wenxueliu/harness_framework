@@ -14,17 +14,20 @@ import logging
 import time
 
 from .consul_client import ConsulClient
+from .run_manager import RunManager
 
 log = logging.getLogger("watchdog")
 
 
 class Watchdog:
     def __init__(self, consul: ConsulClient,
+                 run_manager: RunManager,
                  poll_interval: int = 30,
                  task_timeout_seconds: int = 120,
                  heartbeat_timeout: int = 120,
                  max_retry: int = 3):
         self.consul = consul
+        self.run_manager = run_manager
         self.poll_interval = poll_interval
         self.task_timeout = task_timeout_seconds
         self.heartbeat_timeout = heartbeat_timeout
@@ -126,10 +129,19 @@ class Watchdog:
         retry_count = int(cur or "0") + 1
         self.consul.kv_put(f"{base}/retry_count", str(retry_count))
 
+        run_id = self.run_manager.get_or_create_run(req_id, "watchdog")
+
         if retry_count >= self.max_retry:
             self.consul.kv_put(f"{base}/status", "FAILED")
             self.consul.kv_put(f"{base}/error_message",
                                f"Recovered {retry_count} times, exceeded limit")
+            self.run_manager.record_transition(
+                req_id, run_id, task_name,
+                previous_state="IN_PROGRESS",
+                new_state="FAILED",
+                actor="watchdog",
+                reason=f"exceeded max retries after {retry_count} recoveries ({reason})",
+            )
             # 写入告警到 alerts/ 路径
             alert_key = f"alerts/{req_id}/{task_name}"
             self.consul.kv_put(alert_key, json.dumps({
@@ -140,12 +152,20 @@ class Watchdog:
             }))
             log.error("task %s/%s permanently failed after %d recoveries",
                       req_id, task_name, retry_count)
+            self.run_manager.check_run_completion(req_id, run_id)
         else:
             # 回滚为 PENDING 重新分配
             self.consul.kv_put(f"{base}/status", "PENDING")
             # 清除上一次的 assigned_agent
             self.consul.kv_delete(f"{base}/assigned_agent")
             self.consul.kv_delete(f"{base}/started_at")
+            self.run_manager.record_transition(
+                req_id, run_id, task_name,
+                previous_state="IN_PROGRESS",
+                new_state="PENDING",
+                actor="watchdog",
+                reason=f"recovery ({reason})",
+            )
 
 
 def _now_iso() -> str:

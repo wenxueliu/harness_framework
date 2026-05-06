@@ -20,6 +20,7 @@ import sys
 import time
 import urllib.parse
 import urllib.request
+import uuid
 from typing import Any, Optional
 
 
@@ -356,3 +357,83 @@ def session_base(req_id: str, task_name: str, session_id: str) -> str:
 
 def feedback_base(req_id: str, service: str) -> str:
     return f"workflows/{req_id}/feedback/{service}"
+
+
+# ── Run 和 Session 辅助函数 ──────────────────────────────────────────────────
+
+def get_current_run(req_id: str) -> Optional[str]:
+    """获取当前活跃 run_id，无则返回 None。"""
+    current, _ = kv_get(f"workflows/{req_id}/current_run")
+    if not current:
+        return None
+    status, _ = kv_get(f"workflows/{req_id}/runs/{current}/status")
+    if status and status not in ("COMPLETED", "FAILED", "ABORTED", "SUPERSEDED"):
+        return current
+    return None
+
+
+def ensure_run(req_id: str) -> str:
+    """获取当前活跃 run，若无则创建新的。返回 run_id。"""
+    current = get_current_run(req_id)
+    if current:
+        return current
+
+    run_id = f"run-{uuid.uuid4().hex[:12]}"
+    ts = now_iso()
+    base = f"workflows/{req_id}/runs/{run_id}"
+    kv_put(f"{base}/status", "RUNNING")
+    kv_put(f"{base}/started_at", ts)
+    kv_put(f"{base}/started_by", "agent")
+    kv_put(f"{base}/summary", json.dumps({"total": 0, "done": 0, "failed": 0, "aborted": 0}))
+    kv_put(f"workflows/{req_id}/current_run", run_id)
+    return run_id
+
+
+def record_transition(
+    req_id: str, run_id: str, task_name: str,
+    previous_state: str, new_state: str,
+    actor: str, reason: str = "",
+    metadata: dict = None,
+) -> None:
+    """追加一条状态转换记录到 run 的审计日志中。"""
+    seq = f"{int(time.time() * 1000000):021d}"
+    record = {
+        "timestamp": now_iso(),
+        "task_name": task_name,
+        "previous_state": previous_state,
+        "new_state": new_state,
+        "actor": actor,
+        "reason": reason,
+        "metadata": metadata or {},
+    }
+    key = f"workflows/{req_id}/runs/{run_id}/transitions/{seq}"
+    kv_put(key, json.dumps(record, ensure_ascii=False))
+
+
+def record_session_start(
+    req_id: str, run_id: str, task_name: str,
+    session_id: str, agent_id: str,
+) -> None:
+    """Agent 开始新 session 时在 run 下写入索引条目。"""
+    ts = now_iso()
+    base = f"workflows/{req_id}/runs/{run_id}/sessions/{task_name}"
+    kv_put(f"{base}/session_id", session_id)
+    kv_put(f"{base}/agent_id", agent_id)
+    kv_put(f"{base}/started_at", ts)
+    kv_put(f"{base}/status", "running")
+
+
+def record_session_end(
+    req_id: str, run_id: str, task_name: str,
+    event_count: int = 0, error_count: int = 0,
+    status: str = "completed", summary: str = "",
+) -> None:
+    """Agent 关闭 session 时更新 run 下的索引条目。"""
+    ts = now_iso()
+    base = f"workflows/{req_id}/runs/{run_id}/sessions/{task_name}"
+    kv_put(f"{base}/ended_at", ts)
+    kv_put(f"{base}/event_count", str(event_count))
+    kv_put(f"{base}/error_count", str(error_count))
+    kv_put(f"{base}/status", status)
+    if summary:
+        kv_put(f"{base}/summary", summary)

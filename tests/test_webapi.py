@@ -15,6 +15,17 @@ import pytest
 from harness_framework.webapi import APIHandler
 
 
+def make_mock_run_manager():
+    rm = MagicMock()
+    rm.get_or_create_run.return_value = "run-test001"
+    rm.list_runs.return_value = []
+    rm.get_run.return_value = None
+    rm.get_transitions.return_value = []
+    rm.get_run_sessions.return_value = []
+    rm.export_run_sessions.return_value = {}
+    return rm
+
+
 def make_consul_mock(store: dict) -> MagicMock:
     """构建适配 WebAPI 逻辑的 mock ConsulClient。"""
     actual_store = dict(store)
@@ -72,6 +83,7 @@ def make_handler(store: dict) -> tuple[APIHandler, MagicMock]:
 
     TestHandler.consul = consul
     TestHandler.message_bus = message_bus
+    TestHandler.run_manager = make_mock_run_manager()
 
     response_body = BytesIO()
     response_code = [200]

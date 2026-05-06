@@ -15,13 +15,16 @@ import time
 from typing import Optional
 
 from .consul_client import ConsulClient
+from .run_manager import RunManager
 
 log = logging.getLogger("aggregator")
 
 
 class Aggregator:
-    def __init__(self, consul: ConsulClient, poll_interval: int = 5):
+    def __init__(self, consul: ConsulClient, run_manager: RunManager,
+                 poll_interval: int = 5):
         self.consul = consul
+        self.run_manager = run_manager
         self.poll_interval = poll_interval
         self._stop = False
 
@@ -147,13 +150,30 @@ class Aggregator:
             # 有阻塞依赖未完成，标记 BLOCKED
             if cur_status == "":
                 self.consul.kv_put(f"workflows/{req_id}/tasks/{task_name}/status", "BLOCKED")
+                run_id = self.run_manager.get_or_create_run(req_id, "aggregator")
+                self.run_manager.record_transition(
+                    req_id, run_id, task_name,
+                    previous_state="",
+                    new_state="BLOCKED",
+                    actor="aggregator",
+                    reason="dependencies not satisfied",
+                )
             return
 
         # 依赖满足，激活为 PENDING
         log.info("activating task %s/%s", req_id, task_name)
+        prev_status = cur_status if cur_status else ""
         self.consul.kv_put(f"workflows/{req_id}/tasks/{task_name}/status", "PENDING")
         self.consul.kv_put(f"workflows/{req_id}/tasks/{task_name}/activated_at",
                            _now_iso())
+        run_id = self.run_manager.get_or_create_run(req_id, "aggregator")
+        self.run_manager.record_transition(
+            req_id, run_id, task_name,
+            previous_state=prev_status,
+            new_state="PENDING",
+            actor="aggregator",
+            reason="dependencies satisfied",
+        )
 
     def _maybe_activate_composite(self, req_id: str, task_name: str,
                                   info: dict, tasks_meta: dict, deps: dict) -> None:
@@ -171,27 +191,51 @@ class Aggregator:
         if node_type == "parallel":
             # Parallel 节点：依赖全部 DONE 时，将 children 全部激活为 PENDING
             if all_up_done and cur_status != "DONE":
+                run_id = self.run_manager.get_or_create_run(req_id, "aggregator")
                 children = info.get("children", [])
                 for child in children:
                     child_meta = tasks_meta.get(child, {})
                     if child_meta.get("status") in ("", "BLOCKED"):
+                        prev_child = child_meta.get("status", "")
                         self.consul.kv_put(
                             f"workflows/{req_id}/tasks/{child}/status", "PENDING")
                         self.consul.kv_put(
                             f"workflows/{req_id}/tasks/{child}/activated_at",
                             _now_iso())
                         log.info("parallel激活 child %s/%s", req_id, child)
+                        self.run_manager.record_transition(
+                            req_id, run_id, child,
+                            previous_state=prev_child,
+                            new_state="PENDING",
+                            actor="aggregator",
+                            reason="parallel child activated",
+                        )
                 # 标记 parallel 自身为 DONE（children 已全部激活）
                 self.consul.kv_put(
                     f"workflows/{req_id}/tasks/{task_name}/status", "DONE")
                 log.info("parallel节点 %s/%s 完成", req_id, task_name)
+                self.run_manager.record_transition(
+                    req_id, run_id, task_name,
+                    previous_state=cur_status,
+                    new_state="DONE",
+                    actor="aggregator",
+                    reason="all children activated",
+                )
 
         elif node_type == "aggregate":
             # Aggregate 节点：上游 parallel 全部 DONE 时，自身 DONE 并激活下游
             if all_up_done and cur_status != "DONE":
+                run_id = self.run_manager.get_or_create_run(req_id, "aggregator")
                 self.consul.kv_put(
                     f"workflows/{req_id}/tasks/{task_name}/status", "DONE")
                 log.info("aggregate节点 %s/%s 完成，激活下游", req_id, task_name)
+                self.run_manager.record_transition(
+                    req_id, run_id, task_name,
+                    previous_state=cur_status,
+                    new_state="DONE",
+                    actor="aggregator",
+                    reason="upstream parallel tasks done",
+                )
                 # 激活下游任务（depends_on 指向此 aggregate 的任务）
                 for downstream, dinfo in tasks_meta.items():
                     # 跳过自身
@@ -200,6 +244,7 @@ class Aggregator:
                     down_info = deps.get(downstream, {})
                     if task_name in down_info.get("depends_on", []):
                         if dinfo.get("status") in ("", "BLOCKED"):
+                            prev_down = dinfo.get("status", "")
                             self.consul.kv_put(
                                 f"workflows/{req_id}/tasks/{downstream}/status",
                                 "PENDING")
@@ -207,16 +252,33 @@ class Aggregator:
                                 f"workflows/{req_id}/tasks/{downstream}/activated_at",
                                 _now_iso())
                             log.info("aggregate激活下游 %s/%s", req_id, downstream)
+                            self.run_manager.record_transition(
+                                req_id, run_id, downstream,
+                                previous_state=prev_down,
+                                new_state="PENDING",
+                                actor="aggregator",
+                                reason="aggregate activated downstream",
+                            )
 
     def _abort(self, req_id: str) -> None:
         """ABORT 信号：将所有非终态任务设为 ABORTED。"""
         tasks_meta = self._load_tasks(req_id)
+        run_id = self.run_manager.get_or_create_run(req_id, "aggregator")
         for name, meta in tasks_meta.items():
             if meta.get("status") in ("", "PENDING", "IN_PROGRESS", "BLOCKED",
                                       "AWAITING_REVIEW"):
+                prev = meta.get("status", "")
                 self.consul.kv_put(f"workflows/{req_id}/tasks/{name}/status",
                                    "ABORTED")
                 log.info("aborted task %s/%s", req_id, name)
+                self.run_manager.record_transition(
+                    req_id, run_id, name,
+                    previous_state=prev,
+                    new_state="ABORTED",
+                    actor="aggregator",
+                    reason="ABORT control signal",
+                )
+        self.run_manager.check_run_completion(req_id, run_id)
 
 
 def _now_iso() -> str:

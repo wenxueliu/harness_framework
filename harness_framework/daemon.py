@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import logging.handlers
 import os
 import signal
 import sys
@@ -24,13 +25,38 @@ from .consul_client import ConsulClient
 from .aggregator import Aggregator
 from .watchdog import Watchdog
 from .webapi import serve as webapi_serve
+from .run_manager import RunManager
 
 
-def setup_logging(level: str) -> None:
+def setup_logging(level: str, log_dir: str = "",
+                  max_bytes: int = 10 * 1024 * 1024,
+                  backup_count: int = 5) -> None:
+    fmt = "%(asctime)s [%(name)s] %(levelname)s %(message)s"
+    handlers: list[logging.Handler] = []
+
+    # stdout handler — 保持原有格式
+    stdout_handler = logging.StreamHandler(sys.stdout)
+    stdout_handler.setFormatter(logging.Formatter(fmt=fmt, datefmt="%H:%M:%S"))
+    handlers.append(stdout_handler)
+
+    # file handler — 配置了 log_dir 时才启用，使用完整时间戳
+    if log_dir:
+        os.makedirs(log_dir, exist_ok=True)
+        file_handler = logging.handlers.RotatingFileHandler(
+            filename=os.path.join(log_dir, "harness-framework.log"),
+            maxBytes=max_bytes,
+            backupCount=backup_count,
+            encoding="utf-8",
+        )
+        file_fmt = "%(asctime)s [%(name)s] %(levelname)s %(message)s"
+        file_handler.setFormatter(logging.Formatter(
+            fmt=file_fmt, datefmt="%Y-%m-%d %H:%M:%S"
+        ))
+        handlers.append(file_handler)
+
     logging.basicConfig(
         level=getattr(logging, level.upper(), logging.INFO),
-        format="%(asctime)s [%(name)s] %(levelname)s %(message)s",
-        datefmt="%H:%M:%S",
+        handlers=handlers,
     )
 
 
@@ -49,12 +75,20 @@ def main() -> None:
     p.add_argument("--max-retry", type=int, default=3,
                    help="任务最大重试次数")
     p.add_argument("--log-level", default="INFO")
+    p.add_argument("--log-dir", default="",
+                   help="日志目录（为空仅输出到 stdout）")
+    p.add_argument("--log-max-bytes", type=int, default=10 * 1024 * 1024,
+                   help="单个日志文件最大大小，默认 10MB")
+    p.add_argument("--log-backup-count", type=int, default=5,
+                   help="保留的旧日志文件数量，默认 5")
     p.add_argument("--no-aggregator", action="store_true")
     p.add_argument("--no-watchdog", action="store_true")
     p.add_argument("--no-webapi", action="store_true")
     args = p.parse_args()
 
-    setup_logging(args.log_level)
+    setup_logging(args.log_level, log_dir=args.log_dir,
+                  max_bytes=args.log_max_bytes,
+                  backup_count=args.log_backup_count)
     log = logging.getLogger("daemon")
 
     consul = ConsulClient(addr=args.consul, token=args.token)
@@ -68,12 +102,16 @@ def main() -> None:
         sys.exit(2)
     consul.kv_put("framework/started_at", _now_iso())
 
+    # 共享的 RunManager 实例
+    run_manager = RunManager(consul)
+
     threads: list[threading.Thread] = []
     components = []
 
     # Aggregator
     if not args.no_aggregator:
-        agg = Aggregator(consul, poll_interval=args.aggregator_interval)
+        agg = Aggregator(consul, run_manager=run_manager,
+                         poll_interval=args.aggregator_interval)
         components.append(agg)
         t = threading.Thread(target=agg.run, name="aggregator", daemon=True)
         t.start()
@@ -81,7 +119,8 @@ def main() -> None:
 
     # Watchdog
     if not args.no_watchdog:
-        wd = Watchdog(consul, poll_interval=args.watchdog_interval,
+        wd = Watchdog(consul, run_manager=run_manager,
+                      poll_interval=args.watchdog_interval,
                       task_timeout_seconds=args.task_timeout,
                       heartbeat_timeout=args.heartbeat_timeout,
                       max_retry=args.max_retry)
@@ -93,7 +132,8 @@ def main() -> None:
     # WebAPI
     server = None
     if not args.no_webapi:
-        server = webapi_serve(consul, host=args.host, port=args.port)
+        server = webapi_serve(consul, host=args.host, port=args.port,
+                              run_manager=run_manager)
         t = threading.Thread(target=server.serve_forever, name="webapi", daemon=True)
         t.start()
         threads.append(t)

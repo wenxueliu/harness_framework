@@ -17,6 +17,17 @@ import pytest
 from harness_framework.watchdog import Watchdog
 
 
+def make_mock_run_manager():
+    rm = MagicMock()
+    rm.get_or_create_run.return_value = "run-test001"
+    rm.list_runs.return_value = []
+    rm.get_run.return_value = None
+    rm.get_transitions.return_value = []
+    rm.get_run_sessions.return_value = []
+    rm.export_run_sessions.return_value = {}
+    return rm
+
+
 def _make_store(initial: dict) -> MagicMock:
     def kv_get(key: str, recurse: bool = False):
         if recurse:
@@ -60,7 +71,7 @@ class TestWatchdog:
             {"Service": {"ID": "agent-001"}, "Checks": [{"Status": "passing"}]}
         ])
 
-        wd = Watchdog(consul, poll_interval=1, task_timeout_seconds=3600, max_retry=3)
+        wd = Watchdog(consul, run_manager=make_mock_run_manager(), poll_interval=1, task_timeout_seconds=3600, max_retry=3)
         wd._tick()
 
         put_calls = consul.kv_put.call_args_list
@@ -92,7 +103,7 @@ class TestWatchdog:
             {"Service": {"ID": "agent-001"}, "Checks": [{"Status": "passing"}]}
         ])
 
-        wd = Watchdog(consul, poll_interval=1, task_timeout_seconds=3600, max_retry=3)
+        wd = Watchdog(consul, run_manager=make_mock_run_manager(), poll_interval=1, task_timeout_seconds=3600, max_retry=3)
         wd._tick()
 
         backend_pending = any(
@@ -113,7 +124,7 @@ class TestWatchdog:
         consul = _make_store(store)
         consul.list_services = Mock(return_value=[])
 
-        wd = Watchdog(consul, poll_interval=1, task_timeout_seconds=3600, max_retry=3)
+        wd = Watchdog(consul, run_manager=make_mock_run_manager(), poll_interval=1, task_timeout_seconds=3600, max_retry=3)
         wd._tick()
 
         put_calls = consul.kv_put.call_args_list
@@ -145,7 +156,7 @@ class TestWatchdog:
             {"Service": {"ID": "agent-001"}, "Checks": [{"Status": "passing"}]}
         ])
 
-        wd = Watchdog(consul, poll_interval=1, task_timeout_seconds=3600, max_retry=3)
+        wd = Watchdog(consul, run_manager=make_mock_run_manager(), poll_interval=1, task_timeout_seconds=3600, max_retry=3)
         wd._tick()
 
         assert not consul.kv_put.called, "No action should be taken for healthy task"
@@ -161,7 +172,7 @@ class TestWatchdog:
         consul = _make_store(store)
         consul.list_services = Mock(return_value=[])
 
-        wd = Watchdog(consul, poll_interval=1, task_timeout_seconds=3600, max_retry=3)
+        wd = Watchdog(consul, run_manager=make_mock_run_manager(), poll_interval=1, task_timeout_seconds=3600, max_retry=3)
         wd._tick()
 
         assert not consul.kv_put.called, "DONE tasks should be skipped"
@@ -178,7 +189,7 @@ class TestWatchdog:
         consul = _make_store(store)
         consul.list_services = Mock(return_value=[])
 
-        wd = Watchdog(consul, poll_interval=1, task_timeout_seconds=3600, max_retry=3)
+        wd = Watchdog(consul, run_manager=make_mock_run_manager(), poll_interval=1, task_timeout_seconds=3600, max_retry=3)
         wd._tick()
 
         put_calls = consul.kv_put.call_args_list
@@ -205,7 +216,7 @@ class TestWatchdog:
         consul = _make_store(store)
         consul.list_services = Mock(return_value=[])
 
-        wd = Watchdog(consul, poll_interval=1, task_timeout_seconds=3600, max_retry=3)
+        wd = Watchdog(consul, run_manager=make_mock_run_manager(), poll_interval=1, task_timeout_seconds=3600, max_retry=3)
         wd._tick()
 
         put_calls = consul.kv_put.call_args_list

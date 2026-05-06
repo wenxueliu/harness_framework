@@ -17,7 +17,8 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _consul import (  # noqa: E402
     env, kv_get, kv_put, task_base, context_base,
-    emit_json, die, now_iso
+    emit_json, die, now_iso,
+    ensure_run, record_transition,
 )
 
 
@@ -61,7 +62,17 @@ def main():
     kv_put(f"{base}/assigned_agent", agent_id)
     kv_put(f"{base}/started_at", now_iso())
 
-    # 5. 读取任务完整 meta 与上下文
+    # 5. 记录状态转换到 run 审计日志
+    run_id = ensure_run(args.req_id)
+    record_transition(
+        args.req_id, run_id, args.task_name,
+        previous_state="PENDING",
+        new_state="IN_PROGRESS",
+        actor=agent_id,
+        reason="claimed by agent",
+    )
+
+    # 6. 读取任务完整 meta 与上下文
     task_items, _ = kv_get(f"{base}", recurse=True)
     task_meta = {}
     if task_items:

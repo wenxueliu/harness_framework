@@ -21,6 +21,17 @@ import pytest
 from harness_framework.aggregator import Aggregator
 
 
+def make_mock_run_manager():
+    rm = MagicMock()
+    rm.get_or_create_run.return_value = "run-test001"
+    rm.list_runs.return_value = []
+    rm.get_run.return_value = None
+    rm.get_transitions.return_value = []
+    rm.get_run_sessions.return_value = []
+    rm.export_run_sessions.return_value = {}
+    return rm
+
+
 def _make_store(initial: dict) -> MagicMock:
     """构建适配 Aggregator 逻辑的 mock ConsulClient。"""
     def kv_get(key: str, recurse: bool = False):
@@ -63,7 +74,7 @@ class TestAggregator:
             "workflows/req-001/tasks/backend/status": "BLOCKED",
         }
         consul = _make_store(store)
-        agg = Aggregator(consul, poll_interval=1)
+        agg = Aggregator(consul, run_manager=make_mock_run_manager(), poll_interval=1)
 
         agg._process_requirement("req-001")
 
@@ -92,7 +103,7 @@ class TestAggregator:
             "workflows/req-001/tasks/backend/status": "BLOCKED",
         }
         consul = _make_store(store)
-        agg = Aggregator(consul, poll_interval=1)
+        agg = Aggregator(consul, run_manager=make_mock_run_manager(), poll_interval=1)
 
         agg._process_requirement("req-001")
 
@@ -117,7 +128,7 @@ class TestAggregator:
             "workflows/req-001/tasks/test/status": "BLOCKED",
         }
         consul = _make_store(store)
-        agg = Aggregator(consul, poll_interval=1)
+        agg = Aggregator(consul, run_manager=make_mock_run_manager(), poll_interval=1)
 
         agg._process_requirement("req-001")
 
@@ -139,7 +150,7 @@ class TestAggregator:
             "workflows/req-001/tasks/backend/status": "BLOCKED",
         }
         consul = _make_store(store)
-        agg = Aggregator(consul, poll_interval=1)
+        agg = Aggregator(consul, run_manager=make_mock_run_manager(), poll_interval=1)
 
         agg._process_requirement("req-001")
 
@@ -169,7 +180,7 @@ class TestAggregator:
             "workflows/req-001/tasks/test/status": "BLOCKED",
         }
         consul = _make_store(store)
-        agg = Aggregator(consul, poll_interval=1)
+        agg = Aggregator(consul, run_manager=make_mock_run_manager(), poll_interval=1)
 
         agg._process_requirement("req-001")
 
@@ -200,7 +211,7 @@ class TestAggregator:
             "workflows/req-002/tasks/design/status": "",
         }
         consul = _make_store(store)
-        agg = Aggregator(consul, poll_interval=1)
+        agg = Aggregator(consul, run_manager=make_mock_run_manager(), poll_interval=1)
 
         agg._tick()
 
@@ -222,7 +233,7 @@ class TestAggregator:
             "workflows/req-001/tasks/backend/status": "BLOCKED",
         }
         consul = _make_store(store)
-        agg = Aggregator(consul, poll_interval=1)
+        agg = Aggregator(consul, run_manager=make_mock_run_manager(), poll_interval=1)
 
         agg._process_requirement("req-001")
 
@@ -255,7 +266,7 @@ class TestAggregator:
             "workflows/req-001/tasks/backend/status": "BLOCKED",
         }
         consul = _make_store(store)
-        agg = Aggregator(consul, poll_interval=1)
+        agg = Aggregator(consul, run_manager=make_mock_run_manager(), poll_interval=1)
 
         agg._process_requirement("req-001")
 
@@ -280,7 +291,7 @@ class TestAggregator:
             "workflows/req-001/tasks/backend/status": "BLOCKED",
         }
         consul = _make_store(store)
-        agg = Aggregator(consul, poll_interval=1)
+        agg = Aggregator(consul, run_manager=make_mock_run_manager(), poll_interval=1)
 
         agg._process_requirement("req-001")
 

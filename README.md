@@ -124,11 +124,17 @@ This design makes the platform **agent-agnostic**. Any Agent that implements the
 
 The framework layer enforces **what must happen** (dependencies, retry logic, timeouts), while the capability layer focuses on **how it gets done** (code generation, testing, debugging).
 
-### Quick Start
+### Installation
 
-#### 1. Install Consul
+#### Prerequisites
 
-See [Consul Official Installation Guide](https://developer.hashicorp.com/consul/install) for all platforms.
+| Component | Required | Check Command |
+|-----------|----------|---------------|
+| **Python** | 3.9+ | `python3 --version` |
+| **Consul** | 1.18.x | `consul version` |
+| **Node.js + npm** | 18+ (dashboard only) | `node --version && npm --version` |
+
+#### Step 1: Install Consul
 
 ```bash
 # macOS
@@ -142,22 +148,63 @@ unzip consul_*.zip && sudo mv consul /usr/local/bin/
 # Download from https://developer.hashicorp.com/consul/install and add to PATH
 ```
 
-> Note: This framework itself has **zero external Python dependencies** (stdlib only).
+Verify: `consul version`
 
-#### 2. Start all services
+#### Step 2: Install Python dependencies
 
-Open Claude Code and run `Run on Claude Code` to start all services (Consul dev mode, framework daemon, dashboard).
-
-Alternatively, start services manually:
+The framework core has **zero external Python dependencies** (stdlib only). Two optional scripts need additional packages:
 
 ```bash
-# Start Consul dev mode
+# For add_task.py (incremental task addition)
+pip install requests
+
+# For E2E tests
+pip install playwright pytest
+playwright install chromium --with-deps
+```
+
+#### Step 3: Install dashboard dependencies
+
+```bash
+cd agent_dashboard
+npm install
+cd ..
+```
+
+#### Step 4: Verify installation
+
+```bash
+# Start Consul in dev mode
 ./scripts/start_consul_dev.sh
 
-# Start the framework daemon (default port 8080)
+# In another terminal, start the framework
 python -m harness_framework.daemon
 
-# Initialize a workflow
+# In a third terminal, start the dashboard
+cd agent_dashboard && npm run dev
+```
+
+Or use the one-click launcher: `./scripts/start_all.sh`
+
+### Quick Start
+
+> Already installed? Skip to step 2. Otherwise, follow [Installation](#installation) first.
+
+#### 1. Start services
+
+```bash
+# One-click: start everything (Consul + framework daemon + dashboard)
+./scripts/start_all.sh
+
+# Or start services manually:
+./scripts/start_consul_dev.sh           # Terminal 1: Consul dev mode
+python -m harness_framework.daemon      # Terminal 2: framework daemon (port 8080)
+cd agent_dashboard && npm run dev       # Terminal 3: dashboard (port 3000)
+```
+
+#### 2. Initialize a workflow
+
+```bash
 python scripts/sync_to_consul.py req-001 examples/dependencies.example.json \
   --title "User Login Feature"
 ```
@@ -407,11 +454,17 @@ Harness Engineer 由两层组成：
 
 框架层负责约束**必须发生什么**（依赖、重试逻辑、超时），能力层负责实现**如何完成**（代码生成、测试、调试）。
 
-### 快速开始
+### 安装
 
-#### 1. 安装 Consul
+#### 环境要求
 
-参见 [Consul 官方安装指南](https://developer.hashicorp.com/consul/install) 获取各平台安装方式。
+| 组件 | 要求 | 检查命令 |
+|------|------|----------|
+| **Python** | 3.9+ | `python3 --version` |
+| **Consul** | 1.18.x | `consul version` |
+| **Node.js + npm** | 18+（仅看板需要） | `node --version && npm --version` |
+
+#### 第一步：安装 Consul
 
 ```bash
 # macOS
@@ -425,22 +478,63 @@ unzip consul_*.zip && sudo mv consul /usr/local/bin/
 # 从 https://developer.hashicorp.com/consul/install 下载并添加到 PATH
 ```
 
-> 注意：框架本身**零外部 Python 依赖**（仅标准库）。
+验证：`consul version`
 
-#### 2. 启动所有服务
+#### 第二步：安装 Python 依赖
 
-打开 Claude Code，运行 `Run on Claude Code` 即可启动所有服务（Consul dev mode、框架守护进程、看板）。
-
-手动启动方式：
+框架核心**零外部 Python 依赖**（仅标准库）。两个可选脚本需要额外包：
 
 ```bash
-# 启动 Consul dev mode
+# add_task.py（增量添加任务）
+pip install requests
+
+# E2E 测试
+pip install playwright pytest
+playwright install chromium --with-deps
+```
+
+#### 第三步：安装看板依赖
+
+```bash
+cd agent_dashboard
+npm install
+cd ..
+```
+
+#### 第四步：验证安装
+
+```bash
+# 启动 Consul dev 模式
 ./scripts/start_consul_dev.sh
 
-# 启动框架主进程（默认端口 8080）
+# 另一个终端启动框架
 python -m harness_framework.daemon
 
-# 初始化一个工作流
+# 第三个终端启动看板
+cd agent_dashboard && npm run dev
+```
+
+或使用一键启动脚本：`./scripts/start_all.sh`
+
+### 快速开始
+
+> 已安装？跳到第二步。否则先完成 [安装](#安装)。
+
+#### 1. 启动服务
+
+```bash
+# 一键启动所有服务（Consul + 框架守护进程 + 看板）
+./scripts/start_all.sh
+
+# 或手动分别启动：
+./scripts/start_consul_dev.sh           # 终端 1：Consul dev 模式
+python -m harness_framework.daemon      # 终端 2：框架守护进程（端口 8080）
+cd agent_dashboard && npm run dev       # 终端 3：看板（端口 3000）
+```
+
+#### 2. 初始化工作流
+
+```bash
 python scripts/sync_to_consul.py req-001 examples/dependencies.example.json \
   --title "用户登录功能"
 ```

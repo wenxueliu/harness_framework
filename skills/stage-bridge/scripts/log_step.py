@@ -17,7 +17,8 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _consul import (  # noqa: E402
-    env, kv_get, kv_put, session_base, emit_json, die, now_iso
+    env, kv_get, kv_put, session_base, emit_json, die, now_iso,
+    get_current_run,
 )
 
 
@@ -40,11 +41,14 @@ def main():
         # 自动生成（建议 Agent 启动时显式设置）
         session_id = f"{agent_id}-{int(time.time())}"
 
+    run_id = get_current_run(args.req_id) or ""
+
     payload = {
         "ts": now_iso(),
         "agent_id": agent_id,
         "level": args.level,
         "message": args.message,
+        "run_id": run_id,
     }
     if args.data:
         try:

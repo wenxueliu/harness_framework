@@ -35,6 +35,8 @@ from _consul import (  # noqa: E402
     env, kv_get, kv_put, kv_delete, emit_json, die, now_iso,
     consul_health_check, service_register_safe, service_deregister_safe,
     health_check_pass_safe,
+    ensure_run, record_transition, get_current_run,
+    record_session_start, record_session_end,
 )
 
 # ── 状态文件 ───────────────────────────────────────────────────────────────
@@ -171,7 +173,17 @@ def claim_task(req_id: str, task_name: str, agent_id: str) -> tuple[bool, dict]:
     kv_put(f"{base}/started_at", ts)
     kv_put(f"{base}/worker_pid", str(os.getpid()))
 
-    # 4. 读取完整上下文
+    # 4. 记录状态转换
+    run_id = ensure_run(req_id)
+    record_transition(
+        req_id, run_id, task_name,
+        previous_state="PENDING",
+        new_state="IN_PROGRESS",
+        actor=agent_id,
+        reason="claimed by worker",
+    )
+
+    # 5. 读取完整上下文
     task_meta = load_task_meta(req_id, task_name)
     context = load_context(req_id)
 
@@ -188,6 +200,16 @@ def complete_task(req_id: str, task_name: str, agent_id: str,
     """标记任务完成。"""
     base = f"workflows/{req_id}/tasks/{task_name}"
     ts = now_iso()
+    # 记录状态转换
+    prev_status, _ = kv_get(f"{base}/status")
+    run_id = ensure_run(req_id)
+    record_transition(
+        req_id, run_id, task_name,
+        previous_state=prev_status or "IN_PROGRESS",
+        new_state="DONE",
+        actor=agent_id,
+        reason="task completed",
+    )
     kv_put(f"{base}/status", "DONE")
     kv_put(f"{base}/completed_by", agent_id)
     kv_put(f"{base}/completed_at", ts)
@@ -200,6 +222,16 @@ def fail_task(req_id: str, task_name: str, agent_id: str,
     """标记任务失败。"""
     base = f"workflows/{req_id}/tasks/{task_name}"
     ts = now_iso()
+    # 记录状态转换
+    prev_status, _ = kv_get(f"{base}/status")
+    run_id = ensure_run(req_id)
+    record_transition(
+        req_id, run_id, task_name,
+        previous_state=prev_status or "IN_PROGRESS",
+        new_state="FAILED",
+        actor=agent_id,
+        reason=error,
+    )
     kv_put(f"{base}/status", "FAILED")
     kv_put(f"{base}/failed_by", agent_id)
     kv_put(f"{base}/failed_at", ts)
@@ -208,16 +240,24 @@ def fail_task(req_id: str, task_name: str, agent_id: str,
 
 
 def log_step(req_id: str, task_name: str, agent_id: str,
-             step_type: str, message: str) -> None:
-    """记录执行步骤到会话流。"""
+             step_type: str, message: str,
+             level: str = "info", data: dict = None) -> None:
+    """记录执行步骤到会话流（JSON blob 格式，与 log_step.py 一致）。"""
     session_id = f"{agent_id}-{int(time.time())}"
     ts = now_iso()
-    seq = str(int(time.time() * 1000))
+    seq = str(int(time.time() * 1000000))
+    run_id = get_current_run(req_id) or ""
+    payload = {
+        "ts": ts,
+        "agent_id": agent_id,
+        "level": level,
+        "message": message,
+        "step_type": step_type,
+        "run_id": run_id,
+        "data": data or {},
+    }
     base = f"workflows/{req_id}/sessions/{task_name}/{session_id}/events/{seq}"
-    kv_put(f"{base}/type", step_type)
-    kv_put(f"{base}/message", message)
-    kv_put(f"{base}/timestamp", ts)
-    kv_put(f"{base}/agent", agent_id)
+    kv_put(base, json.dumps(payload, ensure_ascii=False))
 
 
 def check_control(req_id: str) -> Optional[str]:
@@ -333,6 +373,12 @@ def execute_task(req_id: str, task_name: str, task_meta: dict,
     agent_id = config["agent_id"]
     executor = config.get("executor")
 
+    # 记录 session 开始
+    run_id = get_current_run(req_id) or ensure_run(req_id)
+    session_id = f"{agent_id}-{int(time.time())}"
+    record_session_start(req_id, run_id, task_name, session_id, agent_id)
+    error_count = 0
+
     log_step(req_id, task_name, agent_id, "EXEC_START",
              f"开始执行 {task_name} (type={task_meta.get('type')})")
 
@@ -341,6 +387,8 @@ def execute_task(req_id: str, task_name: str, task_meta: dict,
         print(f"[worker] 无 executor，任务 {task_name} 标记为 DONE（占位模式）", file=sys.stderr)
         log_step(req_id, task_name, agent_id, "EXEC_END",
                  f"占位模式完成 {task_name}")
+        record_session_end(req_id, run_id, task_name, event_count=1, error_count=0,
+                           status="completed", summary=f"占位模式完成 {task_name}")
         return {"status": "DONE", "mode": "placeholder", "message": "无 executor，跳过实际执行"}
 
     # 构建 executor 输入
@@ -374,10 +422,16 @@ def execute_task(req_id: str, task_name: str, task_meta: dict,
                 result = {"status": "DONE", "stdout": proc.stdout}
             log_step(req_id, task_name, agent_id, "EXEC_END",
                      f"任务执行成功: {task_name}")
+            record_session_end(req_id, run_id, task_name, event_count=2, error_count=0,
+                               status="completed", summary=f"任务 {task_name} 执行成功")
             return result
         else:
+            error_count = 1
             log_step(req_id, task_name, agent_id, "EXEC_ERROR",
                      f"executor 退出码 {proc.returncode}: {proc.stderr[:500]}")
+            record_session_end(req_id, run_id, task_name, event_count=2, error_count=1,
+                               status="error",
+                               summary=f"executor 退出码 {proc.returncode}")
             return {
                 "status": "FAILED",
                 "exit_code": proc.returncode,
@@ -387,10 +441,14 @@ def execute_task(req_id: str, task_name: str, task_meta: dict,
     except subprocess.TimeoutExpired:
         log_step(req_id, task_name, agent_id, "EXEC_TIMEOUT",
                  f"任务超时: {task_name}")
+        record_session_end(req_id, run_id, task_name, event_count=2, error_count=1,
+                           status="error", summary="任务超时")
         return {"status": "FAILED", "error": "task_timeout"}
     except Exception as e:
         log_step(req_id, task_name, agent_id, "EXEC_ERROR",
                  f"executor 异常: {e}")
+        record_session_end(req_id, run_id, task_name, event_count=2, error_count=1,
+                           status="error", summary=str(e))
         return {"status": "FAILED", "error": str(e)}
 
 
