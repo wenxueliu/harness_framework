@@ -13,14 +13,14 @@ import json
 import logging
 import time
 
-from .consul_client import ConsulClient
+from .kv_store_protocol import KVStore
 from .run_manager import RunManager
 
 log = logging.getLogger("watchdog")
 
 
 class Watchdog:
-    def __init__(self, consul: ConsulClient,
+    def __init__(self, consul: KVStore,
                  run_manager: RunManager,
                  poll_interval: int = 30,
                  task_timeout_seconds: int = 120,

@@ -17,7 +17,7 @@ from dataclasses import dataclass, field, asdict
 from enum import Enum
 from typing import Optional
 
-from .consul_client import ConsulClient
+from .kv_store_protocol import KVStore
 
 
 class MessageStatus(str, Enum):
@@ -72,7 +72,7 @@ class Message:
 
 
 class MessageBus:
-    def __init__(self, consul: ConsulClient):
+    def __init__(self, consul: KVStore):
         self.consul = consul
 
     def send(self, req_id: str, from_task: str, to_task: str,

@@ -20,7 +20,7 @@ import time
 import uuid
 from typing import Any, Optional
 
-from .consul_client import ConsulClient
+from .kv_store_protocol import KVStore
 
 log = logging.getLogger("run_manager")
 
@@ -28,7 +28,7 @@ RUN_TERMINAL_STATES = frozenset({"COMPLETED", "FAILED", "ABORTED", "SUPERSEDED"}
 
 
 class RunManager:
-    def __init__(self, consul: ConsulClient):
+    def __init__(self, consul: KVStore):
         self.consul = consul
 
     # ── Run 生命周期 ────────────────────────────────────────────────────────

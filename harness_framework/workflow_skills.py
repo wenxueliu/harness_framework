@@ -10,11 +10,11 @@ import json
 import time
 from typing import Optional
 
-from .consul_client import ConsulClient
+from .kv_store_protocol import KVStore
 
 
 class WorkflowSkills:
-    def __init__(self, consul: ConsulClient):
+    def __init__(self, consul: KVStore):
         self.consul = consul
 
     def check_workflow_status(self, req_id: str) -> str:

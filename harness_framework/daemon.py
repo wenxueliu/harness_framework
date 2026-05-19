@@ -84,6 +84,16 @@ def main() -> None:
     p.add_argument("--no-aggregator", action="store_true")
     p.add_argument("--no-watchdog", action="store_true")
     p.add_argument("--no-webapi", action="store_true")
+    p.add_argument("--local", action="store_true",
+                   help="使用本地内存存储替代 Consul（含嵌入式 HTTP 服务器）")
+    p.add_argument("--local-port", type=int, default=8500,
+                   help="本地模式 HTTP 服务器端口（默认 8500）")
+    p.add_argument("--local-data-file", default="",
+                   help="本地模式 JSON 持久化文件路径 "
+                        "（默认 ~/.harness/local_store.json）")
+    p.add_argument("--local-file", action="store_true",
+                   help="纯文件模式：使用 JSON 文件存储，无 HTTP 服务器。"
+                        "Agent 通过 scripts/file_kv.py 直接读写文件")
     args = p.parse_args()
 
     setup_logging(args.log_level, log_dir=args.log_dir,
@@ -91,16 +101,40 @@ def main() -> None:
                   backup_count=args.log_backup_count)
     log = logging.getLogger("daemon")
 
-    consul = ConsulClient(addr=args.consul, token=args.token)
+    local_store: Any = None
+    local_server: Any = None
 
-    # 启动检查
-    try:
-        consul.kv_get("framework/healthcheck")
-        log.info("Consul 连接成功: %s", args.consul)
-    except Exception as e:
-        log.error("Consul 连接失败: %s", e)
-        sys.exit(2)
-    consul.kv_put("framework/started_at", _now_iso())
+    if args.local_file:
+        # 纯文件模式：FileStore，无 HTTP 服务器
+        from .file_store import FileStore, DEFAULT_DATA_FILE
+        data_file = args.local_data_file or DEFAULT_DATA_FILE
+        consul = FileStore(data_file=data_file,
+                           heartbeat_timeout=args.heartbeat_timeout)
+        local_store = consul
+        log.info("FileStore 已启动 (data=%s, 无 HTTP 服务器)", data_file)
+        log.info("Agent 请使用 scripts/file_kv.py --data-file '%s' 操作 KV", data_file)
+    elif args.local:
+        from .local_store import LocalStore, start_local_consul_server
+        data_file = args.local_data_file or os.path.expanduser(
+            "~/.harness/local_store.json")
+        consul = LocalStore(data_file=data_file,
+                            heartbeat_timeout=args.heartbeat_timeout)
+        local_store = consul
+        local_server, _ = start_local_consul_server(
+            consul, host="0.0.0.0", port=args.local_port)
+        log.info("LocalStore 已启动 (HTTP on 0.0.0.0:%d, data=%s)",
+                 args.local_port, data_file)
+    else:
+        consul = ConsulClient(addr=args.consul, token=args.token)
+
+        # 启动检查
+        try:
+            consul.kv_get("framework/healthcheck")
+            log.info("Consul 连接成功: %s", args.consul)
+        except Exception as e:
+            log.error("Consul 连接失败: %s", e)
+            sys.exit(2)
+        consul.kv_put("framework/started_at", _now_iso())
 
     # 共享的 RunManager 实例
     run_manager = RunManager(consul)
@@ -151,6 +185,13 @@ def main() -> None:
                 pass
         if server:
             threading.Thread(target=server.shutdown, daemon=True).start()
+        if local_store:
+            try:
+                local_store.flush()
+            except Exception:
+                pass
+        if local_server:
+            threading.Thread(target=local_server.shutdown, daemon=True).start()
 
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)

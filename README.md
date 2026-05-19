@@ -91,7 +91,12 @@ harness_framework/
 ├── aggregator.py      # Listens to DAG changes, activates downstream tasks
 ├── watchdog.py        # Detects agent liveness and task timeout, auto-recovers
 ├── webapi.py          # HTTP API for dashboard queries and control signals
-└── consul_client.py   # Consul HTTP client (stdlib only, no external deps)
+├── message_bus.py     # Inter-task messaging
+├── run_manager.py     # Task lifecycle management
+├── consul_client.py   # Consul HTTP client (stdlib only)
+├── kv_store_protocol.py  # KVStore Protocol — storage abstraction layer
+├── local_store.py        # In-memory store + embedded Consul HTTP server
+└── file_store.py         # JSON file store (pure local, no HTTP server)
 ```
 
 **Three Core Components:**
@@ -131,10 +136,14 @@ The framework layer enforces **what must happen** (dependencies, retry logic, ti
 | Component | Required | Check Command |
 |-----------|----------|---------------|
 | **Python** | 3.9+ | `python3 --version` |
-| **Consul** | 1.18.x | `consul version` |
+| **Consul** | 1.18.x (optional, see local modes) | `consul version` |
 | **Node.js + npm** | 18+ (dashboard only) | `node --version && npm --version` |
 
-#### Step 1: Install Consul
+> Consul is **optional**. Use `--local` or `--local-file` to run without any external dependencies.
+
+#### Step 1: Install Consul (optional — skip for local modes)
+
+> Use `--local` or `--local-file` to run without Consul. See [Local Modes](#local-modes).
 
 ```bash
 # macOS
@@ -193,13 +202,21 @@ Or use the one-click launcher: `./scripts/start_all.sh`
 #### 1. Start services
 
 ```bash
+# Option A: Local file mode — zero dependencies, simplest start
+python -m harness_framework.daemon --local-file
+
+# Option B: Local + HTTP mode — embedded Consul API server
+python -m harness_framework.daemon --local
+
+# Option C: Consul mode — requires Consul running
+./scripts/start_consul_dev.sh           # Terminal 1: Consul dev mode
+python -m harness_framework.daemon      # Terminal 2: framework daemon (port 8080)
+
 # One-click: start everything (Consul + framework daemon + dashboard)
 ./scripts/start_all.sh
 
-# Or start services manually:
-./scripts/start_consul_dev.sh           # Terminal 1: Consul dev mode
-python -m harness_framework.daemon      # Terminal 2: framework daemon (port 8080)
-cd agent_dashboard && npm run dev       # Terminal 3: dashboard (port 3000)
+# Dashboard (optional)
+cd agent_dashboard && npm run dev       # port 3000
 ```
 
 #### 2. Initialize a workflow
@@ -316,9 +333,55 @@ The framework is designed to handle large-scale enterprise workflows with high p
 | `--port` | `8080` | WebAPI listening port |
 | `--aggregator-interval` | `5` | DAG polling interval (seconds) |
 | `--watchdog-interval` | `30` | Zombie task detection interval (seconds) |
-| `--task-timeout` | `3600` | Task timeout (seconds) |
+| `--task-timeout` | `120` | Task timeout (seconds) |
+| `--heartbeat-timeout` | `120` | Agent heartbeat timeout (seconds) |
+| `--max-retry` | `3` | Max task retry count |
+| `--local` | — | Enable in-memory store + embedded Consul HTTP server |
+| `--local-file` | — | Enable JSON file store (pure local, no HTTP server) |
+| `--local-port` | `8500` | Embedded HTTP server port (for `--local`) |
+| `--local-data-file` | `~/.harness/file_store.json` | Data file path (for `--local-file`) |
 
 Environment variables: `CONSUL_ADDR`, `CONSUL_TOKEN`
+
+### Local Modes
+
+Two local modes eliminate the Consul dependency entirely.
+
+#### `--local` — In-memory store with embedded HTTP server
+
+Stores all state in memory (with optional JSON persistence). Starts an embedded HTTP server on port 8500 that implements the Consul v1 API subset. External agents connect via `CONSUL_ADDR=127.0.0.1:8500` using their existing `_consul.py` client.
+
+```bash
+python -m harness_framework.daemon --local
+python -m harness_framework.daemon --local --local-port 9500 --local-data-file /tmp/store.json
+```
+
+#### `--local-file` — Pure file store (no HTTP server)
+
+Stores all state in a JSON file using `fcntl.flock` for process-safe concurrent access. No HTTP server — agents use `scripts/file_kv.py` CLI to read/write the file directly.
+
+```bash
+# Start daemon
+python -m harness_framework.daemon --local-file --local-data-file /tmp/store.json
+
+# Agent operations (from any terminal)
+python scripts/file_kv.py --data-file /tmp/store.json put workflows/req-001/tasks/design/status PENDING
+python scripts/file_kv.py --data-file /tmp/store.json get workflows/ --recurse
+python scripts/file_kv.py register '{"ID":"agent-1","Name":"agent-worker","Tags":[],"Meta":{}}'
+python scripts/file_kv.py heartbeat agent-1
+python scripts/file_kv.py deregister agent-1
+```
+
+#### Mode Comparison
+
+| | Consul | `--local` | `--local-file` |
+|---|---|---|---|
+| **External deps** | Consul binary | None | None |
+| **HTTP server** | Consul (8500) | Embedded (8500) | None |
+| **Agent protocol** | HTTP → Consul | HTTP → embedded | `file_kv.py` CLI |
+| **Persistence** | Consul Raft | Optional JSON file | JSON file (always) |
+| **Process-safe** | Consul CAS | `threading.RLock` | `fcntl.flock` |
+| **Best for** | Production | Dev/test with agents | Dev/debug, single node |
 
 ### Consul UI vs Business Dashboard
 
@@ -421,7 +484,12 @@ harness_framework/
 ├── aggregator.py      # 监听 DAG 状态变更，激活下游任务
 ├── watchdog.py        # 检测 Agent 存活和任务超时，自动恢复
 ├── webapi.py          # HTTP API：看板聚合查询和控制信号写入
-└── consul_client.py   # Consul HTTP 客户端（仅标准库）
+├── message_bus.py     # 任务间消息通信
+├── run_manager.py     # 任务生命周期管理
+├── consul_client.py   # Consul HTTP 客户端（仅标准库）
+├── kv_store_protocol.py  # KVStore Protocol — 存储层抽象接口
+├── local_store.py        # LocalStore — 内存存储 + 内嵌 Consul HTTP 服务器
+└── file_store.py         # FileStore — JSON 文件存储（纯本地，无 HTTP）
 ```
 
 **三大核心组件：**
@@ -461,10 +529,14 @@ Harness Engineer 由两层组成：
 | 组件 | 要求 | 检查命令 |
 |------|------|----------|
 | **Python** | 3.9+ | `python3 --version` |
-| **Consul** | 1.18.x | `consul version` |
+| **Consul** | 1.18.x（可选，见本地模式） | `consul version` |
 | **Node.js + npm** | 18+（仅看板需要） | `node --version && npm --version` |
 
-#### 第一步：安装 Consul
+> Consul **可选**。使用 `--local` 或 `--local-file` 无需任何外部依赖即可运行。
+
+#### 第一步：安装 Consul（可选 — 本地模式可跳过）
+
+> 使用 `--local` 或 `--local-file` 无需 Consul。详见[本地模式](#本地模式)。
 
 ```bash
 # macOS
@@ -523,13 +595,21 @@ cd agent_dashboard && npm run dev
 #### 1. 启动服务
 
 ```bash
-# 一键启动所有服务（Consul + 框架守护进程 + 看板）
-./scripts/start_all.sh
+# 选项 A：纯文件模式 — 零依赖，最简启动
+python -m harness_framework.daemon --local-file
 
-# 或手动分别启动：
+# 选项 B：本地 + HTTP 模式 — 内嵌 Consul API 服务器
+python -m harness_framework.daemon --local
+
+# 选项 C：Consul 模式 — 需要先启动 Consul
 ./scripts/start_consul_dev.sh           # 终端 1：Consul dev 模式
 python -m harness_framework.daemon      # 终端 2：框架守护进程（端口 8080）
-cd agent_dashboard && npm run dev       # 终端 3：看板（端口 3000）
+
+# 一键启动所有服务（Consul + 框架 + 看板）
+./scripts/start_all.sh
+
+# 看板（可选）
+cd agent_dashboard && npm run dev       # 端口 3000
 ```
 
 #### 2. 初始化工作流
@@ -646,9 +726,55 @@ python scripts/add_task.py req-001 api-gateway \
 | `--port` | `8080` | WebAPI 监听端口 |
 | `--aggregator-interval` | `5` | DAG 推进轮询间隔（秒） |
 | `--watchdog-interval` | `30` | 僵尸任务检测间隔（秒） |
-| `--task-timeout` | `3600` | 单任务超时时间（秒） |
+| `--task-timeout` | `120` | 单任务超时时间（秒） |
+| `--heartbeat-timeout` | `120` | Agent 心跳超时（秒） |
+| `--max-retry` | `3` | 任务最大重试次数 |
+| `--local` | — | 启用内存存储 + 内嵌 Consul HTTP 服务器 |
+| `--local-file` | — | 启用 JSON 文件存储（纯本地，无 HTTP） |
+| `--local-port` | `8500` | 内嵌 HTTP 服务器端口（`--local` 模式） |
+| `--local-data-file` | `~/.harness/file_store.json` | 数据文件路径（`--local-file` 模式） |
 
 环境变量：`CONSUL_ADDR`、`CONSUL_TOKEN`
+
+### 本地模式
+
+两种本地模式可完全消除 Consul 依赖。
+
+#### `--local` — 内存存储 + 内嵌 HTTP 服务器
+
+状态存储在内存中（可选 JSON 持久化）。启动内嵌 HTTP 服务器（端口 8500）实现 Consul v1 API 子集。外部 Agent 通过 `CONSUL_ADDR=127.0.0.1:8500` 使用现有 `_consul.py` 客户端连接。
+
+```bash
+python -m harness_framework.daemon --local
+python -m harness_framework.daemon --local --local-port 9500 --local-data-file /tmp/store.json
+```
+
+#### `--local-file` — 纯文件存储（无 HTTP 服务器）
+
+状态存储在 JSON 文件中，使用 `fcntl.flock` 实现进程间并发安全。无 HTTP 服务器，Agent 通过 `scripts/file_kv.py` CLI 直接读写文件。
+
+```bash
+# 启动 daemon
+python -m harness_framework.daemon --local-file --local-data-file /tmp/store.json
+
+# Agent 操作（可在任意终端执行）
+python scripts/file_kv.py --data-file /tmp/store.json put workflows/req-001/tasks/design/status PENDING
+python scripts/file_kv.py --data-file /tmp/store.json get workflows/ --recurse
+python scripts/file_kv.py register '{"ID":"agent-1","Name":"agent-worker","Tags":[],"Meta":{}}'
+python scripts/file_kv.py heartbeat agent-1
+python scripts/file_kv.py deregister agent-1
+```
+
+#### 模式对比
+
+| | Consul | `--local` | `--local-file` |
+|---|---|---|---|
+| **外部依赖** | Consul 二进制 | 无 | 无 |
+| **HTTP 服务器** | Consul (8500) | 内嵌 (8500) | 无 |
+| **Agent 协议** | HTTP → Consul | HTTP → 内嵌服务器 | `file_kv.py` CLI |
+| **持久化** | Consul Raft | 可选 JSON 文件 | JSON 文件（始终） |
+| **进程安全** | Consul CAS | `threading.RLock` | `fcntl.flock` |
+| **适用场景** | 生产环境 | 有 Agent 的开发/测试 | 单节点开发/调试 |
 
 ### Consul UI 与业务看板的关系
 

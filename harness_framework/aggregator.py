@@ -14,14 +14,14 @@ import logging
 import time
 from typing import Optional
 
-from .consul_client import ConsulClient
+from .kv_store_protocol import KVStore
 from .run_manager import RunManager
 
 log = logging.getLogger("aggregator")
 
 
 class Aggregator:
-    def __init__(self, consul: ConsulClient, run_manager: RunManager,
+    def __init__(self, consul: KVStore, run_manager: RunManager,
                  poll_interval: int = 5):
         self.consul = consul
         self.run_manager = run_manager

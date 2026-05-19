@@ -29,16 +29,29 @@ harness_framework/
 ├── webapi.py          # HTTP API 为业务看板提供聚合查询与控制信号写入
 ├── message_bus.py     # 任务间消息通信（发送、轮询、完成）
 ├── run_manager.py     # 任务生命周期编排（认领 → 执行 → 日志 → 完成/失败）
-└── consul_client.py   # Consul HTTP 客户端（仅标准库，无外部依赖）
+├── consul_client.py   # Consul HTTP 客户端（仅标准库，无外部依赖）
+├── kv_store_protocol.py  # KVStore Protocol — 存储层抽象接口
+├── local_store.py        # LocalStore — 内存存储 + 内嵌 Consul HTTP 服务器
+└── file_store.py         # FileStore — JSON 文件存储（纯本地，无 HTTP）
 ```
 
 **四大组件：**
 - **Aggregator**：仅处理 `published=true` 的 workflow，轮询任务状态，当依赖全部 DONE 时将下游任务设为 PENDING。**重测逻辑由 Test Agent 通过 Message Bus 自行管理**。
-- **Watchdog**：仅处理 `published=true` 的 workflow，轮询 Consul Health 检测 Agent 是否存活，检测任务超时（默认 1h），超时或 Agent 死亡时将任务回滚为 PENDING（最多 5 次重试，超过则 FAILED）。
+- **Watchdog**：仅处理 `published=true` 的 workflow，轮询 Agent 健康状态检测是否存活，检测任务超时（默认 1h），超时或 Agent 死亡时将任务回滚为 PENDING（最多 5 次重试，超过则 FAILED）。
 - **WebAPI**：基于标准库 `http.server` 的 ThreadingHTTPServer，提供 `/api/workflows`、`/api/workflow/<req_id>`、`/api/agents` 等端点。
-- **RunManager**：任务生命周期管理器，通过 Consul CAS 认领 PENDING 任务，记录步骤日志，处理完成/失败状态流转。Agent 通过 stage-bridge 脚本调用。
+- **RunManager**：任务生命周期管理器，通过 CAS 认领 PENDING 任务，记录步骤日志，处理完成/失败状态流转。Agent 通过 stage-bridge 脚本调用。
+
+**三种存储后端：**
+
+| 模式 | 启动参数 | 外部依赖 | Agent 通信方式 |
+|------|---------|---------|--------------|
+| Consul | (默认) | Consul 服务 | HTTP → Consul |
+| Local + HTTP | `--local` | 无 | HTTP → 内嵌 Consul API 服务器 |
+| 纯文件 | `--local-file` | 无 | `scripts/file_kv.py` CLI 直接读写 JSON 文件 |
 
 ## 使用步骤
+
+**Consul 模式（需要先启动 Consul）：**
 
 1. **定义依赖**：编写 `dependencies.json`，描述任务拓扑及依赖关系
 2. **启动 Consul**：`./scripts/start_consul_dev.sh`
@@ -46,6 +59,24 @@ harness_framework/
 4. **初始化需求**：`python scripts/sync_to_consul.py <req_id> dependencies.json --title "需求标题"`
 5. **查看状态**：访问 WebAPI 或 Consul UI 查看任务进度
 6. **人工干预**：如需调整，通过 API 修改任务状态或重分配
+
+**本地模式（零依赖，无需 Consul）：**
+
+```bash
+# 内存模式（含内嵌 HTTP 服务器，Agent 通过 HTTP 连接）
+python -m harness_framework.daemon --local
+
+# 纯文件模式（无 HTTP 服务器，Agent 通过 CLI 读写 JSON 文件）
+python -m harness_framework.daemon --local-file
+
+# 纯文件模式 + 自定义数据文件
+python -m harness_framework.daemon --local-file --local-data-file /path/to/store.json
+
+# Agent 在纯文件模式下操作 KV：
+python scripts/file_kv.py --data-file ~/.harness/file_store.json put workflows/req-001/tasks/design/status PENDING
+python scripts/file_kv.py --data-file ~/.harness/file_store.json get workflows/ --recurse
+python scripts/file_kv.py --data-file ~/.harness/file_store.json heartbeat agent-1
+```
 
 ## 执行流程
 
@@ -108,13 +139,19 @@ consul_server/consul agent -server -ui -bootstrap-expect=1 --node harness_framew
 # 启动 Consul dev mode
 ./scripts/start_consul_dev.sh
 
-# 启动框架主进程（默认 8080 端口）
+# 启动框架主进程（默认 8080 端口，连接 Consul）
 python -m harness_framework.daemon
 
 # 指定端口和其他参数
 python -m harness_framework.daemon --port 9000 --consul 127.0.0.1:8500 --task-timeout 1800
 
-# 初始化一个需求（写入 Consul）
+# 本地内存模式（含内嵌 HTTP，Agent 通过 CONSUL_ADDR=127.0.0.1:8500 连接）
+python -m harness_framework.daemon --local
+
+# 纯文件模式（零网络，Agent 通过 file_kv.py CLI 操作）
+python -m harness_framework.daemon --local-file --local-data-file /tmp/store.json
+
+# 初始化一个需求（写入存储）
 python scripts/sync_to_consul.py req-001 examples/dependencies.example.json --title "用户登录功能"
 
 # 带日志级别启动
@@ -143,6 +180,8 @@ tests/
 ├── test_webapi.py           # WebAPI 单元测试
 ├── test_message_bus.py      # MessageBus 单元测试
 ├── test_run_manager.py      # RunManager 单元测试
+├── test_local_store.py      # LocalStore + HTTP 服务器测试
+├── test_file_store.py       # FileStore + CLI 测试
 ├── test_sync_to_consul.py   # sync_to_consul 脚本测试
 └── e2e/                     # E2E 测试套件
     ├── conftest.py          # E2E fixtures（真实 Consul + daemon）

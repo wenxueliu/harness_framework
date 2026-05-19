@@ -19,7 +19,10 @@ harness_framework/
 ├── watchdog.py        # Zombie recovery: detects Agent death and task timeout
 ├── webapi.py          # HTTP API: dashboard queries and control signals
 ├── message_bus.py     # Inter-task messaging: send, poll, complete
-└── consul_client.py   # Consul HTTP client (stdlib only, zero external deps)
+├── consul_client.py   # Consul HTTP client (stdlib only, zero external deps)
+├── kv_store_protocol.py  # KVStore Protocol — storage abstraction
+├── local_store.py        # LocalStore — in-memory + embedded Consul HTTP
+└── file_store.py         # FileStore — JSON file (pure local, no HTTP)
 ```
 
 **Three core components:**
@@ -29,12 +32,22 @@ harness_framework/
 
 ## Quick Start
 
+**With Consul:**
 1. **Define dependencies:** Write `dependencies.json` describing task topology
 2. **Start Consul:** `./scripts/start_consul_dev.sh`
 3. **Start framework:** `python -m harness_framework.daemon`
 4. **Initialize workflow:** `python scripts/sync_to_consul.py <req_id> dependencies.json --title "Title"`
 5. **Monitor:** Access WebAPI or Consul UI
 6. **Intervene:** Use API to modify task state or reassign as needed
+
+**Local mode (zero dependencies):**
+```bash
+# In-memory + embedded HTTP server (agents connect via HTTP)
+python -m harness_framework.daemon --local
+
+# Pure file mode (no HTTP, agents use file_kv.py CLI)
+python -m harness_framework.daemon --local-file
+```
 
 ## Execution Flow
 
@@ -43,6 +56,14 @@ harness_framework/
 3. **Fault recovery:** Watchdog detects timeout/Agent death → rolls back to PENDING (≤5 retries)
 4. **Quality gate:** test failure → sends FIX message → polls for fix completion → retests (≤3 retries)
 5. **Flow termination:** All tasks DONE → flow complete; retry limit exceeded → FAILED
+
+## Storage Backends
+
+| Mode | Flag | Agent Communication |
+|------|------|---------------------|
+| **Consul** | (default) | HTTP → Consul server |
+| **Local + HTTP** | `--local` | HTTP → embedded Consul API |
+| **File Store** | `--local-file` | `scripts/file_kv.py` CLI → JSON file |
 
 ## Consul KV Structure
 

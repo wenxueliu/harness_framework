@@ -18,7 +18,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
-from .consul_client import ConsulClient
+from .kv_store_protocol import KVStore
 from .message_bus import MessageBus, MessageStatus
 from .workflow_skills import WorkflowSkills
 from .run_manager import RunManager
@@ -27,7 +27,7 @@ log = logging.getLogger("webapi")
 
 
 class APIHandler(BaseHTTPRequestHandler):
-    consul: ConsulClient = None
+    consul: KVStore = None
     message_bus: MessageBus = None
     run_manager: RunManager = None
 
@@ -431,7 +431,7 @@ class APIHandler(BaseHTTPRequestHandler):
         return self._send_json(400, result)
 
 
-def serve(consul: ConsulClient, host: str = "0.0.0.0", port: int = 8080,
+def serve(consul: KVStore, host: str = "0.0.0.0", port: int = 8080,
           run_manager: RunManager = None) -> ThreadingHTTPServer:
     APIHandler.consul = consul
     APIHandler.message_bus = MessageBus(consul)
