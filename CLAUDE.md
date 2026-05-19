@@ -1,4 +1,3 @@
-# CLAUDE.md
 
 > This file delegates to the canonical `AGENTS.md` for comprehensive project guidelines.
 > @AGENTS.md

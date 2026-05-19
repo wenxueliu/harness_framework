@@ -273,6 +273,7 @@ skills/stage-bridge/scripts/
 
 ## 相关文档
 
+- [storage-modes-and-e2e-flow.md](./storage-modes-and-e2e-flow.md) — 三种存储模式详解 + 端到端执行流程
 - [status-state-machine.md](./status-state-machine.md) — 状态机定义
 - [proposal-protocol.md](./proposal-protocol.md) — 动态提案协议
 - [dynamic-tasks.md](./dynamic-tasks.md) — 动态任务设计
