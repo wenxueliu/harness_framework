@@ -159,6 +159,22 @@ python -m harness_framework.daemon --log-level DEBUG
 
 **配置方式**：命令行参数 > 环境变量 `CONSUL_ADDR` / `CONSUL_TOKEN`
 
+## Skills
+
+框架内置 7 个 skill，按用途分组：
+
+| Skill | 用途 | 适用模式 |
+|-------|------|---------|
+| `stage-bridge` | Agent 全生命周期管理（注册、心跳、抢占、完成、日志、上下文） | Consul / Local |
+| `task-executor` | 按任务类型（backend/test/design/review/deploy）执行 TDD 工作流 | Consul / Local |
+| `harness-sync` | 将 dependencies.json 同步到 Consul，初始化 workflow | Consul / Local |
+| `design-pipeline` | 设计文档 → dependencies.json 转换 + 同步 Consul | Consul / Local |
+| `doc-to-deps` | 任意文档（md/txt/json/yaml）→ dependencies.json 提取 | Consul / Local |
+| `file-kv` | local-file 模式下 Agent 通过 CLI 读写 KV、注册、心跳 | Local-file |
+| `add-task` | 向已有 workflow 增量添加单个任务（含约束验证） | Consul / Local |
+
+各 skill 详情见 `skills/<name>/SKILL.md`。
+
 ## 代码风格
 
 - 仅使用 Python 标准库
