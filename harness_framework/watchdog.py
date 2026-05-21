@@ -25,13 +25,17 @@ class Watchdog:
                  poll_interval: int = 30,
                  task_timeout_seconds: int = 120,
                  heartbeat_timeout: int = 120,
-                 max_retry: int = 3):
+                 max_retry: int = 3,
+                 standalone: bool = False,
+                 default_agent_id: str = "standalone-agent"):
         self.consul = consul
         self.run_manager = run_manager
         self.poll_interval = poll_interval
         self.task_timeout = task_timeout_seconds
         self.heartbeat_timeout = heartbeat_timeout
         self.max_retry = max_retry
+        self.standalone = standalone
+        self.default_agent_id = default_agent_id
         self._stop = False
 
     def stop(self) -> None:
@@ -98,7 +102,13 @@ class Watchdog:
                 continue
 
     def _alive_agents(self) -> set:
-        """从 Consul Health 拉取所有 passing 的 agent-worker 实例 ID。"""
+        """拉取所有存活的 agent-worker 实例 ID。
+
+        单机模式下直接返回默认 Agent ID，跳过服务发现和心跳检查。
+        """
+        if self.standalone:
+            return {self.default_agent_id}
+
         services = self.consul.list_services("agent-worker")
         out = set()
         for svc in services:

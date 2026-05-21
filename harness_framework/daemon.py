@@ -94,6 +94,11 @@ def main() -> None:
     p.add_argument("--local-file", action="store_true",
                    help="纯文件模式：使用 JSON 文件存储，无 HTTP 服务器。"
                         "Agent 通过 scripts/file_kv.py 直接读写文件")
+    p.add_argument("--standalone", action="store_true",
+                   help="单机模式：Agent 无需注册/注销/心跳，"
+                        "框架提供默认 Agent ID 始终视为存活")
+    p.add_argument("--standalone-agent-id", default="standalone-agent",
+                   help="单机模式的默认 Agent ID（默认 standalone-agent）")
     args = p.parse_args()
 
     setup_logging(args.log_level, log_dir=args.log_dir,
@@ -105,7 +110,8 @@ def main() -> None:
     local_server: Any = None
 
     if args.local_file:
-        # 纯文件模式：FileStore，无 HTTP 服务器
+        # 纯文件模式：FileStore，无 HTTP 服务器，自动启用单机模式
+        args.standalone = True
         from .file_store import FileStore, DEFAULT_DATA_FILE
         data_file = args.local_data_file or DEFAULT_DATA_FILE
         consul = FileStore(data_file=data_file,
@@ -139,6 +145,10 @@ def main() -> None:
     # 共享的 RunManager 实例
     run_manager = RunManager(consul)
 
+    if args.standalone:
+        log.info("单机模式已启用，默认 Agent ID: %s（无需注册/心跳）",
+                 args.standalone_agent_id)
+
     threads: list[threading.Thread] = []
     components = []
 
@@ -157,7 +167,9 @@ def main() -> None:
                       poll_interval=args.watchdog_interval,
                       task_timeout_seconds=args.task_timeout,
                       heartbeat_timeout=args.heartbeat_timeout,
-                      max_retry=args.max_retry)
+                      max_retry=args.max_retry,
+                      standalone=args.standalone,
+                      default_agent_id=args.standalone_agent_id)
         components.append(wd)
         t = threading.Thread(target=wd.run, name="watchdog", daemon=True)
         t.start()

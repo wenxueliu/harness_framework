@@ -230,3 +230,63 @@ class TestWatchdog:
         )
         assert req001_pending, "req-001 backend should be recovered"
         assert req002_pending, "req-002 design should be recovered"
+
+    def test_standalone_always_alive(self):
+        """单机模式下 _alive_agents 直接返回默认 Agent ID，不查询服务列表。"""
+        consul = _make_store({})
+        consul.list_services = Mock(return_value=[])
+
+        wd = Watchdog(consul, run_manager=make_mock_run_manager(),
+                      standalone=True, default_agent_id="my-agent")
+        alive = wd._alive_agents()
+
+        assert alive == {"my-agent"}, \
+            f"standalone mode should return default agent ID, got {alive}"
+        consul.list_services.assert_not_called()
+
+    def test_standalone_ignore_dead_agent(self):
+        """单机模式下即便 list_services 为空，默认 Agent 的任务也不应被回收。"""
+        import datetime
+        recent_time = datetime.datetime.utcnow().isoformat() + "Z"
+        store = {
+            "workflows/req-001/published": "true",
+            "workflows/req-001/tasks/backend/status": "IN_PROGRESS",
+            "workflows/req-001/tasks/backend/assigned_agent": "standalone-agent",
+            "workflows/req-001/tasks/backend/started_at": recent_time,
+            "workflows/req-001/tasks/backend/retry_count": "0",
+        }
+        consul = _make_store(store)
+        consul.list_services = Mock(return_value=[])
+
+        wd = Watchdog(consul, run_manager=make_mock_run_manager(),
+                      standalone=True, default_agent_id="standalone-agent")
+        wd._tick()
+
+        assert not consul.kv_put.called, \
+            "standalone agent should not be recovered even with no registered services"
+
+    def test_standalone_still_recovers_timeout(self):
+        """单机模式下超时任务仍然会被回收。"""
+        import datetime
+        old_time = (datetime.datetime.utcnow() - datetime.timedelta(hours=3)).isoformat() + "Z"
+        store = {
+            "workflows/req-001/published": "true",
+            "workflows/req-001/tasks/backend/status": "IN_PROGRESS",
+            "workflows/req-001/tasks/backend/assigned_agent": "standalone-agent",
+            "workflows/req-001/tasks/backend/started_at": old_time,
+            "workflows/req-001/tasks/backend/retry_count": "0",
+        }
+        consul = _make_store(store)
+        consul.list_services = Mock(return_value=[])
+
+        wd = Watchdog(consul, run_manager=make_mock_run_manager(),
+                      standalone=True, default_agent_id="standalone-agent",
+                      task_timeout_seconds=3600, max_retry=3)
+        wd._tick()
+
+        backend_pending = any(
+            "backend" in str(c) and c[0][1] == "PENDING"
+            for c in consul.kv_put.call_args_list
+        )
+        assert backend_pending, \
+            "timeout should still be recovered in standalone mode"
