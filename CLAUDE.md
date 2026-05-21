@@ -4,9 +4,28 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+> **人类读者**：这是 AI 助手的参考指南。如果你是第一次使用，请从 [README.md](README.md) 开始。
+
 ## 工作原则
 
 - **尽量使用 subagent**: 执行复杂的、多步骤的、需要跨文件搜索或分析的任务时，优先通过 Agent 工具启动 subagent 来并行处理，减少主上下文窗口的消耗。
+
+## 文档导航
+
+用户文档在 `docs/` 目录，按学习路径组织：
+
+| 文档 | 用途 |
+|------|------|
+| `README.md` | 项目首页，一句话介绍 + 导航 |
+| `docs/quickstart.md` | 1 分钟快速上手 |
+| `docs/getting-started.md` | 5 分钟入门教程 |
+| `docs/concepts.md` | 核心概念：DAG、状态机、三大组件 |
+| `docs/architecture.md` | 架构设计深度文档 |
+| `docs/configuration.md` | 配置参考（CLI 参数 + 环境变量） |
+| `docs/agent-guide.md` | Agent 接入指南（三种模式） |
+| `docs/usage-guide.md` | 常见操作命令参考 |
+| `docs/storage-modes.md` | 三种存储后端深度对比 |
+| `docs/faq.md` | 常见设计决策问答 |
 
 ## 概述
 
@@ -50,14 +69,7 @@ harness_framework/
 
 ## 使用步骤
 
-**Consul 模式（需要先启动 Consul）：**
-
-1. **定义依赖**：编写 `dependencies.json`，描述任务拓扑及依赖关系
-2. **启动 Consul**：`./scripts/start_consul_dev.sh`
-3. **启动框架**：`python -m harness_framework.daemon`
-4. **初始化需求**：`python scripts/sync_to_consul.py <req_id> dependencies.json --title "需求标题"`
-5. **查看状态**：访问 WebAPI 或 Consul UI 查看任务进度
-6. **人工干预**：如需调整，通过 API 修改任务状态或重分配
+> 面向人类用户的完整教程见 [README.md](README.md) → [docs/quickstart.md](docs/quickstart.md)。
 
 **本地模式（零依赖，无需 Consul）：**
 
@@ -66,15 +78,22 @@ harness_framework/
 python -m harness_framework.daemon --local
 
 # 纯文件模式（无 HTTP 服务器，Agent 通过 CLI 读写 JSON 文件）
+# 注意：--local-file 自动启用单机模式，Agent 无需注册/心跳
 python -m harness_framework.daemon --local-file
 
 # 纯文件模式 + 自定义数据文件
 python -m harness_framework.daemon --local-file --local-data-file /path/to/store.json
 
-# Agent 在纯文件模式下操作 KV：
+# 单机模式：Agent 无需注册/心跳/注销，使用默认 ID
+python -m harness_framework.daemon --local --standalone
+python -m harness_framework.daemon --local-file   # 自动单机
+
+# 自定义单机 Agent ID
+python -m harness_framework.daemon --local-file --standalone-agent-id my-agent
+
+# Agent 在纯文件模式下操作 KV（单机模式无需 register/heartbeat/deregister）：
 python scripts/file_kv.py --data-file ~/.harness/file_store.json put workflows/req-001/tasks/design/status PENDING
 python scripts/file_kv.py --data-file ~/.harness/file_store.json get workflows/ --recurse
-python scripts/file_kv.py --data-file ~/.harness/file_store.json heartbeat agent-1
 ```
 
 ## 执行流程

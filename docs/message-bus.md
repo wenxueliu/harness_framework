@@ -1,5 +1,7 @@
 # 任务间消息通信
 
+> **初次接触？** 先看 [quickstart.md](quickstart.md) 和 [concepts.md](concepts.md)。本文是 Message Bus 的协议细节。
+
 框架提供基于 Consul KV 的异步消息队列，支持任务间的协作请求。
 
 ## 通信模型

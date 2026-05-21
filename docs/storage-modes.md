@@ -1,4 +1,6 @@
-# 存储模式详解与端到端执行流程
+# 存储模式详解
+
+> **快速导航**：想快速上手？先看 [quickstart.md](quickstart.md) 和 [getting-started.md](getting-started.md)。想了解 Agent 如何接入？看 [agent-guide.md](agent-guide.md)。本文是三种存储后端的深度对比。
 
 ## 目录
 
@@ -1469,4 +1471,4 @@ Agent 不需要知道。对于 Consul 和 Local 模式，Agent 只需配置 `CON
 - [动态任务提案](./proposal-protocol.md) — 动态任务提案协议
 - [Agent 重试模式](./agent-retry-pattern.md) — 重试策略详解
 - [记忆模型](./memory-model.md) — 共享上下文记忆设计
-- [架构文档](../archtecture.md) — 整体架构设计
+- [架构文档](architecture.md) — 整体架构设计

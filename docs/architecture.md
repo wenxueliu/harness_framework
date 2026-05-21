@@ -1,5 +1,7 @@
 # 多 Agent 软件开发平台 · 最终完整方案（v4.1）
 
+> **初次接触？** 从 [quickstart.md](quickstart.md) 开始，了解核心概念看 [concepts.md](concepts.md)。本文是完整的架构设计文档。
+
 ---
 
 ## 目录

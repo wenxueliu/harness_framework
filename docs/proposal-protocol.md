@@ -1,5 +1,7 @@
 # 动态任务提案协议（Proposal Protocol）
 
+> **初次接触？** 先看 [quickstart.md](quickstart.md) 和 [concepts.md](concepts.md)。本文是 Proposal 协议的完整规范。
+
 ## 背景
 
 框架通过 DAG 定义任务依赖，但实际执行中可能出现需要新增任务的场景：

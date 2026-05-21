@@ -1,107 +1,33 @@
-# 使用指南
+# 操作参考
 
-## 快速开始
-
-### 1. 启动 Consul
-
-```bash
-./scripts/start_consul_dev.sh
-# 或
-consul agent -dev -ui -bind=127.0.0.1
-```
-
-### 2. 启动框架
-
-```bash
-python -m harness_framework.daemon
-# 访问 http://127.0.0.1:8080 查看 WebAPI
-```
-
-### 3. 初始化需求
-
-```bash
-python scripts/sync_to_consul.py req-001 dependencies.json \
-  --title "用户登录功能" --publish
-```
-
-## 定义 dependencies.json
-
-```json
-{
-  "design-api": {
-    "type": "design",
-    "depends_on": [],
-    "service_name": "platform",
-    "description": "设计登录 API 契约"
-  },
-  "review-design": {
-    "type": "review",
-    "depends_on": ["design-api"],
-    "service_name": "platform",
-    "description": "评审 API 设计"
-  },
-  "build-backend": {
-    "type": "backend",
-    "depends_on": ["review-design"],
-    "service_name": "user-service",
-    "description": "实现登录接口"
-  },
-  "test-e2e": {
-    "type": "test",
-    "depends_on": ["build-backend"],
-    "service_name": "platform",
-    "description": "端到端测试"
-  }
-}
-```
-
-**字段说明**：
-
-| 字段 | 必填 | 说明 |
-|------|------|------|
-| `type` | 是 | 任务类型：design / review / backend / test / deploy |
-| `depends_on` | 是 | 依赖任务列表（数组），无依赖则空数组 |
-| `service_name` | 是 | 关联服务名，用于 Agent 过滤 |
-| `description` | 是 | 任务描述 |
+常见操作的命令参考。概念解释见 [concepts.md](concepts.md)。
 
 ## Agent 工作流
 
-### 启动 Agent
+### 启动 Agent（Consul / --local 模式）
 
 ```bash
-# 设置环境变量
 export CONSUL_ADDR=127.0.0.1:8500
 export AGENT_ID=my-agent
 export SERVICE_NAME=user-service
 export REPO_PATH=/path/to/your/service
 
-# 启动心跳（后台）
+# 后台心跳
 python scripts/heartbeat.py --loop 10 &
 ```
 
 ### 抢占任务
 
 ```bash
-# 抢占指定任务
 python scripts/claim_task.py req-001 design-api
-
-# 或自动抢占下一个可用任务
+# 或自动抢占
 python scripts/claim_next_task.py --loop
 ```
 
-### 执行任务
+### 执行与完成
 
 ```bash
-# 记录日志
-python scripts/log_step.py req-001 "开始设计 API 契约"
-
-# 读取上游上下文
-python scripts/read_context.sh req-001
-
-# 写产物
-python scripts/write_artifact.sh req-001 pr_url "https://..."
-
-# 完成任务
+python scripts/log_step.py req-001 "开始实现 API"
 python scripts/complete_task.py req-001 design-api \
   --meta '{"branch":"feature/login","commit":"abc123"}'
 ```
@@ -114,77 +40,51 @@ python scripts/fail_task.py req-001 build-backend \
   --retry-hint retry
 ```
 
-## 测试失败与重测流程
+## 测试失败与重测
 
-测试 Agent 发现失败后，通过 Message Bus 通知相关服务修复，收到修复完成后自动重测。
+测试 Agent 发现失败后，通过 Message Bus 通知修复，修复完成后自动重测。
 
 ```bash
-# === Test Agent ===
-
-# 抢占测试任务
-python scripts/claim_task.py req-001 test-e2e
-
-# 测试失败，发送 FIX 消息给相关服务
+# Test Agent：发送 FIX 消息
 python scripts/message_send.py req-001 build-user-service fix \
   --params '{"error": "登录接口返回 500", "severity": "high"}'
 
-# 标记任务失败
-python scripts/fail_task.py req-001 test-e2e \
-  --error "user-service 登录接口返回 500"
+# 标记失败
+python scripts/fail_task.py req-001 test-e2e --error "登录接口返回 500"
 
-# 等待修复完成后重测（Test Agent 自己管理，最多 3 次）
-```
-
-服务 Agent 接收修复请求：
-
-```bash
-# 轮询消息队列，监听 FIX 请求
+# 服务 Agent：监听并修复
 python scripts/message_poll.py req-001 --task build-user-service --status PENDING
-
-# 完成修复后，写入结果
 python scripts/message_complete.py req-001 <msg_id> \
   --task build-user-service \
-  --result '{"fixed": true, "commit": "abc123", "summary": "修复了 NPE 异常"}'
+  --result '{"fixed": true, "commit": "abc123"}'
 ```
 
-重测逻辑由 Test Agent 自己管理：
-- 测试失败 → 发送 FIX 消息 → 轮询等待所有 FIX 完成 → 重测
-- 重测成功 → `DONE`；失败则重试（≤3 次）
-- 3 次仍失败 → `FAILED`
+重测由 Test Agent 自己管理：失败 → 发 FIX → 等所有 FIX 完成 → 重测（最多 3 次）。
 
-## 动态任务提案（Proposal）
+> 详见 [message-bus.md](message-bus.md)
 
-Agent 发现遗漏时：
+## 动态任务提案
+
+Agent 发现遗漏任务时：
 
 ```bash
-# 提出新任务
-# 1. 读 deps
-DEPS=$(curl -s "http://$CONSUL_ADDR/v1/kv/workflows/$REQ_ID/dependencies?raw")
-
-# 2. 添加新任务（见 proposal-protocol.md）
-# ...
-
-# 3. CAS 设置 Proposal
+# 读 deps → 添加新任务 → CAS 设置 Proposal
 INDEX=$(curl -s "http://$CONSUL_ADDR/v1/kv/workflows/$REQ_ID/status" | \
   python3 -c "import sys,json; print(json.load(sys.stdin)[0]['ModifyIndex'])")
 curl -s -X PUT "http://$CONSUL_ADDR/v1/kv/workflows/$REQ_ID/status?cas=$INDEX" -d "Proposal"
-
-# 4. 正常结束当前任务
-python scripts/complete_task.py req-001 $TASK_NAME
 ```
 
 人工确认：
 
 ```bash
-# 确认全部
 INDEX=$(curl -s "http://$CONSUL_ADDR/v1/kv/workflows/$REQ_ID/status" | \
   python3 -c "import sys,json; print(json.load(sys.stdin)[0]['ModifyIndex'])")
 curl -s -X PUT "http://$CONSUL_ADDR/v1/kv/workflows/$REQ_ID/status?cas=$INDEX" -d "CONFIRMED"
 ```
 
-## 人工干预
+> 详见 [proposal-protocol.md](proposal-protocol.md)
 
-### 暂停/恢复流程
+## 人工干预
 
 ```bash
 # 暂停
@@ -192,91 +92,37 @@ curl -X PUT "http://127.0.0.1:8500/v1/kv/workflows/req-001/control" -d "PAUSE"
 
 # 恢复
 curl -X DELETE "http://127.0.0.1:8500/v1/kv/workflows/req-001/control"
-```
 
-### 中止流程
-
-```bash
+# 中止
 curl -X PUT "http://127.0.0.1:8500/v1/kv/workflows/req-001/control" -d "ABORT"
+
+# 重试失败任务
+curl -X PUT "http://127.0.0.1:8500/v1/kv/workflows/req-001/tasks/backend/status" -d "PENDING"
 ```
 
-### 重试失败任务
+也可通过 WebAPI 操作：
 
 ```bash
-curl -X PUT "http://127.0.0.1:8500/v1/kv/workflows/req-001/tasks/build-backend/status" -d "PENDING"
-```
-
-## WebAPI
-
-框架提供 HTTP API 用于查询和控制：
-
-| 端点 | 方法 | 说明 |
-|------|------|------|
-| `/api/workflows` | GET | 列出所有需求及进度 |
-| `/api/workflow/<req_id>` | GET | 获取需求详情 |
-| `/api/workflow/<req_id>/control` | POST | PAUSE / RESUME / ABORT |
-| `/api/workflow/<req_id>/retry/<task>` | POST | 重试失败任务 |
-| `/api/agents` | GET | 列出活跃 Agent |
-
-## 查看状态
-
-```bash
-# 直接查 Consul
-curl -s "http://127.0.0.1:8500/v1/kv/workflows/req-001/?recurse=true"
-
-# 通过 WebAPI
-curl -s "http://127.0.0.1:8080/api/workflows" | python3 -m json.tool
-```
-
-## 目录结构
-
-```
-harness_framework/
-├── daemon.py          # 主进程入口
-├── aggregator.py      # DAG 调度器
-├── watchdog.py        # Agent 存活检测 + 超时恢复
-├── webapi.py          # HTTP API
-├── consul_client.py   # Consul 客户端
-├── message_bus.py    # 任务间消息
-└── workflow_skills.py # Agent Skill（Proposal 等）
-
-scripts/
-├── sync_to_consul.py   # 初始化需求
-├── start_consul_dev.sh # 启动 Consul
-└── ...
-
-skills/stage-bridge/scripts/
-├── heartbeat.py         # Agent 心跳
-├── claim_task.py        # 抢占任务
-├── complete_task.py     # 完成任务
-├── feedback_listen.py   # 监听反馈
-└── ...
+curl -X POST "http://127.0.0.1:8080/api/workflow/req-001/control" \
+  -H "Content-Type: application/json" \
+  -d '{"action": "RETRY", "task_name": "backend"}'
 ```
 
 ## 常见问题
 
 **Q: Agent 抢占任务失败？**
 - 检查任务状态是否为 `PENDING`
-- 检查 `assigned_agent_hint` 是否有其他 Agent 优先权
+- 检查 `assigned_agent` 是否已被抢占
 
 **Q: 心跳失败 404？**
 - Agent 已被自动注销，需要重新注册
+- 单机模式（`--local-file` / `--standalone`）下无需心跳
 
 **Q: Aggregator 不调度任务？**
 - 检查 `published` 是否为 `true`
 - 检查 `control` 是否为 `PAUSE` 或 `ABORT`
-- 检查需求状态是否为 `Proposal`
 
-**Q: Watchdog 回滚任务？**
+**Q: Watchdog 频繁回滚任务？**
 - 检查 Agent 是否存活
-- 检查任务是否超时（默认 1 小时）
-
-## 相关文档
-
-- [storage-modes-and-e2e-flow.md](./storage-modes-and-e2e-flow.md) — 三种存储模式详解 + 端到端执行流程
-- [status-state-machine.md](./status-state-machine.md) — 状态机定义
-- [proposal-protocol.md](./proposal-protocol.md) — 动态提案协议
-- [dynamic-tasks.md](./dynamic-tasks.md) — 动态任务设计
-- [message-bus.md](./message-bus.md) — 消息通信
-- [agent-retry-pattern.md](./agent-retry-pattern.md) — 重试模式
-- [memory-model.md](./memory-model.md) — 记忆模型
+- 检查 `task_timeout` 是否设得太短
+- 单机模式下，确认正在使用默认 Agent ID 或已正确注册
