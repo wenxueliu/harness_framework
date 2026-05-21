@@ -11,6 +11,40 @@ description: 多 Agent 开发平台的 Consul 状态桥接 Skill。当编码智�
 
 判断信号包括：环境变量中存在 `CONSUL_ADDR`、`AGENT_ID`、`REQ_ID`、`TASK_NAME` 中的一个或多个；用户/调度方明确告知你是某需求的某个 Agent；你被要求上报进度、读取上游产物或写入失败反馈。
 
+## 前置检查：必填环境变量
+
+在执行任何 stage-bridge 操作（注册、心跳、抢占任务等）之前，**必须先检查以下环境变量**。如果缺失，**必须向用户提问并等待用户输入**，不得使用空值、占位符或自动生成的默认值。
+
+### 必填变量
+
+| 变量 | 用途 | 使用场景 |
+|------|------|---------|
+| `AGENT_ID` | 全局唯一 Agent 标识符 | 所有操作都必需 |
+| `SERVICE_NAME` | 关联的微服务名 | 开发 Agent 注册时必填 |
+| `REPO_PATH` | 代码仓库本地路径 | 开发 Agent 注册时必填 |
+
+### 检查流程
+
+1. 检查环境变量和 `.env` 文件中是否已有这些值
+2. **如果 `AGENT_ID` 缺失** → 提问用户：
+   - "请提供 AGENT_ID（全局唯一的 Agent 标识符，如 `worker-user-service-01`）："
+3. **如果 `SERVICE_NAME` 缺失且操作为注册/开发** → 提问用户：
+   - "请提供 SERVICE_NAME（绑定的微服务名称，如 `user-service`）："
+4. **如果 `REPO_PATH` 缺失且操作为注册/开发** → 提问用户：
+   - "请提供 REPO_PATH（代码仓库本地路径，如 `/path/to/user-service`）："
+5. 用户提供后，将这些值写入 `.env` 文件或通过命令行参数传递
+
+### 可选变量
+
+| 变量 | 用途 | 默认值 |
+|------|------|--------|
+| `CONSUL_ADDR` | Consul 地址 | `127.0.0.1:8500`（自动写入 `.env`，无需用户确认） |
+| `CONSUL_TOKEN` | ACL Token | 空（dev mode 不需要） |
+| `REQ_ID` | 当前需求 ID | 任务操作时必须提供 |
+| `TASK_NAME` | 当前任务名 | 任务操作时必须提供 |
+
+> **注意**：`CONSUL_ADDR` 默认 `127.0.0.1:8500` 会自动写入 `.env`，这是唯一允许自动设置的变量。其他变量一律不得自动生成。
+
 ## Consul 地址
 
 默认 `127.0.0.1:8500`，可通过环境变量 `CONSUL_ADDR` 覆盖。**所有 curl 命令中的 `$CONSUL_ADDR` 即为该地址**。
@@ -68,16 +102,27 @@ workflows/<req_id>/
 2. skill 目录：`skills/stage-bridge/.env`
 3. 固定目录：`~/.claude/stage-bridge/.env`
 
-**CONSUL_ADDR 默认值**：若 .env 和环境变量中均未设置，自动使用 `127.0.0.1:8500`，并写入 `./.env`（若该文件不存在则创建）。
+参考 `.env.example` 文件了解完整配置项：`skills/stage-bridge/.env.example`。
 
-**AGENT_ID**：必须由用户显式指定，无默认值。
+### 首次配置流程
 
-示例 `.env` 文件（自动生成）：
+首次使用时，必须按以下步骤引导用户完成配置：
+
+1. **检查并创建 `.env`**：若 `.env` 不存在，从 `.env.example` 复制模板
+2. **CONSUL_ADDR**：若未设置，使用默认值 `127.0.0.1:8500`（唯一允许自动设置的变量）
+3. **AGENT_ID**：**必须向用户提问** — "请提供 AGENT_ID（全局唯一的 Agent 标识符）："
+4. **SERVICE_NAME**：**必须向用户提问** — "请提供 SERVICE_NAME（此 Agent 绑定的微服务名称）："
+5. **REPO_PATH**：**必须向用户提问** — "请提供 REPO_PATH（代码仓库的本地路径）："
+6. 将用户提供的值写入 `.env` 文件
+
+> **禁止行为**：不得为 `AGENT_ID`、`SERVICE_NAME`、`REPO_PATH` 自动生成值或使用占位符。每个值都必须由用户显式提供或确认。
+
+`.env` 文件示例：
 ```bash
-# Consul 连接（默认值，若不存在会自动写入）
+# Consul 连接
 CONSUL_ADDR=127.0.0.1:8500
 
-# Agent 配置（需用户显式设置）
+# Agent 配置（必须由用户显式设置，不可自动生成）
 AGENT_ID=my-agent
 SERVICE_NAME=user-service
 REPO_PATH=/path/to/your/service
@@ -86,8 +131,6 @@ REPO_PATH=/path/to/your/service
 REQ_ID=req-001
 TASK_NAME=implement-api
 ```
-
-首次使用时，若 `.env` 不存在，脚本会自动创建并写入 `CONSUL_ADDR=127.0.0.1:8500`，无需用户确认。
 
 ## 错误处理与退出码
 

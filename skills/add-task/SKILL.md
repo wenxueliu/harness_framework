@@ -14,6 +14,35 @@ allowed-tools:
 
 # Add Task — 增量添加任务
 
+## 前置检查：必填参数
+
+在添加任务之前，**必须先确认以下参数**。如果缺失，**必须向用户提问并等待用户输入**，不得自动生成。
+
+### 必填参数
+
+| 参数 | 说明 | 示例 |
+|------|------|------|
+| `req_id` | 目标 Workflow ID | `req-001` |
+| `task_name` | 新任务名称（唯一） | `e2e-test` |
+| `--description` | 任务描述 | `"端到端登录流程测试"` |
+| `--type` | 任务类型 | `backend`、`test`、`design`、`review`、`deploy` |
+| `--service-name` | 关联服务名 | `user-service` |
+
+### 检查流程
+
+1. **如果用户未提供 `req_id`** → 提问用户：
+   - "请提供目标 Workflow 的 req_id（如 `req-001`）："
+2. **如果用户未提供 `task_name`** → 提问用户：
+   - "请提供新任务的名称（唯一标识）："
+3. **如果用户未提供 `--description`** → 提问用户：
+   - "请提供任务描述："
+4. **如果用户未提供 `--type`** → 提问用户：
+   - "请选择任务类型：design / review / backend / test / deploy"
+5. **如果用户未提供 `--service-name`** → 提问用户：
+   - "请提供此任务关联的服务名（如 `user-service`）："
+
+> **禁止行为**：不得自动生成 `req_id`、`task_name`、`service_name`。每个值都必须由用户显式提供。
+
 ## 何时使用
 
 当 workflow 已创建并开始执行后，发现缺少某个任务时需要增量添加。场景包括：

@@ -108,7 +108,7 @@ def env(name: str, default: Optional[str] = None, required: bool = False) -> str
 
 
 def _ensure_consul_addr_in_env() -> None:
-    """若 CONSUL_ADDR 未设置，自动写入 ./.env"""
+    """若 CONSUL_ADDR 未设置，自动写入 ./.env（仅 CONSUL_ADDR 允许自动设置）"""
     if os.environ.get("CONSUL_ADDR"):
         return
     _load_env_file()
@@ -121,6 +121,10 @@ def _ensure_consul_addr_in_env() -> None:
         with open(cwd_env, "w") as f:
             f.write("CONSUL_ADDR=127.0.0.1:8500\n")
         _env_cache["CONSUL_ADDR"] = "127.0.0.1:8500"
+        sys.stderr.write(
+            "[stage-bridge] 已创建 .env 文件，CONSUL_ADDR=127.0.0.1:8500（默认值）\n"
+            "[stage-bridge] 如需修改，请编辑 .env 文件或设置 CONSUL_ADDR 环境变量\n"
+        )
     except (IOError, OSError):
         pass
 

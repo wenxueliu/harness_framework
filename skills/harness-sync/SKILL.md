@@ -17,6 +17,29 @@ allowed-tools:
 
 Sync workflow tasks to Consul KV for the Harness Framework.
 
+## 前置检查：必填参数
+
+在创建 workflow 或同步到 Consul 之前，**必须先确认以下参数**。如果缺失，**必须向用户提问并等待用户输入**，不得使用自动生成的值。
+
+### 必填参数
+
+| 参数 | 说明 | 示例 |
+|------|------|------|
+| `req_id` | 需求唯一标识符 | `req-001`、`REQ-20260502-001` |
+| `title` | 需求标题 | `"用户登录功能"` |
+
+### 检查流程
+
+1. 检查环境变量 `REQ_ID` 或用户是否已指定 `req_id`
+2. **如果 `req_id` 缺失** → 提问用户：
+   - "请提供 req_id（需求唯一标识符，如 `req-001` 或 `REQ-20260502-001`）："
+3. **如果 `title` 缺失** → 提问用户：
+   - "请提供需求标题（如 `用户登录功能`）："
+4. 对于 `dependencies.json` 中的每个任务，确认 `service_name` 和 `description` 是否已填写
+5. **如果任务的 `service_name` 为空** → 提问用户确认，不得自动生成
+
+> **禁止行为**：不得自动生成 `req_id`、`title`、`service_name`。每个值都必须由用户显式提供。
+
 ## Consul 地址
 
 默认 `127.0.0.1:8500`，可通过环境变量 `CONSUL_ADDR` 覆盖。
@@ -25,7 +48,7 @@ Sync workflow tasks to Consul KV for the Harness Framework.
 
 ### 一、准备 dependencies.json
 
-> **注意：** `service_name` 和 `description` 是每个任务的**必填字段**。
+> **注意：** `service_name` 和 `description` 是每个任务的**必填字段**。如果缺失，必须向用户确认。
 
 ```json
 {
@@ -146,18 +169,28 @@ workflows/<req_id>/
 
 ## 交互式创建依赖文件
 
-如果没有现成的 JSON 文件，按以下步骤帮助用户定义：
+如果没有现成的 JSON 文件，**必须通过以下交互式流程收集用户输入**，不得跳过任何步骤或自动生成值：
 
-1. `req_id` - 需求唯一标识符
-2. `title` - 需求标题
-3. 每个任务：
-   - `task_name` - 任务名称（唯一标识）
-   - `type` - 任务类型 (design/review/backend/test/deploy)
-   - `depends_on` - 依赖任务列表（数组）
-   - `service_name` - 关联服务名（必填）
-   - `description` - 任务描述（必填）
+### 步骤 1：收集基本信息
 
-收集完成后保存为 JSON，然后执行 sync 命令。
+向用户逐一提问：
+1. "请提供 req_id（需求唯一标识符）：" — 如 `req-001`
+2. "请提供需求标题：" — 如 `用户登录功能`
+
+### 步骤 2：收集任务列表
+
+对每个任务，向用户确认以下信息（不可自动填充）：
+- `task_name` - 任务名称（唯一标识），如 `design-api`
+- `type` - 任务类型：`design` | `review` | `backend` | `test` | `deploy`
+- `depends_on` - 依赖任务列表（数组），如 `["design-api"]`
+- `service_name` - **关联服务名（必填）**，如 `user-service`
+- `description` - **任务描述（必填）**，如 `为登录功能设计 API 契约`
+
+> **关键约束**：`service_name` 和 `description` 不得为空，不得自动生成。如果用户未提供，必须追问。
+
+### 步骤 3：生成并同步
+
+收集完成后保存为 JSON，执行 sync 命令。
 
 ## 示例会话
 
