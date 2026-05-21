@@ -1,0 +1,25 @@
+{
+  "tasks": [
+    {
+      "name": "design",
+      "type": "design",
+      "depends_on": [],
+      "service_name": "myservice",
+      "description": "设计 API：定义 /api/users 端点的请求/响应格式"
+    },
+    {
+      "name": "backend",
+      "type": "backend",
+      "depends_on": ["design"],
+      "service_name": "myservice",
+      "description": "实现 /api/users 端点"
+    },
+    {
+      "name": "test",
+      "type": "test",
+      "depends_on": ["backend"],
+      "service_name": "myservice",
+      "description": "对 /api/users 做集成测试"
+    }
+  ]
+}
