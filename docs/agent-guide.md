@@ -2,6 +2,33 @@
 
 这篇文章告诉你如何把自己的 AI Agent 接入 Harness Framework。
 
+## 前置：安装 Skill
+
+在接入 Agent 之前，需要先将框架的 Skill 安装到你的项目目录。框架提供 8 个 Skill，封装了 Agent 与框架交互的完整逻辑。
+
+使用 `install.py` 一键安装：
+
+```bash
+# 安装全部 8 个 Skill 到当前目录（Claude Code 模式）
+python /path/to/harness_framework/install.py
+
+# 只安装 4 个核心 Skill（stage-bridge, task-executor, file-kv, harness-sync）
+python /path/to/harness_framework/install.py --minimal
+
+# 安装到指定项目
+python /path/to/harness_framework/install.py --target /path/to/your/project
+
+# 安装到 Codex 平台
+python /path/to/harness_framework/install.py --codex
+```
+
+安装完成后，你的项目下会出现 `skills/` 目录，包含以下 Skill：
+
+| 框架运行模式 | 使用的 Skill | 职责 |
+|------------|-------------|------|
+| `--local-file`（单机） | `file-kv` | 纯文件 KV 读写，无需注册/心跳 |
+| `--local` / Consul | `stage-bridge` | 完整生命周期：注册→心跳→抢占→执行→完成→注销 |
+
 ## 前提理解
 
 Agent 和框架的协作模型是**共享状态**：Agent 读写 KV 存储，框架轮询 KV 存储。双方不直接通信。
