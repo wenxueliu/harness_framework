@@ -22,7 +22,7 @@ description: |
 |------|------|------|
 | `--req-id` | 需求唯一标识符 | `REQ-20260502-001` |
 | `--title` | 需求标题 | `"用户认证功能"` |
-| `--design` 或 `--deps` | 设计文档路径 或 已有 deps.json | `design.md` |
+| `--deps` | 已生成的 dependencies.json 路径 | `deps.json` |
 
 ### 检查流程
 
@@ -30,18 +30,14 @@ description: |
    - "请提供 req-id（需求唯一标识符，如 `REQ-20260502-001`）："
 2. **如果用户未提供 `title`** → 提问用户：
    - "请提供需求标题（如 `用户认证功能`）："
-3. **如果设计文档路径未提供** → 提问用户：
-   - "请提供设计文档路径："
-4. 生成 `dependencies.json` 后，检查每个任务的 `service_name` 和 `description` 是否已填写
-5. **如果任务的 `service_name` 为空或为默认值 `shared`** → 向用户确认正确的服务名
+3. 生成 `dependencies.json` 后，检查每个任务的 `service_name` 和 `description` 是否已填写
+4. **如果任务的 `service_name` 为空或为默认值 `shared`** → 向用户确认正确的服务名
 
 > **禁止行为**：不得自动生成 `req-id`、`title`、`service_name`。每个值都必须由用户显式提供或确认。
 
-## 两种模式
+## 工作流：AI 辅助提取
 
-### 模式 1: AI 辅助提取（推荐）
-
-Claude Code 在设计对话完成后，直接读取设计文档，理解其中的任务分解，然后生成 `dependencies.json`。这是最可靠的方式。
+Claude Code 在设计对话完成后，直接读取设计文档，理解其中的任务分解，然后生成 `dependencies.json`。这是唯一支持的方式。
 
 ```
 设计文档（Markdown）
@@ -53,63 +49,30 @@ Claude Code 读取 + 理解 → 生成 dependencies.json
 pipeline.py 验证 + 同步到 Consul
 ```
 
-### 模式 2: 结构化标记解析
+### 步骤 1: 生成 dependencies.json
 
-设计文档中嵌入结构化任务标记，脚本自动解析：
+Claude Code 读取设计文档后，直接生成符合 schema 的 `dependencies.json`。生成时遵循以下规则：
 
-```markdown
-## 任务分解
+- 从设计文档中识别任务的分解结构
+- 确定每个任务的类型（`backend`/`design`/`review`/`test`/`deploy`）
+- 确定任务间的依赖关系
+- 确定每个任务归属的服务（`service_name`）
+- **禁止自动生成 `service_name`**：如果无法确定服务归属，向用户确认
 
-<!-- task:backend:user-service -->
-### 实现用户注册 API
-- 依赖: []
-- 描述: 实现 POST /api/v1/users 端点
-- 预估: 2h
-- 审查: security, logic
-
-<!-- task:backend:user-service -->
-### 实现用户登录 API
-- 依赖: [实现用户注册 API]
-- 描述: 实现 POST /api/v1/login 端点
-- 预估: 1.5h
-- 审查: security
-
-<!-- task:test:platform -->
-### E2E 集成测试
-- 依赖: [实现用户注册 API, 实现用户登录 API]
-- 描述: 端到端测试注册+登录流程
-- 预估: 1h
-```
-
-运行:
-```bash
-python3 skills/design-pipeline/scripts/design_to_deps.py design.md --output deps.json
-```
-
-## 使用
-
-### 端到端管道
+### 步骤 2: 验证
 
 ```bash
-# 从设计文档生成 deps 并同步
+python3 skills/design-pipeline/scripts/design_to_deps.py --validate deps.json
+```
+
+### 步骤 3: 同步到 Consul
+
+```bash
 python3 skills/design-pipeline/scripts/pipeline.py \
-  --design design.md \
+  --deps dependencies.json \
   --req-id REQ-20260502-001 \
   --title "用户认证功能" \
   --publish
-```
-
-### 分步执行
-
-```bash
-# 步骤 1: 设计文档 → dependencies.json
-python3 skills/design-pipeline/scripts/design_to_deps.py design.md -o deps.json
-
-# 步骤 2: 验证
-python3 skills/design-pipeline/scripts/design_to_deps.py --validate deps.json
-
-# 步骤 3: 同步到 Consul
-python3 skills/harness-sync/scripts/sync_to_consul.py REQ-001 deps.json --title "标题" --publish
 ```
 
 ## dependencies.json 格式
@@ -147,7 +110,16 @@ python3 skills/harness-sync/scripts/sync_to_consul.py REQ-001 deps.json --title 
 | `parallel` | — | Aggregator 自动展开子任务 |
 | `aggregate` | — | Aggregator 自动等待子任务全部完成 |
 
+## Wave 并行包装
+
+对于有并行任务的设计，可以用 `--wave` 自动包装：
+
+```bash
+python3 skills/design-pipeline/scripts/design_to_deps.py deps.json --wave -o deps_waved.json
+```
+
+这会对任务做拓扑排序，将无相互依赖的任务归入同一 wave，并用 `parallel`/`aggregate` 节点包装。
+
 ## 参考
 
-- 任务标记语法: `references/design-task-template.md`
 - deps schema: `references/deps-schema.md`

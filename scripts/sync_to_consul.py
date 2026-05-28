@@ -10,6 +10,26 @@ sync_to_consul.py — 将 dependencies.json 写入 Consul KV，初始化 workflo
   sync_to_consul.py deps.json --req-id req-001 --publish  # 直接发布
   sync_to_consul.py deps.json --req-id req-001 --force     # 覆盖已有 workflow
 
+格式:
+  dependencies.json 使用平铺 dict 格式，每个 key 为任务名，value 为任务定义。
+  非任务元数据（req_id、title、guardrails）为顶层非 dict 字段，自动跳过。
+
+  {
+    "req_id": "req-001",
+    "design": {
+      "type": "design",
+      "depends_on": [],
+      "service_name": "myservice",
+      "description": "..."
+    },
+    "backend": {
+      "type": "backend",
+      "depends_on": ["design"],
+      "service_name": "myservice",
+      "description": "..."
+    }
+  }
+
 依赖:
   - 使用 harness_framework.consul_client.ConsulClient（仅标准库，无外部依赖）
   - Consul 必须在 CONSUL_ADDR（默认 127.0.0.1:8500）可访问
@@ -31,50 +51,49 @@ if _project_root not in sys.path:
 from harness_framework.consul_client import ConsulClient
 
 
+# 非任务元数据 key，自动从任务提取中排除
+_META_KEYS = {"req_id", "title", "guardrails"}
+
+
 def _now_iso() -> str:
     return datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def validate_dependencies(data: dict) -> list[str]:
-    """验证 dependencies.json 格式，返回错误列表（空列表 = 合法）。"""
+    """验证 dependencies.json 格式（平铺 dict），返回错误列表（空列表 = 合法）。"""
     errors = []
 
     if not isinstance(data, dict):
         return ["dependencies.json must be a JSON object"]
 
-    if "req_id" not in data and "REQ_ID" not in os.environ:
-        errors.append("missing 'req_id' field (and REQ_ID env not set)")
+    # 提取任务: value 为 dict 且 key 不是元数据字段
+    tasks = {k: v for k, v in data.items() if isinstance(v, dict) and k not in _META_KEYS}
 
-    tasks = data.get("tasks", [])
-    if not isinstance(tasks, list) or len(tasks) == 0:
-        errors.append("'tasks' must be a non-empty array")
+    if not tasks:
+        errors.append("no tasks found (must have at least one task entry)")
         return errors
 
-    task_names = set()
-    for i, task in enumerate(tasks):
-        name = task.get("name", "")
-        if not name:
-            errors.append(f"task[{i}]: missing 'name'")
-            continue
-        if name in task_names:
-            errors.append(f"task[{i}]: duplicate name '{name}'")
-        task_names.add(name)
+    task_names = set(tasks.keys())
 
-        t = task.get("type", "task")
+    for name, info in tasks.items():
+        t = info.get("type", "task")
         if t not in ("task", "parallel", "aggregate",
                      "design", "review", "backend", "test", "deploy"):
             errors.append(f"task '{name}': invalid type '{t}'")
 
-        if t == "parallel" and "children" not in task:
+        if t == "parallel" and "children" not in info:
             errors.append(f"parallel node '{name}': missing 'children'")
 
+        if t not in ("parallel", "aggregate") and not info.get("service_name"):
+            errors.append(f"task '{name}': missing 'service_name'")
+
     # 验证 depends_on 引用的任务存在
-    for task in tasks:
-        for dep in task.get("depends_on", []):
+    for name, info in tasks.items():
+        for dep in info.get("depends_on", []):
             dep_name = dep.get("task", dep) if isinstance(dep, dict) else dep
             if dep_name not in task_names:
                 errors.append(
-                    f"task '{task['name']}': depends_on '{dep_name}' not found in tasks"
+                    f"task '{name}': depends_on '{dep_name}' not found in tasks"
                 )
 
     return errors
@@ -93,35 +112,34 @@ def write_workflow(
     title: str = "",
     publish: bool = False,
 ) -> dict:
-    """将 dependencies.json 写入 Consul KV。
+    """将 dependencies.json（平铺 dict）写入 Consul KV。
 
     返回: {"ok": True, "task_count": N} 或 {"ok": False, "error": "..."}
     """
-    tasks = data.get("tasks", [])
+    # 提取任务: value 为 dict 且 key 不是元数据字段
+    tasks = {k: v for k, v in data.items() if isinstance(v, dict) and k not in _META_KEYS}
     guardrails = data.get("guardrails", {})
 
-    # 1. 写入 dependencies（完整 DAG）
+    # 1. 写入 dependencies（完整 DAG，纯任务 dict）
     deps_dict = {}
-    for task in tasks:
-        name = task["name"]
+    for name, info in tasks.items():
         deps_dict[name] = {
-            "type": task.get("type", "task"),
-            "depends_on": task.get("depends_on", []),
+            "type": info.get("type", "task"),
+            "depends_on": info.get("depends_on", []),
         }
-        if task.get("type") == "parallel":
-            deps_dict[name]["children"] = task.get("children", [])
-        if "blocking" in task:
-            deps_dict[name]["blocking"] = task["blocking"]
-        if "non_blocking_deps" in task:
-            deps_dict[name]["non_blocking_deps"] = task["non_blocking_deps"]
+        if info.get("type") == "parallel":
+            deps_dict[name]["children"] = info.get("children", [])
+        if "blocking" in info:
+            deps_dict[name]["blocking"] = info["blocking"]
+        if "non_blocking_deps" in info:
+            deps_dict[name]["non_blocking_deps"] = info["non_blocking_deps"]
 
     consul.kv_put(f"workflows/{req_id}/dependencies", json.dumps(deps_dict))
 
     # 2. 遍历所有任务，写入初始状态
-    for task in tasks:
-        name = task["name"]
-        node_type = task.get("type", "task")
-        upstream = task.get("depends_on", [])
+    for name, info in tasks.items():
+        node_type = info.get("type", "task")
+        upstream = info.get("depends_on", [])
 
         # 判断初始状态：叶子任务（无依赖）→ PENDING，否则 → BLOCKED
         if node_type in ("parallel", "aggregate"):
@@ -129,21 +147,17 @@ def write_workflow(
         elif not upstream:
             initial_status = "PENDING"
         else:
-            # 检查是否所有依赖都是 non-blocking
-            all_non_blocking = not task.get("blocking", True)
+            all_non_blocking = not info.get("blocking", True)
             if all_non_blocking:
                 initial_status = "PENDING"
             else:
-                # 检查 per-dependency blocking
                 blocking_deps = [
                     d for d in upstream
                     if isinstance(d, dict) and d.get("blocking", True)
                 ] if any(isinstance(d, dict) for d in upstream) else []
                 if not isinstance(upstream[0], dict):
-                    # 所有都是字符串 = 所有都是 blocking
                     initial_status = "BLOCKED"
                 elif not blocking_deps:
-                    # 所有依赖都是 non-blocking
                     initial_status = "PENDING"
                 else:
                     initial_status = "BLOCKED"
@@ -152,18 +166,17 @@ def write_workflow(
         consul.kv_put(f"{t_base}/status", initial_status)
         consul.kv_put(f"{t_base}/type", node_type)
 
-        if task.get("service_name"):
-            consul.kv_put(f"{t_base}/service_name", task["service_name"])
-        if task.get("capability"):
-            consul.kv_put(f"{t_base}/capability", task["capability"])
-        if task.get("description"):
-            consul.kv_put(f"{t_base}/description", task["description"])
-        if task.get("blocking") is not None:
-            consul.kv_put(f"{t_base}/blocking", str(task["blocking"]).lower())
-        if task.get("metadata"):
-            consul.kv_put(f"{t_base}/metadata", json.dumps(task["metadata"]))
+        if info.get("service_name"):
+            consul.kv_put(f"{t_base}/service_name", info["service_name"])
+        if info.get("capability"):
+            consul.kv_put(f"{t_base}/capability", info["capability"])
+        if info.get("description"):
+            consul.kv_put(f"{t_base}/description", info["description"])
+        if info.get("blocking") is not None:
+            consul.kv_put(f"{t_base}/blocking", str(info["blocking"]).lower())
+        if info.get("metadata"):
+            consul.kv_put(f"{t_base}/metadata", json.dumps(info["metadata"]))
         if upstream:
-            # 序列化 depends_on（支持字符串数组或对象数组）
             dep_strs = []
             for d in upstream:
                 if isinstance(d, dict):
@@ -180,7 +193,7 @@ def write_workflow(
     consul.kv_put(f"workflows/{req_id}/status", "IN_PROGRESS" if publish else "CONFIRMED")
     consul.kv_put(f"workflows/{req_id}/created_at", _now_iso())
 
-    if guardrails:
+    if guardrails and isinstance(guardrails, dict):
         consul.kv_put(f"workflows/{req_id}/guardrails", json.dumps(guardrails))
 
     return {"ok": True, "task_count": len(tasks)}

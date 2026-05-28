@@ -1,6 +1,6 @@
 # 核心概念
 
-读完 [快速上手](quickstart.md) 和 [入门](getting-started.md) 后，这篇文章帮你理解 Harness Framework 的核心设计。
+> **初次接触？** 先看 [quickstart.md](quickstart.md) 和 [getting-started.md](getting-started.md)。本文是核心概念的完整说明。
 
 ## 整体架构
 

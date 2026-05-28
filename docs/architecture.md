@@ -309,24 +309,22 @@ Anthropic 文章将 Workflow 模式细分为五种：Prompt Chaining、Routing�
   "req_id": "req-042",
   "title": "新增用户登录流程",
   "guardrails": { "max_llm_calls": 800, "max_runtime_minutes": 90 },
-  "tasks": [
-    { "name": "design", "type": "task", "service_name": "_design", "capability": "design" },
-    { "name": "design-review", "type": "task", "service_name": "_design", "capability": "review", "depends_on": ["design"] },
+  "design": { "type": "design", "service_name": "_design", "capability": "design", "depends_on": [] },
+  "design-review": { "type": "review", "service_name": "_design", "capability": "review", "depends_on": ["design"] },
 
-    { "name": "parallel-dev", "type": "parallel",
-      "depends_on": ["design-review"],
-      "children": ["dev-frontend", "dev-backend", "dev-mobile"]
-    },
+  "parallel-dev": { "type": "parallel",
+    "depends_on": ["design-review"],
+    "children": ["dev-frontend", "dev-backend", "dev-mobile"]
+  },
 
-    { "name": "dev-frontend", "type": "task", "service_name": "web-app",      "capability": "dev" },
-    { "name": "dev-backend",  "type": "task", "service_name": "user-service", "capability": "dev" },
-    { "name": "dev-mobile",   "type": "task", "service_name": "mobile-app",   "capability": "dev" },
+  "dev-frontend": { "type": "backend", "service_name": "web-app",      "capability": "dev" },
+  "dev-backend":  { "type": "backend", "service_name": "user-service", "capability": "dev" },
+  "dev-mobile":   { "type": "backend", "service_name": "mobile-app",   "capability": "dev" },
 
-    { "name": "merge", "type": "aggregate", "depends_on": ["parallel-dev"] },
+  "merge": { "type": "aggregate", "depends_on": ["parallel-dev"] },
 
-    { "name": "test-e2e",    "type": "task", "service_name": "_test",   "capability": "test",   "depends_on": ["merge"] },
-    { "name": "deploy-prod", "type": "task", "service_name": "_deploy", "capability": "deploy", "depends_on": ["test-e2e"] }
-  ]
+  "test-e2e":    { "type": "test", "service_name": "_test",   "capability": "test",   "depends_on": ["merge"] },
+  "deploy-prod": { "type": "deploy", "service_name": "_deploy", "capability": "deploy", "depends_on": ["test-e2e"] }
 }
 ```
 
@@ -367,3 +365,12 @@ Anthropic 文章将 Workflow 模式细分为五种：Prompt Chaining、Routing�
 [2] Claude Blog. *Multi-agent Coordination Patterns: Five Approaches and When to Use Them*. https://claude.com/blog/multi-agent-coordination-patterns
 
 [3] iceyao. *多智能体协调模式：五种方法及其使用场景*. https://www.iceyao.com.cn/post/2026-04-14-multi-agent-coordination-patterns/
+
+## 相关文档
+
+| 我想… | 看这里 |
+|-------|--------|
+| 回顾核心概念 | [concepts.md →](concepts.md) |
+| 了解存储后端差异 | [storage-modes.md →](storage-modes.md) |
+| 查看状态机完整定义 | [status-state-machine.md →](status-state-machine.md) |
+| 查配置项 | [configuration.md →](configuration.md) |

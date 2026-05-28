@@ -1,5 +1,7 @@
 # 5 分钟入门：定义你的第一个工作流
 
+> **初次接触？** 先看 [quickstart.md](quickstart.md)。本文带你定义第一个有依赖关系的 DAG 工作流。
+
 这篇文章带你定义一个 3 个任务、有依赖关系的 DAG 流水线，然后看框架如何自动推进。
 
 ## 1. 创建工作流描述文件
@@ -8,29 +10,24 @@
 
 ```json
 {
-  "tasks": [
-    {
-      "name": "design",
-      "type": "design",
-      "depends_on": [],
-      "service_name": "myservice",
-      "description": "设计 REST API 端点：GET /api/tasks、POST /api/tasks"
-    },
-    {
-      "name": "backend",
-      "type": "backend",
-      "depends_on": ["design"],
-      "service_name": "myservice",
-      "description": "实现 /api/tasks 端点的 CRUD 逻辑"
-    },
-    {
-      "name": "test",
-      "type": "test",
-      "depends_on": ["backend"],
-      "service_name": "myservice",
-      "description": "对 /api/tasks 做集成测试：CRUD 四条路径 + 错误场景"
-    }
-  ]
+  "design": {
+    "type": "design",
+    "depends_on": [],
+    "service_name": "myservice",
+    "description": "设计 REST API 端点：GET /api/tasks、POST /api/tasks"
+  },
+  "backend": {
+    "type": "backend",
+    "depends_on": ["design"],
+    "service_name": "myservice",
+    "description": "实现 /api/tasks 端点的 CRUD 逻辑"
+  },
+  "test": {
+    "type": "test",
+    "depends_on": ["backend"],
+    "service_name": "myservice",
+    "description": "对 /api/tasks 做集成测试：CRUD 四条路径 + 错误场景"
+  }
 }
 ```
 

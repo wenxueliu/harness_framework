@@ -1,6 +1,7 @@
 # 动态任务创建机制
 
-> **初次接触？** 先看 [concepts.md](concepts.md) 了解任务生命周期。本文是动态任务的设计细节。
+> **初次接触？** 先看 [concepts.md](concepts.md) 了解任务生命周期。
+> 协议规范和使用示例见 [proposal-protocol.md](proposal-protocol.md)。本文是设计原理和 SDK 实现细节。
 
 ## 背景
 

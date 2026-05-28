@@ -1,5 +1,7 @@
 # Agent 接入指南
 
+> **初次接触？** 先看 [quickstart.md](quickstart.md) 和 [concepts.md](concepts.md)。本文是 Agent 接入的完整指南。
+
 这篇文章告诉你如何把自己的 AI Agent 接入 Harness Framework。
 
 ## 前置：安装 Skill

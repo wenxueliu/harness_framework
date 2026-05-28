@@ -44,6 +44,14 @@ python -m harness_framework.daemon                  # Consul 模式（生产）
 | 查配置项 | [configuration.md](docs/configuration.md) |
 | 接入自己的 Agent | [agent-guide.md](docs/agent-guide.md) |
 | 常见操作参考 | [usage-guide.md](docs/usage-guide.md) |
+| 了解存储后端差异 | [storage-modes.md](docs/storage-modes.md) |
+| 了解消息通信 | [message-bus.md](docs/message-bus.md) |
+| 了解动态任务提案 | [proposal-protocol.md](docs/proposal-protocol.md) |
+| 了解状态机细节 | [status-state-machine.md](docs/status-state-machine.md) |
+| 了解动态任务设计 | [dynamic-tasks.md](docs/dynamic-tasks.md) |
+| 了解重试与故障恢复 | [agent-retry-pattern.md](docs/agent-retry-pattern.md) |
+| 了解记忆模型 | [memory-model.md](docs/memory-model.md) |
+| 常见问题 | [faq.md](docs/faq.md) |
 
 ## 安装
 

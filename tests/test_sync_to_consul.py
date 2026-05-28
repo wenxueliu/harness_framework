@@ -2,7 +2,7 @@
 sync_to_consul 单元测试
 
 用例:
-- validate valid/invalid dependencies.json
+- validate valid/invalid dependencies.json (平铺 dict 格式)
 - write_workflow 写入 Consul KV 结构
 - 叶子任务初始 PENDING，非叶子初始 BLOCKED
 - blocking=false 任务初始 PENDING（即使有依赖）
@@ -37,9 +37,7 @@ class TestValidateDependencies:
         """最小合法格式。"""
         data = {
             "req_id": "req-001",
-            "tasks": [
-                {"name": "design", "type": "design", "depends_on": []},
-            ],
+            "design": {"type": "design", "depends_on": [], "service_name": "myservice"},
         }
         assert validate_dependencies(data) == []
 
@@ -47,57 +45,40 @@ class TestValidateDependencies:
         """带 wave (parallel/aggregate) 的完整格式。"""
         data = {
             "req_id": "req-001",
-            "tasks": [
-                {"name": "wave-1", "type": "parallel", "depends_on": [],
-                 "children": ["hw-001"]},
-                {"name": "hw-001", "type": "task", "service_name": "user-service",
-                 "depends_on": []},
-                {"name": "wave-1-merge", "type": "aggregate",
-                 "depends_on": ["wave-1"]},
-            ],
+            "wave-1": {
+                "type": "parallel", "depends_on": [],
+                "children": ["hw-001"],
+            },
+            "hw-001": {
+                "type": "backend", "service_name": "user-service",
+                "depends_on": [],
+            },
+            "wave-1-merge": {
+                "type": "aggregate",
+                "depends_on": ["wave-1"],
+            },
         }
         assert validate_dependencies(data) == []
 
-    def test_missing_tasks(self):
-        """缺少 tasks 数组。"""
+    def test_no_tasks(self):
+        """没有任何任务条目。"""
         data = {"req_id": "req-001"}
         errors = validate_dependencies(data)
         assert len(errors) > 0
+        assert any("no tasks found" in e for e in errors)
 
-    def test_empty_tasks(self):
-        """tasks 为空数组。"""
-        data = {"req_id": "req-001", "tasks": []}
+    def test_empty_dict(self):
+        """空 dict。"""
+        data = {}
         errors = validate_dependencies(data)
         assert len(errors) > 0
-
-    def test_missing_name(self):
-        """任务缺少 name。"""
-        data = {
-            "req_id": "req-001",
-            "tasks": [{"type": "task"}],
-        }
-        errors = validate_dependencies(data)
-        assert any("missing 'name'" in e for e in errors)
-
-    def test_duplicate_name(self):
-        """重复的任务名。"""
-        data = {
-            "req_id": "req-001",
-            "tasks": [
-                {"name": "backend", "type": "task", "depends_on": []},
-                {"name": "backend", "type": "task", "depends_on": []},
-            ],
-        }
-        errors = validate_dependencies(data)
-        assert any("duplicate name" in e for e in errors)
+        assert any("no tasks found" in e for e in errors)
 
     def test_invalid_type(self):
         """非法任务类型。"""
         data = {
             "req_id": "req-001",
-            "tasks": [
-                {"name": "bad", "type": "invalid_type", "depends_on": []},
-            ],
+            "bad": {"type": "invalid_type", "depends_on": [], "service_name": "x"},
         }
         errors = validate_dependencies(data)
         assert any("invalid type" in e for e in errors)
@@ -106,24 +87,42 @@ class TestValidateDependencies:
         """parallel 节点缺少 children。"""
         data = {
             "req_id": "req-001",
-            "tasks": [
-                {"name": "wave-1", "type": "parallel", "depends_on": []},
-            ],
+            "wave-1": {"type": "parallel", "depends_on": []},
         }
         errors = validate_dependencies(data)
         assert any("missing 'children'" in e for e in errors)
+
+    def test_missing_service_name(self):
+        """普通任务缺少 service_name。"""
+        data = {
+            "req_id": "req-001",
+            "backend": {"type": "backend", "depends_on": []},
+        }
+        errors = validate_dependencies(data)
+        assert any("missing 'service_name'" in e for e in errors)
 
     def test_depends_on_unknown_task(self):
         """depends_on 引用了不存在的任务。"""
         data = {
             "req_id": "req-001",
-            "tasks": [
-                {"name": "backend", "type": "task",
-                 "depends_on": ["nonexistent"]},
-            ],
+            "backend": {
+                "type": "backend",
+                "depends_on": ["nonexistent"],
+                "service_name": "x",
+            },
         }
         errors = validate_dependencies(data)
         assert any("not found in tasks" in e for e in errors)
+
+    def test_skips_metadata_keys(self):
+        """guardrails 等元数据 key 不会被误认为任务。"""
+        data = {
+            "req_id": "req-001",
+            "guardrails": {"some": "config"},
+            "design": {"type": "design", "depends_on": [], "service_name": "x"},
+        }
+        errors = validate_dependencies(data)
+        assert errors == []
 
 
 class TestWriteWorkflow:
@@ -135,11 +134,8 @@ class TestWriteWorkflow:
 
         data = {
             "req_id": "req-001",
-            "tasks": [
-                {"name": "design", "type": "design", "depends_on": []},
-                {"name": "backend", "type": "backend",
-                 "depends_on": ["design"]},
-            ],
+            "design": {"type": "design", "depends_on": [], "service_name": "x"},
+            "backend": {"type": "backend", "depends_on": ["design"], "service_name": "x"},
         }
         result = write_workflow(consul, "req-001", data)
 
@@ -170,11 +166,13 @@ class TestWriteWorkflow:
 
         data = {
             "req_id": "req-001",
-            "tasks": [
-                {"name": "design", "type": "design", "depends_on": []},
-                {"name": "backend", "type": "backend",
-                 "depends_on": ["design"], "blocking": False},
-            ],
+            "design": {"type": "design", "depends_on": [], "service_name": "x"},
+            "backend": {
+                "type": "backend",
+                "depends_on": ["design"],
+                "service_name": "x",
+                "blocking": False,
+            },
         }
         write_workflow(consul, "req-001", data)
 
@@ -195,13 +193,15 @@ class TestWriteWorkflow:
 
         data = {
             "req_id": "req-001",
-            "tasks": [
-                {"name": "wave-1", "type": "parallel", "depends_on": [],
-                 "children": ["hw-001"]},
-                {"name": "hw-001", "type": "task", "depends_on": []},
-                {"name": "wave-1-merge", "type": "aggregate",
-                 "depends_on": ["wave-1"]},
-            ],
+            "wave-1": {
+                "type": "parallel", "depends_on": [],
+                "children": ["hw-001"],
+            },
+            "hw-001": {"type": "backend", "depends_on": [], "service_name": "x"},
+            "wave-1-merge": {
+                "type": "aggregate",
+                "depends_on": ["wave-1"],
+            },
         }
         write_workflow(consul, "req-001", data)
 
@@ -231,10 +231,11 @@ class TestWriteWorkflow:
         }
         data = {
             "req_id": "req-001",
-            "tasks": [
-                {"name": "hw-001", "type": "task", "depends_on": [],
-                 "metadata": metadata},
-            ],
+            "hw-001": {
+                "type": "backend", "depends_on": [],
+                "service_name": "x",
+                "metadata": metadata,
+            },
         }
         write_workflow(consul, "req-001", data)
 
@@ -254,11 +255,8 @@ class TestWriteWorkflow:
 
         data = {
             "req_id": "req-001",
-            "tasks": [
-                {"name": "design", "type": "design", "depends_on": []},
-                {"name": "backend", "type": "backend",
-                 "depends_on": ["design"]},
-            ],
+            "design": {"type": "design", "depends_on": [], "service_name": "x"},
+            "backend": {"type": "backend", "depends_on": ["design"], "service_name": "x"},
         }
         write_workflow(consul, "req-001", data)
 
@@ -280,9 +278,7 @@ class TestWriteWorkflow:
 
         data = {
             "req_id": "req-001",
-            "tasks": [
-                {"name": "design", "type": "design", "depends_on": []},
-            ],
+            "design": {"type": "design", "depends_on": [], "service_name": "x"},
         }
         write_workflow(consul, "req-001", data)
 
@@ -301,9 +297,7 @@ class TestWriteWorkflow:
 
         data = {
             "req_id": "req-001",
-            "tasks": [
-                {"name": "design", "type": "design", "depends_on": []},
-            ],
+            "design": {"type": "design", "depends_on": [], "service_name": "x"},
         }
         write_workflow(consul, "req-001", data, publish=True)
 

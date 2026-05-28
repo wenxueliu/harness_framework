@@ -1,6 +1,7 @@
 # 动态任务提案协议（Proposal Protocol）
 
-> **初次接触？** 先看 [quickstart.md](quickstart.md) 和 [concepts.md](concepts.md)。本文是 Proposal 协议的完整规范。
+> **初次接触？** 先看 [quickstart.md](quickstart.md) 和 [concepts.md](concepts.md)。
+> 设计原理和 Python SDK 参考见 [dynamic-tasks.md](dynamic-tasks.md)。本文是面向 Agent 开发者的协议规范。
 
 ## 背景
 

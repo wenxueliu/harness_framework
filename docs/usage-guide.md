@@ -1,6 +1,6 @@
 # 操作参考
 
-常见操作的命令参考。概念解释见 [concepts.md](concepts.md)。
+> **初次接触？** 先看 [quickstart.md](quickstart.md) 和 [concepts.md](concepts.md)。本文是常见操作的命令参考手册。
 
 ## Agent 工作流
 
@@ -126,3 +126,13 @@ curl -X POST "http://127.0.0.1:8080/api/workflow/req-001/control" \
 - 检查 Agent 是否存活
 - 检查 `task_timeout` 是否设得太短
 - 单机模式下，确认正在使用默认 Agent ID 或已正确注册
+
+## 相关文档
+
+| 我想… | 看这里 |
+|-------|--------|
+| 回顾核心概念 | [concepts.md →](concepts.md) |
+| Agent 接入指南 | [agent-guide.md →](agent-guide.md) |
+| 查配置项 | [configuration.md →](configuration.md) |
+| 了解消息通信 | [message-bus.md →](message-bus.md) |
+| 查看常见问题 | [faq.md →](faq.md) |

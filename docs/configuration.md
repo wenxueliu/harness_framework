@@ -1,5 +1,7 @@
 # 配置参考
 
+> **初次接触？** 先看 [quickstart.md](quickstart.md)。本文是 CLI 参数和环境变量的速查参考。
+
 ## 启动参数
 
 | 参数 | 默认值 | 说明 |
@@ -64,3 +66,12 @@ python -m harness_framework.daemon --local-file --no-watchdog
 # 高超时任务
 python -m harness_framework.daemon --task-timeout 3600 --max-retry 5
 ```
+
+## 相关文档
+
+| 我想… | 看这里 |
+|-------|--------|
+| 快速上手 | [quickstart.md →](quickstart.md) |
+| 了解存储后端差异 | [storage-modes.md →](storage-modes.md) |
+| Agent 接入指南 | [agent-guide.md →](agent-guide.md) |
+| 常见操作命令 | [usage-guide.md →](usage-guide.md) |

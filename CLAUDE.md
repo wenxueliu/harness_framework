@@ -149,11 +149,12 @@ workflows/<req_id>/
 
 ## 常用命令
 
-consul 安装在 consul_server
+```bash
+# consul 安装在 consul_server
 
 # 启动 consul server
 consul_server/consul agent -server -ui -bootstrap-expect=1 --node harness_framework_master -data-dir="consul_server/data" -bind="127.0.0.1" -client="0.0.0.0"
-```bash
+
 # 启动 Consul dev mode
 ./scripts/start_consul_dev.sh
 

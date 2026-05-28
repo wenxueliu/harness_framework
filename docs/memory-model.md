@@ -47,3 +47,10 @@
 | 任务间上下文传递 | | ✅（使用 message_bus） |
 | 全局/共享记忆 | | ✅ |
 | Agent 生命周期管理 | | ✅ |
+
+## 相关文档
+
+| 我想… | 看这里 |
+|-------|--------|
+| 回顾核心概念 | [concepts.md →](concepts.md) |
+| 了解任务间消息通信 | [message-bus.md →](message-bus.md) |

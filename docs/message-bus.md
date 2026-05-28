@@ -196,3 +196,11 @@ frontend 的 Agent 轮询队列，收到请求
     ▼
 backend 获取响应，继续开发
 ```
+
+## 相关文档
+
+| 我想… | 看这里 |
+|-------|--------|
+| 回顾核心概念 | [concepts.md →](concepts.md) |
+| 了解动态任务提案 | [proposal-protocol.md →](proposal-protocol.md) |
+| 了解失败处理与重试 | [agent-retry-pattern.md →](agent-retry-pattern.md) |
