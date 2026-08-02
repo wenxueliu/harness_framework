@@ -66,6 +66,37 @@ class TestRunLifecycle:
         status, _ = store.kv_get(f"workflows/req-001/runs/{run_id}/status")
         assert status == "FAILED"
 
+    def test_roll_forward_preserves_predecessor_as_superseded(self):
+        rm, store, _ = make_run_manager()
+        old_run = rm.get_or_create_run("req-001", "starter")
+        for kind in ("requirement", "workflow_spec", "dag", "plan"):
+            store.kv_put(
+                f"workflows/req-001/versions/{kind}/current",
+                json.dumps({"kind": kind, "revision": 2, "version_id": f"v2-{kind}"}),
+            )
+
+        new_run = rm.roll_forward_run(
+            "req-001", actor="owner", change_id="chg-1",
+            affected_tasks=["test", "api", "test"],
+        )
+
+        assert new_run != old_run
+        assert store.kv_get("workflows/req-001/current_run")[0] == new_run
+        assert store.kv_get(
+            f"workflows/req-001/runs/{old_run}/status"
+        )[0] == "SUPERSEDED"
+        assert store.kv_get(
+            f"workflows/req-001/runs/{old_run}/superseded_by"
+        )[0] == new_run
+        assert json.loads(store.kv_get(
+            f"workflows/req-001/runs/{new_run}/affected_tasks"
+        )[0]) == ["api", "test"]
+        snapshot = json.loads(store.kv_get(
+            f"workflows/req-001/runs/{new_run}/resource_versions"
+        )[0])
+        assert set(snapshot) == {"requirement", "workflow_spec", "dag", "plan"}
+        assert store.kv_get("workflows/req-001/roll_forward_lock")[0] is None
+
 
 class TestTransitions:
     """状态转换审计日志测试。"""
@@ -156,6 +187,20 @@ class TestRunCompletion:
         rm.check_run_completion("req-001", run_id)
         run_status, _ = store.kv_get(f"workflows/req-001/runs/{run_id}/status")
         assert run_status == "RUNNING"
+
+    def test_check_completion_failed_with_skipped_downstream(self):
+        rm, store, consul = make_run_manager()
+        run_id = rm.get_or_create_run("req-001", "aggregator")
+        self._seed_tasks(store, "req-001", {
+            "design": "DONE",
+            "backend": "FAILED",
+            "test": "SKIPPED_UPSTREAM_FAILED",
+        })
+        rm.check_run_completion("req-001", run_id)
+        run_status, _ = store.kv_get(
+            f"workflows/req-001/runs/{run_id}/status"
+        )
+        assert run_status == "FAILED"
 
     def test_check_completion_no_tasks(self):
         rm, store, consul = make_run_manager()

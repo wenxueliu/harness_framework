@@ -7,7 +7,7 @@
 - Tab 键导航顺序合理
 - 焦点指示器可见
 
-使用 Playwright 的 page.accessibility.snapshot() 获取可访问性树。
+使用 Kimi WebBridge 获取页面可访问性结构。
 
 运行：
   pytest tests/e2e/test_a11y.py -v
@@ -17,7 +17,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from playwright.sync_api import Page, expect
+from .webbridge import Page, expect
 
 from .helpers import wait_for_network_idle
 

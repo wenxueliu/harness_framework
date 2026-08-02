@@ -14,6 +14,7 @@ _consul.py — stage-bridge 共享 Consul HTTP 客户端
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import sys
@@ -345,14 +346,215 @@ def now_iso() -> str:
     return datetime.datetime.utcnow().isoformat() + "Z"
 
 
+def lease_deadline_iso(duration_seconds: int) -> str:
+    """Return the UTC expiry for a renewable soft lease."""
+    import datetime
+    duration = max(1, int(duration_seconds))
+    deadline = datetime.datetime.utcnow() + datetime.timedelta(seconds=duration)
+    return deadline.isoformat() + "Z"
+
+
+def bounded_lease_deadline_iso(duration_seconds: int,
+                               hard_deadline_at: str = "") -> str:
+    """Return a soft lease deadline capped by the immutable hard deadline."""
+    import datetime
+    soft = datetime.datetime.utcnow() + datetime.timedelta(
+        seconds=max(1, int(duration_seconds))
+    )
+    if hard_deadline_at:
+        try:
+            hard = datetime.datetime.fromisoformat(hard_deadline_at.rstrip("Z"))
+            soft = min(soft, hard)
+        except ValueError:
+            pass
+    return soft.isoformat() + "Z"
+
+
 # ── 路径工具 ──────────────────────────────────────────────────────────────────
 
 def task_base(req_id: str, task_name: str) -> str:
     return f"workflows/{req_id}/tasks/{task_name}"
 
 
+def validate_attempt(req_id: str, task_name: str, attempt_id: str,
+                     lease_epoch: str) -> tuple[bool, str]:
+    """Fence stale workers before any task-scoped mutation."""
+    base = task_base(req_id, task_name)
+    current_attempt, _ = kv_get(f"{base}/attempt_id")
+    current_epoch, _ = kv_get(f"{base}/lease_epoch")
+    if not attempt_id or not lease_epoch:
+        return False, "attempt_id and lease_epoch are required"
+    if current_attempt != attempt_id or str(current_epoch) != str(lease_epoch):
+        return False, "stale task attempt; write fenced"
+    return True, ""
+
+
+def renew_attempt_lease(req_id: str, task_name: str, attempt_id: str,
+                        lease_epoch: str, duration_seconds: int = 120,
+                        agent_id: str = ""
+                        ) -> tuple[bool, str, str]:
+    """Renew the current attempt's soft lease without extending hard timeout."""
+    valid, reason = validate_attempt(req_id, task_name, attempt_id, lease_epoch)
+    if not valid:
+        return False, reason, ""
+    base = task_base(req_id, task_name)
+    status, _ = kv_get(f"{base}/status")
+    if status != "IN_PROGRESS":
+        return False, f"task status is {status}, not IN_PROGRESS", ""
+    assigned_agent, _ = kv_get(f"{base}/assigned_agent")
+    if agent_id and assigned_agent != agent_id:
+        return False, "task lease is owned by another agent", ""
+    hard_deadline_at, _ = kv_get(f"{base}/hard_deadline_at")
+    renewed_at = now_iso()
+    expires_at = bounded_lease_deadline_iso(
+        duration_seconds, hard_deadline_at or ""
+    )
+    kv_put(f"{base}/lease_renewed_at", renewed_at)
+    kv_put(f"{base}/lease_expires_at", expires_at)
+    return True, "", expires_at
+
+
+def create_artifact_manifest(*, version: int, key: str, value: str,
+                             attempt_id: str, lease_epoch: str,
+                             lineage: list[str], validation_status: str,
+                             retention: dict) -> dict:
+    """Build a portable schema-1.0 artifact manifest for stage-bridge."""
+    encoded = value.encode("utf-8")
+    return {
+        "schema_version": "1.0",
+        "artifact_version": version,
+        "key": key,
+        "producer_attempt_id": attempt_id,
+        "producer_lease_epoch": int(lease_epoch),
+        "checksum": "sha256:" + hashlib.sha256(encoded).hexdigest(),
+        "size_bytes": len(encoded),
+        "created_at": now_iso(),
+        "lineage": list(lineage),
+        "validation_status": validation_status,
+        "retention": dict(retention),
+    }
+
+
+def check_completion_contract(req_id: str, task_name: str) -> tuple[bool, list[str]]:
+    """Return whether all required artifact manifests and PASS gates exist."""
+    base = task_base(req_id, task_name)
+    missing = []
+    breaker_raw, _ = kv_get(f"{base}/budget/circuit_breaker")
+    if breaker_raw:
+        try:
+            if json.loads(breaker_raw).get("status") == "OPEN":
+                missing.append("circuit_breaker:OPEN")
+        except json.JSONDecodeError:
+            missing.append("circuit_breaker:INVALID")
+    raw, _ = kv_get(f"{base}/completion_contract")
+    if not raw:
+        return not missing, missing
+    try:
+        contract = json.loads(raw)
+    except json.JSONDecodeError:
+        return False, ["completion_contract is invalid JSON"]
+    for key in contract.get("required_artifacts", []):
+        version, _ = kv_get(f"{base}/artifacts/{key}/current_version")
+        if not version:
+            missing.append(f"artifact:{key}")
+    for gate in contract.get("required_gates", []):
+        verdict, _ = kv_get(f"{base}/evidence/{gate}/verdict")
+        if verdict != "PASS":
+            missing.append(f"gate:{gate}")
+    return not missing, missing
+
+
 def context_base(req_id: str) -> str:
     return f"workflows/{req_id}/context"
+
+
+def load_declared_context(req_id: str, task_name: str) -> dict:
+    """Resolve only the task's declared context_inputs selectors."""
+    raw, _ = kv_get(f"{task_base(req_id, task_name)}/context_inputs")
+    if not raw:
+        return {}
+    try:
+        selectors = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError("task context_inputs is invalid JSON") from exc
+    if not isinstance(selectors, list) or not all(isinstance(v, str) for v in selectors):
+        raise ValueError("task context_inputs must be a list of strings")
+
+    result = {}
+    knowledge = f"workflows/{req_id}/knowledge"
+    for selector in selectors:
+        if selector.startswith(("restricted/", "events/")):
+            raise PermissionError(f"context selector is not generally readable: {selector}")
+        if selector.startswith("working_memory/"):
+            allowed = f"working_memory/{task_name}/"
+            if not selector.startswith(allowed):
+                raise PermissionError("task cannot inject another task's working memory")
+        namespace = selector.split("/", 1)[0]
+        if namespace not in {"facts", "artifacts", "summaries", "working_memory", "legacy"}:
+            raise ValueError(f"unknown context_inputs namespace: {namespace}")
+        if namespace == "legacy":
+            target = f"{context_base(req_id)}/{selector.split('/', 1)[1]}"
+        else:
+            target = f"{knowledge}/{selector}"
+
+        if selector.endswith("/*"):
+            prefix = target[:-1]
+            items, _ = kv_get(prefix, recurse=True)
+            for item in items or []:
+                result_key = selector[:-1] + item["Key"][len(prefix):]
+                result[result_key] = item.get("_decoded", "")
+            continue
+
+        if namespace == "artifacts":
+            pointer_raw, _ = kv_get(f"{target}/current")
+            if not pointer_raw:
+                continue
+            try:
+                version_id = json.loads(pointer_raw)["version_id"]
+            except (json.JSONDecodeError, KeyError, TypeError):
+                raise ValueError(f"invalid context artifact pointer: {selector}")
+            value, _ = kv_get(f"{target}/versions/{version_id}/value")
+        else:
+            value, _ = kv_get(target)
+        if value is not None:
+            result[selector] = value
+    return result
+
+
+def load_latest_checkpoint(req_id: str, task_name: str) -> dict | None:
+    """Load the latest durable checkpoint for resume after a retry claim."""
+    base = f"{task_base(req_id, task_name)}/checkpoints"
+    current, _ = kv_get(f"{base}/current_version")
+    if not current:
+        return None
+    payload, _ = kv_get(f"{base}/versions/{current}/payload")
+    manifest_raw, _ = kv_get(f"{base}/versions/{current}/manifest")
+    if payload is None or not manifest_raw:
+        raise ValueError("checkpoint current_version is incomplete")
+    try:
+        manifest = json.loads(manifest_raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError("checkpoint manifest is invalid JSON") from exc
+    expected = manifest.get("checksum", "")
+    actual = "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    if expected != actual:
+        raise ValueError("checkpoint checksum mismatch")
+    return {"version": int(current), "manifest": manifest, "payload": payload}
+
+
+def build_failure_envelope(
+    *, task_name: str, attempt_id: str, lease_epoch: int, message: str,
+    failure_type: str = "HARD", severity: str = "HIGH", retryable: bool = True,
+    evidence: dict | None = None, caused_by: list[str] | None = None,
+) -> dict:
+    from harness_framework.contracts import FailureEnvelope
+    return FailureEnvelope(
+        schema_version="1.0", failure_id=f"failure-{uuid.uuid4().hex}",
+        failure_type=failure_type, severity=severity, retryable=retryable,
+        message=message, observed_at=now_iso(), task_name=task_name,
+        producer_attempt_id=attempt_id, producer_lease_epoch=int(lease_epoch),
+        evidence=dict(evidence or {}), caused_by=list(caused_by or []),
+    ).to_dict()
 
 
 def session_base(req_id: str, task_name: str, session_id: str) -> str:

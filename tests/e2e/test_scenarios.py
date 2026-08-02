@@ -19,7 +19,7 @@ from typing import Any
 
 import pytest
 import yaml
-from playwright.sync_api import Page
+from .webbridge import Page
 
 from .helpers import wait_for_network_idle
 

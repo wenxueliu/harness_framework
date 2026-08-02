@@ -32,6 +32,106 @@ from scripts.sync_to_consul import (
 )
 
 
+def test_validate_rejects_invalid_agent_contract():
+    data = {
+        "task": {
+            "type": "backend", "depends_on": [], "service_name": "x",
+            "agent_contract": {"inputs": "not-a-list", "context_budget": -1},
+        }
+    }
+    assert any(
+        "agent_contract.inputs" in error
+        for error in validate_dependencies(data)
+    )
+
+
+def test_validate_rejects_invalid_context_inputs():
+    data = {
+        "task": {
+            "type": "backend", "depends_on": [], "service_name": "x",
+            "context_inputs": "facts/all",
+        }
+    }
+    assert any("context_inputs" in error for error in validate_dependencies(data))
+
+
+def test_side_effecting_task_requires_idempotency_and_compensation():
+    data = {
+        "deploy": {
+            "type": "deploy", "depends_on": [], "service_name": "x",
+            "side_effecting": True,
+        }
+    }
+    errors = validate_dependencies(data)
+    assert any("idempotency_scope" in error for error in errors)
+    assert any("compensation_task" in error for error in errors)
+
+
+def test_valid_compensation_task_is_not_normally_activated():
+    data = {
+        "deploy": {
+            "type": "deploy", "depends_on": [], "service_name": "x",
+            "side_effecting": True, "idempotency_scope": "release",
+            "compensation_task": "rollback",
+        },
+        "rollback": {
+            "type": "deploy", "depends_on": [], "service_name": "x",
+            "activation": "compensation_only",
+        },
+    }
+    assert validate_dependencies(data) == []
+
+
+def test_write_workflow_persists_agent_contract():
+    consul = MagicMock()
+    consul.kv_get = Mock(return_value=(None, 0))
+    consul.kv_put = Mock(return_value=True)
+    data = {
+        "task": {
+            "type": "backend", "depends_on": [], "service_name": "x",
+            "agent_contract": {
+                "inputs": ["spec"], "outputs": ["code"],
+                "responsibilities": ["tests"], "exclusions": ["deploy"],
+                "permissions": ["repo:write"], "context_budget": 4096,
+            },
+        }
+    }
+    write_workflow(consul, "req-001", data)
+    calls = [
+        call for call in consul.kv_put.call_args_list
+        if call[0][0].endswith("/agent_contract")
+    ]
+    assert len(calls) == 1
+    assert json.loads(calls[0][0][1])["context_budget"] == 4096
+
+
+def test_write_workflow_publishes_four_independent_initial_versions():
+    consul = MagicMock()
+    consul.kv_get = Mock(return_value=(None, 0))
+    consul.kv_put = Mock(return_value=True)
+    data = {
+        "title": "Versioned workflow",
+        "requirement": {"summary": "ship safely"},
+        "workflow_spec": {"mode": "strict"},
+        "plan": {"waves": [["task"]]},
+        "task": {
+            "type": "backend", "depends_on": [], "service_name": "x",
+        },
+    }
+
+    write_workflow(consul, "req-001", data)
+
+    current_keys = {
+        call.args[0]
+        for call in consul.kv_put.call_args_list
+        if "/versions/" in call.args[0] and call.args[0].endswith("/current")
+    }
+    assert current_keys == {
+        f"workflows/req-001/versions/{kind}/current"
+        for kind in ("requirement", "workflow_spec", "dag", "plan")
+    }
+
+
 class TestValidateDependencies:
     def test_valid_minimal(self):
         """最小合法格式。"""
@@ -246,6 +346,63 @@ class TestWriteWorkflow:
         assert len(meta_calls) == 1
         stored = json.loads(meta_calls[0][0][1])
         assert stored == metadata
+
+    def test_review_policy_is_validated_and_written(self):
+        consul = MagicMock()
+        consul.kv_put = Mock()
+        consul.kv_get = Mock(return_value=(None, 0))
+        data = {
+            "task": {
+                "type": "backend", "depends_on": [], "service_name": "x",
+                "review_policy": {
+                    "max_rounds": 2,
+                    "dimensions": ["correctness"],
+                    "human_approval_after_pass": True,
+                },
+                "completion_contract": {
+                    "required_artifacts": [], "required_gates": ["review"],
+                },
+            },
+        }
+        assert validate_dependencies(data) == []
+        write_workflow(consul, "req-001", data)
+        calls = [
+            call for call in consul.kv_put.call_args_list
+            if "tasks/task/review_policy" in str(call)
+        ]
+        assert len(calls) == 1
+        assert json.loads(calls[0][0][1])["max_rounds"] == 2
+
+    def test_review_policy_requires_review_completion_gate(self):
+        data = {
+            "task": {
+                "type": "backend", "depends_on": [], "service_name": "x",
+                "review_policy": {"max_rounds": 2},
+                "completion_contract": {"required_gates": []},
+            },
+        }
+        assert any("gate 'review'" in error for error in validate_dependencies(data))
+
+    def test_review_recovery_target_must_be_an_ancestor(self):
+        data = {
+            "design": {
+                "type": "design", "depends_on": [], "service_name": "design",
+            },
+            "api": {
+                "type": "backend", "depends_on": ["design"],
+                "service_name": "api",
+                "review_policy": {
+                    "allowed_recovery_targets": ["unrelated"],
+                    "default_recovery_target": "unrelated",
+                },
+                "completion_contract": {"required_gates": ["review"]},
+            },
+            "unrelated": {
+                "type": "backend", "depends_on": [], "service_name": "other",
+            },
+        }
+        errors = validate_dependencies(data)
+        assert any("not the current task or an ancestor" in error for error in errors)
 
     def test_dependencies_written(self):
         """dependencies JSON 写入 Consul。"""

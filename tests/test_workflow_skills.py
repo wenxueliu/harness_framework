@@ -150,7 +150,9 @@ class TestWorkflowSkills:
         """并发提出时，第二个返回 already_proposed"""
         consul, store = _make_store({
             "workflows/req-001/status": "Proposal",
-            "workflows/req-001/dependencies": json.dumps({}),
+            "workflows/req-001/dependencies": json.dumps({
+                "design": {"type": "design", "depends_on": []},
+            }),
         })
         skills = WorkflowSkills(consul)
 
@@ -163,6 +165,34 @@ class TestWorkflowSkills:
         assert result["success"] is True
         assert result["already_proposed"] is True
         assert store["workflows/req-001/status"] == "Proposal"
+
+    def test_propose_task_rejects_unknown_dependency(self):
+        consul, _ = _make_store({
+            "workflows/req-001/status": "IN_PROGRESS",
+            "workflows/req-001/dependencies": json.dumps({}),
+        })
+        result = WorkflowSkills(consul).propose_task(
+            "req-001", "test",
+            {"type": "test", "depends_on": ["missing"]},
+        )
+        assert result["success"] is False
+        assert "unknown dependency" in result["reason"]
+
+    def test_propose_task_rejects_cycle(self):
+        consul, _ = _make_store({
+            "workflows/req-001/status": "IN_PROGRESS",
+            "workflows/req-001/dependencies": json.dumps({
+                "a": {"type": "task", "depends_on": ["b"]},
+                "b": {"type": "task", "depends_on": []},
+            }),
+        })
+        result = WorkflowSkills(consul).propose_task(
+            "req-001", "b",
+            {"type": "task", "depends_on": ["a"]},
+            force=True,
+        )
+        assert result["success"] is False
+        assert result["reason"] == "dependency cycle detected"
 
     def test_propose_task_idempotent_when_task_exists(self):
         """任务已存在时返回失败"""

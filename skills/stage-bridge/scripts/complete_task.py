@@ -16,7 +16,8 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _consul import (  # noqa: E402
     env, kv_get, kv_put, task_base, emit_json, die, now_iso,
-    ensure_run, record_transition, record_session_end,
+    ensure_run, record_transition, record_session_end, validate_attempt,
+    check_completion_contract,
 )
 
 
@@ -32,10 +33,17 @@ def main():
                    help="配合 --await-review，记录 PR URL")
     p.add_argument("--session-id", default="",
                    help="当前 Session ID，提供则在任务完成前自动关闭 Session")
+    p.add_argument("--attempt-id", default=os.environ.get("ATTEMPT_ID", ""))
+    p.add_argument("--lease-epoch", default=os.environ.get("LEASE_EPOCH", ""))
     args = p.parse_args()
 
     agent_id = env("AGENT_ID", required=True)
     base = task_base(args.req_id, args.task_name)
+    valid, reason = validate_attempt(
+        args.req_id, args.task_name, args.attempt_id, args.lease_epoch
+    )
+    if not valid:
+        die(reason, code=1)
 
     meta = {}
     if args.meta:
@@ -58,6 +66,9 @@ def main():
     kv_put(f"{base}/completed_by", agent_id)
 
     final_status = "AWAITING_REVIEW" if args.await_review else "DONE"
+    ready, missing = check_completion_contract(args.req_id, args.task_name)
+    if not ready:
+        die("completion contract unsatisfied: " + ", ".join(missing), code=1)
 
     run_id = ensure_run(args.req_id)
 
@@ -70,7 +81,9 @@ def main():
         )
 
     # 记录状态转换
-    prev_status, _ = kv_get(f"{base}/status")
+    prev_status, status_idx = kv_get(f"{base}/status")
+    if prev_status != "IN_PROGRESS":
+        die(f"task status is {prev_status}, expected IN_PROGRESS", code=1)
     record_transition(
         args.req_id, run_id, args.task_name,
         previous_state=prev_status or "IN_PROGRESS",
@@ -79,7 +92,8 @@ def main():
         reason="task completed",
     )
 
-    kv_put(f"{base}/status", final_status)
+    if not kv_put(f"{base}/status", final_status, cas=status_idx):
+        die("task status changed concurrently; completion fenced", code=1)
 
     emit_json({
         "ok": True,

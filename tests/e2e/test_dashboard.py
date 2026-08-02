@@ -12,7 +12,7 @@
 from __future__ import annotations
 
 import pytest
-from playwright.sync_api import Page, expect
+from .webbridge import Page, expect
 
 from .helpers import (
     assert_no_console_errors,

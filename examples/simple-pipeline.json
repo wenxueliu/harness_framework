@@ -9,12 +9,63 @@
     "type": "backend",
     "depends_on": ["design"],
     "service_name": "myservice",
-    "description": "实现 /api/users 端点"
+    "description": "实现 /api/users 端点",
+    "context_inputs": ["artifacts/api-design", "facts/coding-standards"],
+    "resource_budget": {
+      "max_tokens": 100000,
+      "max_cost_usd": 25.0,
+      "max_tool_calls": 200,
+      "max_wall_clock_seconds": 7200
+    },
+    "recovery_policy": {
+      "primary_action": "retry_same_strategy",
+      "narrowed_action": "retry_unit_tests_only",
+      "degraded_action": "continue_without_optional_checks",
+      "human_target": "service-owner",
+      "primary_attempts": 1,
+      "narrowed_attempts": 2,
+      "degraded_attempts": 1
+    },
+    "agent_contract": {
+      "inputs": ["design API specification"],
+      "outputs": ["users endpoint implementation", "unit tests"],
+      "responsibilities": ["preserve backward compatibility"],
+      "exclusions": ["production deployment"],
+      "permissions": ["repository:write", "test:run"],
+      "context_budget": 12000
+    },
+    "completion_contract": {
+      "required_artifacts": ["implementation"],
+      "required_gates": ["unit-tests"]
+    },
+    "evaluator_policy": {
+      "max_iterations": 3,
+      "plateau_window": 2,
+      "plateau_delta": 0.01,
+      "fallback_chain": ["primary", "narrowed", "degraded"],
+      "escalation_target": "human"
+    }
   },
   "test": {
     "type": "test",
     "depends_on": ["backend"],
     "service_name": "myservice",
     "description": "对 /api/users 做集成测试"
+  },
+  "deploy": {
+    "type": "deploy",
+    "depends_on": ["test"],
+    "service_name": "myservice",
+    "description": "发布 users 服务",
+    "side_effecting": true,
+    "idempotency_scope": "deployment",
+    "compensation_task": "rollback"
+  },
+  "rollback": {
+    "type": "deploy",
+    "depends_on": [],
+    "service_name": "myservice",
+    "description": "补偿失败的 users 服务发布",
+    "activation": "compensation_only"
   }
 }

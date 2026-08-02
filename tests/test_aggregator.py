@@ -62,6 +62,27 @@ def _make_store(initial: dict) -> MagicMock:
 
 
 class TestAggregator:
+    def test_compensation_only_task_is_not_activated_by_normal_scheduler(self):
+        store = {
+            "workflows/req-001/published": "true",
+            "workflows/req-001/dependencies": json.dumps({
+                "rollback": {
+                    "type": "deploy", "depends_on": [],
+                    "activation": "compensation_only",
+                },
+            }),
+            "workflows/req-001/tasks/rollback/status": "BLOCKED",
+        }
+        consul = _make_store(store)
+        Aggregator(consul, run_manager=make_mock_run_manager())._process_requirement(
+            "req-001"
+        )
+        assert not any(
+            call.args[0].endswith("tasks/rollback/status")
+            and call.args[1] == "PENDING"
+            for call in consul.kv_put.call_args_list
+        )
+
     def test_activate_blocked_task(self):
         """backend 依赖 design DONE → backend 应激活为 PENDING。"""
         store = {
@@ -160,8 +181,22 @@ class TestAggregator:
         )
         assert not backend_pending, "backend should NOT activate when PAUSE"
 
+    def test_proposal_freezes_workflow(self):
+        store = {
+            "workflows/req-001/published": "true",
+            "workflows/req-001/status": "Proposal",
+            "workflows/req-001/dependencies": json.dumps({
+                "design": {"type": "design", "depends_on": []},
+            }),
+            "workflows/req-001/tasks/design/status": "BLOCKED",
+        }
+        consul = _make_store(store)
+        agg = Aggregator(consul, make_mock_run_manager())
+        agg._process_requirement("req-001")
+        assert not consul.kv_put.called
+
     def test_activate_parallel_children(self):
-        """parallel 节点依赖 DONE → 激活所有 children。"""
+        """parallel 节点依赖 DONE → 激活 children，自身等待 join。"""
         store = {
             "workflows/req-001/published": "true",
             "workflows/req-001/dependencies": json.dumps({
@@ -194,6 +229,111 @@ class TestAggregator:
         )
         assert backend_pending, "backend child should be activated"
         assert test_pending, "test child should be activated"
+        parallel_running = any(
+            "parallel-group/status" in str(c) and c[0][1] == "IN_PROGRESS"
+            for c in consul.kv_put.call_args_list
+        )
+        parallel_done = any(
+            "parallel-group/status" in str(c) and c[0][1] == "DONE"
+            for c in consul.kv_put.call_args_list
+        )
+        assert parallel_running
+        assert not parallel_done, "fork activation must not satisfy the join"
+
+    def test_parallel_all_join_waits_for_every_child(self):
+        store = {
+            "workflows/req-001/published": "true",
+            "workflows/req-001/dependencies": json.dumps({
+                "parallel-group": {
+                    "type": "parallel", "depends_on": [],
+                    "children": ["backend", "test"],
+                },
+                "backend": {"type": "backend", "depends_on": []},
+                "test": {"type": "test", "depends_on": []},
+            }),
+            "workflows/req-001/tasks/parallel-group/status": "IN_PROGRESS",
+            "workflows/req-001/tasks/backend/status": "DONE",
+            "workflows/req-001/tasks/test/status": "IN_PROGRESS",
+        }
+        consul = _make_store(store)
+        agg = Aggregator(consul, make_mock_run_manager())
+        agg._process_requirement("req-001")
+
+        assert not any(
+            "parallel-group/status" in str(c) and c[0][1] == "DONE"
+            for c in consul.kv_put.call_args_list
+        )
+
+    def test_parallel_all_join_completes_after_every_child(self):
+        store = {
+            "workflows/req-001/published": "true",
+            "workflows/req-001/dependencies": json.dumps({
+                "parallel-group": {
+                    "type": "parallel", "depends_on": [],
+                    "children": ["backend", "test"],
+                },
+                "backend": {"type": "backend", "depends_on": []},
+                "test": {"type": "test", "depends_on": []},
+            }),
+            "workflows/req-001/tasks/parallel-group/status": "IN_PROGRESS",
+            "workflows/req-001/tasks/backend/status": "DONE",
+            "workflows/req-001/tasks/test/status": "DONE",
+        }
+        consul = _make_store(store)
+        agg = Aggregator(consul, make_mock_run_manager())
+        agg._process_requirement("req-001")
+
+        assert any(
+            "parallel-group/status" in str(c) and c[0][1] == "DONE"
+            for c in consul.kv_put.call_args_list
+        )
+
+    def test_parallel_quorum_can_complete_with_partial_failure(self):
+        store = {
+            "workflows/req-001/published": "true",
+            "workflows/req-001/dependencies": json.dumps({
+                "reviews": {
+                    "type": "parallel", "depends_on": [],
+                    "children": ["logic", "security", "performance"],
+                    "join": {"strategy": "quorum", "minimum_success": 2},
+                },
+                "logic": {"type": "review", "depends_on": []},
+                "security": {"type": "review", "depends_on": []},
+                "performance": {"type": "review", "depends_on": []},
+            }),
+            "workflows/req-001/tasks/reviews/status": "IN_PROGRESS",
+            "workflows/req-001/tasks/logic/status": "DONE",
+            "workflows/req-001/tasks/security/status": "FAILED",
+            "workflows/req-001/tasks/performance/status": "DONE",
+        }
+        consul = _make_store(store)
+        agg = Aggregator(consul, make_mock_run_manager())
+        agg._process_requirement("req-001")
+
+        assert any(
+            "reviews/status" in str(c) and c[0][1] == "DONE"
+            for c in consul.kv_put.call_args_list
+        )
+
+    def test_upstream_failure_skips_downstream(self):
+        store = {
+            "workflows/req-001/published": "true",
+            "workflows/req-001/dependencies": json.dumps({
+                "backend": {"type": "backend", "depends_on": []},
+                "test": {"type": "test", "depends_on": ["backend"]},
+            }),
+            "workflows/req-001/tasks/backend/status": "FAILED",
+            "workflows/req-001/tasks/test/status": "BLOCKED",
+        }
+        consul = _make_store(store)
+        agg = Aggregator(consul, make_mock_run_manager())
+        agg._process_requirement("req-001")
+
+        assert any(
+            "test/status" in str(c)
+            and c[0][1] == "SKIPPED_UPSTREAM_FAILED"
+            for c in consul.kv_put.call_args_list
+        )
 
     def test_priority_ordering(self):
         """高 priority 需求应先处理。"""

@@ -1,10 +1,10 @@
 """
-Proposal 管理 UI 自动化测试 (Playwright)
+Proposal 管理 UI 自动化测试 (Kimi WebBridge)
 
 前置条件：
 1. Consul 启动
 2. 框架 WebAPI 启动（默认 8080 端口）
-3. 依赖安装：pip install playwright && playwright install chromium
+3. Kimi WebBridge daemon 与浏览器扩展已连接
 
 运行方式：
 pytest tests/ui/test_proposals.py -v
@@ -18,7 +18,7 @@ import time
 from datetime import datetime
 
 import pytest
-from playwright.sync_api import Page, expect
+from tests.e2e.webbridge import Page
 
 
 BASE_URL = "http://localhost:8080"
@@ -29,7 +29,7 @@ class TestProposalWorkflow:
     """提案管理工作流测试"""
 
     @pytest.fixture(autouse=True)
-    def def setup(self, page: Page):
+    def setup(self, page: Page):
         """每个测试前准备环境"""
         self.page = page
         self.consul_url = "http://localhost:8500"

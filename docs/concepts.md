@@ -146,14 +146,43 @@ workflows/<req_id>/
 ├── title              # 需求标题
 ├── control            # 控制信号：PAUSE / RESUME / ABORT
 ├── dependencies       # 任务依赖拓扑（JSON）
+├── versions/          # Requirement / WorkflowSpec / DAG / Plan 独立版本
+├── changesets/        # 需求变更生命周期与审计历史
+├── runs/              # 当前与历史 run；旧 run 可标记 SUPERSEDED
 ├── tasks/<task_name>/
 │   ├── status         # 当前状态
 │   ├── type           # design / review / backend / test / deploy
 │   ├── assigned_agent # 正在执行的 Agent ID
-│   ├── started_at     # 开始时间
+│   ├── attempt_id / lease_epoch / lease_expires_at
+│   ├── agent_contract # 输入/输出/职责/排除项/权限/上下文预算（JSON）
+│   ├── context_inputs # 本任务允许注入的显式 selector
+│   ├── artifacts/     # 版本化产物、manifest、checksum 与 lineage
+│   ├── checkpoints/   # 长任务恢复点
+│   ├── failure/       # 当前及历史 Failure Envelope
+│   ├── evaluator/     # 评分迭代、fallback 和升级状态
+│   ├── budget/        # 用量账本与 circuit breaker
+│   ├── side_effects/  # 幂等副作用执行记录
 │   └── retry_count    # 重试次数
-└── context/           # 任务间共享上下文
+├── knowledge/
+│   ├── facts/         # 不可变事实
+│   ├── artifacts/     # 跨任务版本化产物
+│   ├── working_memory/# 按任务隔离的工作记忆
+│   ├── events/        # 追加式事件
+│   ├── summaries/     # 有界派生摘要
+│   └── restricted/    # 默认拒绝访问的受限数据
+└── human_interventions/ # evaluator/recovery 人工升级记录
 ```
+
+旧 `context/` 路径仅作为迁移期兼容读取。新任务没有声明
+`context_inputs` 时注入空上下文，不再隐式获得整个 workflow context。
+
+## 生产执行契约
+
+- **领取契约**：领取生成不可变 `attempt_id` 和单调 `lease_epoch`；所有产物、证据、checkpoint、用量与副作用写入都校验当前所有权。
+- **完成契约**：required artifacts、verifier gates 与 circuit breaker 必须满足，任务才能进入 `DONE`。
+- **验证契约**：`evaluator_policy` 限制每种策略迭代次数，检测评分平台期，并按 fallback chain 切换或升级人工。
+- **恢复契约**：Failure Envelope 使用统一失败分类；`recovery_policy` 按 primary、narrowed、degraded、human 顺序选路。
+- **变更契约**：ChangeSet 必须经过 impact analysis 和 approval；只失效下游闭包，旧 run 保留为 `SUPERSEDED`。
 
 ## 下一步
 
@@ -164,3 +193,4 @@ workflows/<req_id>/
 | 接入真实 Agent 到框架 | [Agent 接入指南 →](agent-guide.md) |
 | 了解动态任务提案 | [提案协议 →](proposal-protocol.md) |
 | 了解任务间消息通信 | [消息总线 →](message-bus.md) |
+| 配置任务内独立 Review 与人工确认 | [Executor–Reviewer 闭环 →](internal-review-loop.md) |

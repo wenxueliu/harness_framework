@@ -49,10 +49,18 @@ if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
 from harness_framework.consul_client import ConsulClient
+from harness_framework.contracts import (
+    AgentContract, CompletionContract, EvaluatorLoopPolicy, ReviewPolicy,
+)
+from harness_framework.versioning import VersionedResourceStore
+from harness_framework.budgets import ResourceBudget
+from harness_framework.recovery import RecoveryPolicy, validate_recovery_target
 
 
 # 非任务元数据 key，自动从任务提取中排除
-_META_KEYS = {"req_id", "title", "guardrails"}
+_META_KEYS = {
+    "req_id", "title", "guardrails", "requirement", "workflow_spec", "plan",
+}
 
 
 def _now_iso() -> str:
@@ -86,6 +94,45 @@ def validate_dependencies(data: dict) -> list[str]:
 
         if t not in ("parallel", "aggregate") and not info.get("service_name"):
             errors.append(f"task '{name}': missing 'service_name'")
+        try:
+            AgentContract.from_dict(info.get("agent_contract"))
+            completion = CompletionContract.from_dict(info.get("completion_contract"))
+            if "review_policy" in info:
+                ReviewPolicy.from_dict(info["review_policy"])
+                if "review" not in completion.required_gates:
+                    errors.append(
+                        f"task '{name}': review_policy requires completion_contract "
+                        "gate 'review'"
+                    )
+            if "evaluator_policy" in info:
+                EvaluatorLoopPolicy.from_dict(info["evaluator_policy"])
+            if "resource_budget" in info:
+                ResourceBudget.from_dict(info["resource_budget"])
+            if "recovery_policy" in info:
+                RecoveryPolicy.from_dict(info["recovery_policy"])
+        except ValueError as exc:
+            errors.append(f"task '{name}': {exc}")
+        context_inputs = info.get("context_inputs", [])
+        if not isinstance(context_inputs, list) or not all(
+            isinstance(item, str) and item.strip() for item in context_inputs
+        ):
+            errors.append(f"task '{name}': context_inputs must be a list of strings")
+        side_effecting = info.get("side_effecting", False)
+        if not isinstance(side_effecting, bool):
+            errors.append(f"task '{name}': side_effecting must be boolean")
+        if side_effecting:
+            compensation = info.get("compensation_task", "")
+            if not isinstance(info.get("idempotency_scope"), str) or not info.get("idempotency_scope", "").strip():
+                errors.append(f"task '{name}': side-effecting task requires idempotency_scope")
+            if compensation not in task_names:
+                errors.append(f"task '{name}': compensation_task '{compensation}' not found")
+            elif tasks[compensation].get("activation") != "compensation_only":
+                errors.append(
+                    f"task '{name}': compensation task '{compensation}' must use activation=compensation_only"
+                )
+        activation = info.get("activation", "normal")
+        if activation not in {"normal", "compensation_only"}:
+            errors.append(f"task '{name}': invalid activation '{activation}'")
 
     # 验证 depends_on 引用的任务存在
     for name, info in tasks.items():
@@ -95,6 +142,18 @@ def validate_dependencies(data: dict) -> list[str]:
                 errors.append(
                     f"task '{name}': depends_on '{dep_name}' not found in tasks"
                 )
+        if "review_policy" in info:
+            try:
+                review_policy = ReviewPolicy.from_dict(info["review_policy"])
+                for target in review_policy.allowed_recovery_targets:
+                    validate_recovery_target(tasks, name, target)
+                if review_policy.default_recovery_target:
+                    validate_recovery_target(
+                        tasks, name, review_policy.default_recovery_target,
+                        review_policy.allowed_recovery_targets,
+                    )
+            except ValueError as exc:
+                errors.append(f"task '{name}': {exc}")
 
     return errors
 
@@ -133,6 +192,8 @@ def write_workflow(
             deps_dict[name]["blocking"] = info["blocking"]
         if "non_blocking_deps" in info:
             deps_dict[name]["non_blocking_deps"] = info["non_blocking_deps"]
+        if info.get("activation"):
+            deps_dict[name]["activation"] = info["activation"]
 
     consul.kv_put(f"workflows/{req_id}/dependencies", json.dumps(deps_dict))
 
@@ -142,7 +203,9 @@ def write_workflow(
         upstream = info.get("depends_on", [])
 
         # 判断初始状态：叶子任务（无依赖）→ PENDING，否则 → BLOCKED
-        if node_type in ("parallel", "aggregate"):
+        if info.get("activation") == "compensation_only":
+            initial_status = "BLOCKED"
+        elif node_type in ("parallel", "aggregate"):
             initial_status = "BLOCKED"
         elif not upstream:
             initial_status = "PENDING"
@@ -176,6 +239,52 @@ def write_workflow(
             consul.kv_put(f"{t_base}/blocking", str(info["blocking"]).lower())
         if info.get("metadata"):
             consul.kv_put(f"{t_base}/metadata", json.dumps(info["metadata"]))
+        if "agent_contract" in info:
+            contract = AgentContract.from_dict(info["agent_contract"])
+            consul.kv_put(
+                f"{t_base}/agent_contract",
+                json.dumps(contract.to_dict(), ensure_ascii=False),
+            )
+        if "completion_contract" in info:
+            contract = CompletionContract.from_dict(info["completion_contract"])
+            consul.kv_put(
+                f"{t_base}/completion_contract",
+                json.dumps(contract.to_dict(), ensure_ascii=False),
+            )
+        if "review_policy" in info:
+            policy = ReviewPolicy.from_dict(info["review_policy"])
+            consul.kv_put(
+                f"{t_base}/review_policy",
+                json.dumps(policy.to_dict(), ensure_ascii=False),
+            )
+        if "evaluator_policy" in info:
+            policy = EvaluatorLoopPolicy.from_dict(info["evaluator_policy"])
+            consul.kv_put(
+                f"{t_base}/evaluator_policy",
+                json.dumps(policy.to_dict(), ensure_ascii=False),
+            )
+        consul.kv_put(
+            f"{t_base}/context_inputs",
+            json.dumps(info.get("context_inputs", []), ensure_ascii=False),
+        )
+        if "resource_budget" in info:
+            budget = ResourceBudget.from_dict(info["resource_budget"])
+            consul.kv_put(
+                f"{t_base}/resource_budget",
+                json.dumps(budget.to_dict(), ensure_ascii=False),
+            )
+        if info.get("side_effecting"):
+            consul.kv_put(f"{t_base}/side_effecting", "true")
+            consul.kv_put(f"{t_base}/idempotency_scope", info["idempotency_scope"])
+            consul.kv_put(f"{t_base}/compensation_task", info["compensation_task"])
+        if info.get("activation"):
+            consul.kv_put(f"{t_base}/activation", info["activation"])
+        if "recovery_policy" in info:
+            policy = RecoveryPolicy.from_dict(info["recovery_policy"])
+            consul.kv_put(
+                f"{t_base}/recovery_policy",
+                json.dumps(policy.to_dict(), ensure_ascii=False),
+            )
         if upstream:
             dep_strs = []
             for d in upstream:
@@ -195,6 +304,26 @@ def write_workflow(
 
     if guardrails and isinstance(guardrails, dict):
         consul.kv_put(f"workflows/{req_id}/guardrails", json.dumps(guardrails))
+
+    # 4. Publish independently addressable immutable resource revisions.  The
+    # legacy keys above remain as compatibility projections during migration.
+    versions = VersionedResourceStore(consul)
+    versions.publish(
+        req_id, "requirement",
+        data.get("requirement", {
+            "req_id": req_id, "title": title or data.get("title", ""),
+        }),
+        actor="sync_to_consul",
+    )
+    versions.publish(
+        req_id, "workflow_spec", data.get("workflow_spec", tasks),
+        actor="sync_to_consul",
+    )
+    versions.publish(req_id, "dag", deps_dict, actor="sync_to_consul")
+    versions.publish(
+        req_id, "plan", data.get("plan", {"tasks": list(tasks)}),
+        actor="sync_to_consul",
+    )
 
     return {"ok": True, "task_count": len(tasks)}
 

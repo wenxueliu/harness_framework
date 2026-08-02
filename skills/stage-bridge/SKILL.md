@@ -57,13 +57,15 @@ workflows/<req_id>/
   │   ├── status                ← PENDING / IN_PROGRESS / DONE / FAILED / AWAITING_REVIEW
   │   ├── assigned_agent        ← 实际执行 Agent 的 ID
   │   └── <自定义 key>           ← 任务产物
-  ├── context/                  ← 需求级上下文（跨任务共享）
+  ├── knowledge/                ← facts/artifacts/working_memory/events/summaries/restricted 分层上下文
   ├── sessions/<task>/<session_id>/events/<seq>  ← 执行日志事件流
   ├── feedback/<service>/       ← 测试反馈给服务 Agent
   └── control                   ← PAUSE / RESUME / ABORT 控制信号
 ```
 
 ## 完整生命周期
+
+声明 `review_policy` 的任务可由常驻 Worker 使用 `--executor` 和 `--reviewer` 运行单任务内的有界修订循环。自动 Review PASS 后可直接完成，也可按策略进入 `AWAITING_REVIEW`；人工通过 WebAPI approve/reject。完整 JSON 协议见 `../../docs/internal-review-loop.md`。
 
 下表是任意类型 Agent 的标准协作流程。操作以 curl 为主，**心跳使用 Python 后台脚本**。
 
@@ -81,6 +83,11 @@ workflows/<req_id>/
 | 关闭 Session | `record_session_end.sh <req_id> <task_name> <session_id>` | 任务完成后关闭会话 |
 | 原生日志转换 | `native_log_to_sessions.sh <req_id> <task_name> <session_id> <log_file>` | 将 Agent 原生日志导入 Session |
 | 写产物 | `write_artifact.sh <req_id> <key> <value>` | 产生需向下游传递的数据 |
+| 记录评价 | `record_evaluation.py <req_id> <task_name> <score> <verdict>` | 有界重试、fallback 切换和人工升级 |
+| 写检查点 | `write_checkpoint.py <req_id> <task_name> <cursor> <payload>` | 长任务持久化恢复点；下次领取自动返回 |
+| 记录用量 | `record_usage.py <req_id> <task_name> --tokens N ...` | 累计资源用量并执行 circuit breaker |
+| 副作用门禁 | `side_effect.py begin|complete|fail|compensated ...` | 幂等执行、结果重放与补偿激活 |
+| 恢复选路 | `select_recovery.py <req_id> <task_name>` | primary → narrowed → degraded → human 确定性选路 |
 | 完成 | `complete_task.sh <req_id> <task_name>` | 任务成功完成（支持 --session-id） |
 | 失败 | `fail_task.sh <req_id> <task_name> --error "..."` | 不可恢复错误（支持 --session-id） |
 | ABORT 检查 | `check_control.sh <req_id>` | LLM 调用前后 / verify 每轮 / feedback 唤醒时必检，收到 ABORT 立即退出 |
@@ -241,11 +248,11 @@ curl -s -X PUT "http://$CONSUL_ADDR/v1/kv/workflows/$REQ_ID/tasks/$TASK_NAME/sta
 ### 读上下文
 
 ```bash
-# 读所有上下文
-curl -s "http://$CONSUL_ADDR/v1/kv/workflows/$REQ_ID/context/?recurse=true"
+# 读安全共享上下文（facts/artifacts/summaries）
+python3 skills/stage-bridge/scripts/read_context.py "$REQ_ID"
 
-# 读指定 key
-curl -s "http://$CONSUL_ADDR/v1/kv/workflows/$REQ_ID/context/$KEY?raw"
+# 读指定 namespaced key
+python3 skills/stage-bridge/scripts/read_context.py "$REQ_ID" "facts/$KEY"
 ```
 
 ### 写产物（task 级）
@@ -254,10 +261,11 @@ curl -s "http://$CONSUL_ADDR/v1/kv/workflows/$REQ_ID/context/$KEY?raw"
 curl -s -X PUT "http://$CONSUL_ADDR/v1/kv/workflows/$REQ_ID/tasks/$TASK_NAME/$KEY" -d "$VALUE"
 ```
 
-### 写产物（context 级）
+### 写产物（context 级，版本化且 attempt-fenced）
 
 ```bash
-curl -s -X PUT "http://$CONSUL_ADDR/v1/kv/workflows/$REQ_ID/context/$KEY" -d "$VALUE"
+python3 skills/stage-bridge/scripts/write_artifact.py "$REQ_ID" "$KEY" "$VALUE" \
+  --scope context --attempt-id "$ATTEMPT_ID" --lease-epoch "$LEASE_EPOCH"
 ```
 
 ## 记录日志（curl 版）

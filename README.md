@@ -21,6 +21,10 @@ python -m harness_framework.daemon --local
 | **任务依赖混乱** | DAG 拓扑声明依赖，上游完成自动激活下游 |
 | **Agent 崩溃任务卡死** | Watchdog 自动检测 → 回滚 → 重试 |
 | **测试失败没人管** | 失败 → 通知修复 → 自动重测 |
+| **重复执行污染外部系统** | Attempt fencing + idempotency key + compensation task |
+| **长任务恢复丢进度** | 版本化 checkpoint + 新 attempt 自动恢复 |
+| **需求变更全量返工** | ChangeSet 影响闭包 + 精准失效 + run roll-forward |
+| **上下文泄漏或无限膨胀** | 分层 knowledge、显式 `context_inputs`、有界摘要与预算熔断 |
 | **看不到进度** | WebAPI + 看板，所有状态一目了然 |
 
 ## 三种模式
@@ -51,6 +55,12 @@ python -m harness_framework.daemon                  # Consul 模式（生产）
 | 了解动态任务设计 | [dynamic-tasks.md](docs/dynamic-tasks.md) |
 | 了解重试与故障恢复 | [agent-retry-pattern.md](docs/agent-retry-pattern.md) |
 | 了解记忆模型 | [memory-model.md](docs/memory-model.md) |
+| 配置验证闭环 | [evaluator-loop.md](docs/evaluator-loop.md) |
+| 在单个任务内运行 Executor–Reviewer 修订循环 | [internal-review-loop.md](docs/internal-review-loop.md) |
+| 管理需求变更 | [changesets.md](docs/changesets.md) / [resource-versioning.md](docs/resource-versioning.md) |
+| 处理失败与恢复 | [failure-envelope.md](docs/failure-envelope.md) |
+| 保护外部副作用 | [side-effects.md](docs/side-effects.md) |
+| 查看生产加固进度 | [production-hardening-status.md](docs/production-hardening-status.md) |
 | 常见问题 | [faq.md](docs/faq.md) |
 
 ## 安装

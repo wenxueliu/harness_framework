@@ -52,6 +52,7 @@ BLOCKED ──→ PENDING ──→ IN_PROGRESS ──→ DONE        │
 | `DONE` | 任务完成 | Agent |
 | `FAILED` | 任务失败 | Agent 或 Watchdog |
 | `AWAITING_REVIEW` | 等待人工 Code Review | Agent（`complete_task.py --await-review`） |
+| `SKIPPED_UPSTREAM_FAILED` | 阻塞依赖已失败，任务不会执行 | Aggregator |
 
 ### 状态转换规则
 
@@ -69,7 +70,7 @@ BLOCKED ──→ PENDING ──→ IN_PROGRESS ──→ DONE        │
 - `DONE` → `AWAITING_REVIEW`：Agent 请求人工 Review
 
 **Watchdog 恢复**：
-- `IN_PROGRESS` → `PENDING`：Agent 死亡或任务超时（≤5 次重试）
+- `IN_PROGRESS` → `PENDING`：Agent 死亡、软 lease 超时或硬超时（≤5 次重试）
 - `IN_PROGRESS` → `FAILED`：重试次数超过上限
 
 ## Aggregator 调度逻辑
@@ -95,8 +96,12 @@ _tick():
 
 | 节点类型 | 行为 |
 |---------|------|
-| `parallel` | 依赖全部 DONE 时，将 `children` 全部激活为 PENDING，自身 DONE |
-| `aggregate` | 上游 parallel 全部 DONE 时，自身 DONE 并激活下游 |
+| `parallel` | 依赖满足后激活 `children` 并进入 IN_PROGRESS；仅当 join policy 满足后 DONE |
+| `aggregate` | 上游 parallel 真正 DONE 后自身 DONE 并激活下游 |
+
+`parallel.join.strategy` 支持 `all`（默认）、`any`、`quorum`。`quorum`
+必须同时声明 `minimum_success`。当剩余 children 已不可能满足策略时，parallel
+进入 `FAILED`，其阻塞下游进入 `SKIPPED_UPSTREAM_FAILED`。
 
 ## Watchdog 恢复逻辑
 
@@ -106,9 +111,17 @@ _tick():
     for each task (status == IN_PROGRESS):
       if not agent_alive(task.assigned_agent):
         rollback_task(task)  # retry_count++, PENDING or FAILED
-      elif task.started_at + timeout < now:
-        rollback_task(task)
+      elif task.started_at + hard_timeout < now:
+        rollback_task(task, reason="hard_timeout")
+      elif task.lease_expires_at < now:
+        rollback_task(task, reason="soft_timeout")
 ```
+
+Agent claim 时获得不可变的 `attempt_id` 与单调递增的 `lease_epoch`，并写入
+`lease_expires_at` 和固定的 `hard_deadline_at`。当前 attempt 可通过
+`renew_lease.py` 周期续租；续租只延长软 lease，且不会越过硬截止。因此失联
+worker 会在软超时后快速回收，持续活跃但运行过久的 worker 仍会在硬超时后
+被 fence。
 
 重试策略：
 - `retry_count` < 5 → 回滚为 `PENDING`，允许重新抢占

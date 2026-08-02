@@ -12,6 +12,8 @@ description: |
 
 Worker 抢到任务后，加载本 Skill 执行实际开发工作。
 
+当任务声明 `review_policy` 时，Worker 通过 `--reviewer` 在同一任务 attempt 内运行独立 Reviewer。Reviewer 返回 `CHANGES_REQUIRED` 时，其结构化 findings 会成为下一轮 Executor 的 `review_feedback`；PASS 后自动写入 `review` completion gate。协议与人工确认接口见 `../../docs/internal-review-loop.md`。
+
 ## 执行模型
 
 ```

@@ -3,14 +3,14 @@
 #
 # 参考 gstack 的环境检查模式 + AutoCLI 的 CI 集成思路：
 # 1. 检查环境（Consul, daemon, dashboard）
-# 2. 安装依赖
+# 2. 确认 Kimi WebBridge daemon 可用
 # 3. 启动服务 → 运行测试 → 输出报告 → 清理
 #
 # 用法:
 #   ./scripts/run_e2e.sh              # 完整 E2E 测试
 #   ./scripts/run_e2e.sh --smoke      # 仅冒烟测试
 #   ./scripts/run_e2e.sh --visual     # 仅视觉测试
-#   ./scripts/run_e2e.sh --headed     # headed 模式调试
+# 浏览器始终是用户当前的真实 Chrome，无 headless/headed 模式切换。
 
 set -euo pipefail
 
@@ -32,7 +32,6 @@ log_error() { echo -e "${RED}[E2E]${NC} $*"; }
 
 # ---- 参数解析 ----
 PYTEST_ARGS=""
-HEADED=""
 SKIP_ENV_CHECK=""
 
 while [[ $# -gt 0 ]]; do
@@ -50,7 +49,7 @@ while [[ $# -gt 0 ]]; do
             PYTEST_ARGS="$PYTEST_ARGS -m a11y"
             shift ;;
         --headed)
-            HEADED="true"
+            log_warn "--headed 已废弃：Kimi WebBridge 始终使用真实浏览器"
             shift ;;
         --update-snapshots)
             PYTEST_ARGS="$PYTEST_ARGS --update-snapshots"
@@ -101,25 +100,20 @@ if [ "$SKIP_ENV_CHECK" != "true" ]; then
     fi
 fi
 
-# ---- 设置环境变量 ----
-if [ "$HEADED" = "true" ]; then
-    export E2E_HEADED=true
-    log_info "模式: headed（可见浏览器）"
-else
-    export E2E_HEADED=false
-    log_info "模式: headless"
-fi
-
 export E2E_BASE_URL="${E2E_BASE_URL:-http://localhost:3000}"
 log_info "BASE_URL: $E2E_BASE_URL"
 
-# ---- 依赖检查 ----
-log_info "检查 Python 依赖..."
-python -c "import playwright" 2>/dev/null || {
-    log_info "安装 playwright..."
-    pip install playwright
-    playwright install chromium --with-deps
-}
+# ---- 浏览器桥接检查 ----
+log_info "检查 Kimi WebBridge..."
+if ! curl -s --connect-timeout 2 http://127.0.0.1:10086 > /dev/null 2>&1; then
+    log_info "启动 Kimi WebBridge daemon..."
+    "$HOME/.kimi-webbridge/bin/kimi-webbridge" start
+fi
+if ! curl -s --connect-timeout 2 http://127.0.0.1:10086 > /dev/null 2>&1; then
+    log_error "Kimi WebBridge 不可用，请检查浏览器扩展连接"
+    exit 2
+fi
+log_info "Kimi WebBridge: OK"
 
 # ---- 运行测试 ----
 log_info "运行 E2E 测试..."

@@ -32,10 +32,12 @@ class ConsulClient:
     def __init__(self, addr: str):
         self.base_url = f"http://{addr}/v1/kv"
 
-    def kv_put(self, key: str, value: str) -> bool:
+    def kv_put(self, key: str, value: str, cas: int | None = None) -> bool:
         url = f"{self.base_url}/{key}"
+        if cas is not None:
+            url += f"?cas={cas}"
         resp = requests.put(url, data=value.encode("utf-8"))
-        return resp.status_code in (200, 204)
+        return resp.status_code in (200, 204) and resp.text.strip().lower() != "false"
 
     def kv_get(self, key: str) -> str | None:
         url = f"{self.base_url}/{key}?raw"
@@ -43,6 +45,18 @@ class ConsulClient:
         if resp.status_code == 404:
             return None
         return resp.text if resp.status_code == 200 else None
+
+    def kv_get_with_index(self, key: str) -> tuple[str | None, int]:
+        import base64
+        url = f"{self.base_url}/{key}"
+        resp = requests.get(url)
+        if resp.status_code == 404:
+            return None, 0
+        if resp.status_code != 200:
+            return None, 0
+        item = resp.json()[0]
+        value = base64.b64decode(item.get("Value") or "").decode("utf-8")
+        return value, int(item.get("ModifyIndex", 0))
 
     def kv_get_all_tasks_status(self, req_id: str) -> dict[str, str]:
         base = f"workflows/{req_id}/tasks"
@@ -109,6 +123,21 @@ def main():
     upstream = [x.strip() for x in args.depends_on.split(",") if x.strip()]
     all_statuses = consul.kv_get_all_tasks_status(args.req_id)
     all_deps = consul.kv_get_all_tasks_deps(args.req_id)
+    dependencies_key = f"{base}/dependencies"
+    dependencies_raw, dependencies_idx = consul.kv_get_with_index(dependencies_key)
+    try:
+        authoritative_dag = json.loads(dependencies_raw) if dependencies_raw else {}
+    except json.JSONDecodeError:
+        print("Error: authoritative dependencies value is invalid JSON", file=sys.stderr)
+        sys.exit(1)
+
+    missing_deps = [dep for dep in upstream if dep not in authoritative_dag]
+    if missing_deps:
+        print(
+            "Error: Unknown dependencies: " + ", ".join(missing_deps),
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     broken_deps = []
     for dep in upstream:
@@ -137,6 +166,22 @@ def main():
 
     all_done = all(all_statuses.get(dep, "") in TERMINAL_STATUSES for dep in upstream)
     initial_status = "PENDING" if (not upstream or all_done) else "BLOCKED"
+
+    task_definition = {
+        "type": args.type,
+        "depends_on": upstream,
+        "description": args.description,
+    }
+    if args.service_name:
+        task_definition["service_name"] = args.service_name
+    authoritative_dag[args.task_name] = task_definition
+    if not consul.kv_put(
+        dependencies_key,
+        json.dumps(authoritative_dag, ensure_ascii=False),
+        cas=dependencies_idx,
+    ):
+        print("Error: Concurrent DAG update detected; retry the command", file=sys.stderr)
+        sys.exit(2)
 
     consul.kv_put(f"{t_base}/status", initial_status)
     consul.kv_put(f"{t_base}/type", args.type)

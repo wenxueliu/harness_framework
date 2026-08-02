@@ -27,7 +27,8 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _consul import (  # noqa: E402
-    env, kv_get, kv_put, emit_json, die, now_iso
+    env, kv_get, kv_put, emit_json, die, now_iso, load_declared_context,
+    load_latest_checkpoint,
 )
 
 
@@ -129,13 +130,7 @@ def claim_task(req_id: str, task_name: str, agent_id: str) -> tuple[bool, dict]:
             if suffix:
                 task_meta[suffix] = it.get("_decoded", "")
 
-    context_items, _ = kv_get(f"workflows/{req_id}/context", recurse=True)
-    context = {}
-    if context_items:
-        prefix = f"workflows/{req_id}/context/"
-        for it in context_items:
-            k = it["Key"].split(prefix, 1)[-1] if prefix in it["Key"] else it["Key"]
-            context[k] = it.get("_decoded", "")
+    context = load_declared_context(req_id, task_name)
 
     return True, {
         "ok": True,
@@ -144,6 +139,7 @@ def claim_task(req_id: str, task_name: str, agent_id: str) -> tuple[bool, dict]:
         "task_name": task_name,
         "task_meta": task_meta,
         "context": context,
+        "resume_checkpoint": load_latest_checkpoint(req_id, task_name),
     }
 
 

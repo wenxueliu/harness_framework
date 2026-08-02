@@ -13,12 +13,13 @@ claim_task.py — 通过 CAS 原子操作抢占任务
 import argparse
 import os
 import sys
+import uuid
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _consul import (  # noqa: E402
-    env, kv_get, kv_put, task_base, context_base,
-    emit_json, die, now_iso,
-    ensure_run, record_transition,
+    env, kv_get, kv_put, task_base, load_declared_context,
+    emit_json, die, now_iso, lease_deadline_iso,
+    ensure_run, record_transition, load_latest_checkpoint,
 )
 
 
@@ -30,6 +31,14 @@ def main():
 
     agent_id = env("AGENT_ID", required=True)
     base = task_base(args.req_id, args.task_name)
+
+    workflow_status, _ = kv_get(f"workflows/{args.req_id}/status")
+    if workflow_status == "Proposal":
+        die("workflow 正在等待 Proposal 审批，任务抢占已冻结", code=1)
+
+    control, _ = kv_get(f"workflows/{args.req_id}/control")
+    if control in ("PAUSE", "ABORT"):
+        die(f"workflow control={control}，任务抢占已冻结", code=1)
 
     # 1. 读取当前状态
     status, modify_index = kv_get(f"{base}/status")
@@ -58,9 +67,21 @@ def main():
     if not ok:
         die("CAS 失败，其他 Agent 抢先一步", code=1)
 
-    # 4. 写入抢占元数据
+    # 4. 写入抢占元数据和 fencing token
+    previous_epoch, _ = kv_get(f"{base}/lease_epoch")
+    lease_epoch = int(previous_epoch or "0") + 1
+    attempt_id = f"attempt-{uuid.uuid4().hex}"
+    kv_put(f"{base}/attempt_id", attempt_id)
+    kv_put(f"{base}/lease_epoch", str(lease_epoch))
     kv_put(f"{base}/assigned_agent", agent_id)
-    kv_put(f"{base}/started_at", now_iso())
+    claimed_at = now_iso()
+    lease_duration = int(env("LEASE_DURATION_SECONDS", "120"))
+    hard_timeout = int(env("HARD_TASK_TIMEOUT_SECONDS", "7200"))
+    hard_deadline_at = lease_deadline_iso(hard_timeout)
+    kv_put(f"{base}/started_at", claimed_at)
+    kv_put(f"{base}/lease_renewed_at", claimed_at)
+    kv_put(f"{base}/lease_expires_at", lease_deadline_iso(lease_duration))
+    kv_put(f"{base}/hard_deadline_at", hard_deadline_at)
 
     # 5. 记录状态转换到 run 审计日志
     run_id = ensure_run(args.req_id)
@@ -81,26 +102,29 @@ def main():
             if suffix:
                 task_meta[suffix] = it.get("_decoded", "")
 
-    context_items, _ = kv_get(context_base(args.req_id), recurse=True)
-    context = {}
-    if context_items:
-        prefix = context_base(args.req_id) + "/"
-        for it in context_items:
-            k = it["Key"].split(prefix, 1)[-1] if prefix in it["Key"] else it["Key"]
-            context[k] = it.get("_decoded", "")
+    try:
+        context = load_declared_context(args.req_id, args.task_name)
+    except (ValueError, PermissionError) as exc:
+        die(f"context_inputs 无法解析: {exc}", code=1)
 
     emit_json({
         "ok": True,
         "agent_id": agent_id,
         "req_id": args.req_id,
         "task_name": args.task_name,
+        "attempt_id": attempt_id,
+        "lease_epoch": lease_epoch,
+        "lease_duration_seconds": lease_duration,
+        "hard_deadline_at": hard_deadline_at,
         "task_meta": task_meta,
         "context": context,
+        "resume_checkpoint": load_latest_checkpoint(args.req_id, args.task_name),
         "hints": {
             "next_steps": [
                 "执行业务逻辑",
                 "调用 log_step.py 记录关键事件",
                 "调用 write_artifact.py 写入产物",
+                "长任务需在 lease_expires_at 前调用 renew_lease.py 续租",
                 "成功时调用 complete_task.py，失败时调用 fail_task.py",
             ]
         }
