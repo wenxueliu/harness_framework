@@ -65,6 +65,8 @@ workflows/<req_id>/
 
 ## 完整生命周期
 
+声明 `review_policy` 的任务可由常驻 Worker 使用 `--executor` 和 `--reviewer` 运行单任务内的有界修订循环。自动 Review PASS 后可直接完成，也可按策略进入 `AWAITING_REVIEW`；人工通过 WebAPI approve/reject。完整 JSON 协议见 `../../docs/internal-review-loop.md`。
+
 下表是任意类型 Agent 的标准协作流程。操作以 curl 为主，**心跳使用 Python 后台脚本**。
 
 | 阶段 | curl 命令 | 说明 |

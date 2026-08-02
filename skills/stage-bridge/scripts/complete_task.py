@@ -66,10 +66,9 @@ def main():
     kv_put(f"{base}/completed_by", agent_id)
 
     final_status = "AWAITING_REVIEW" if args.await_review else "DONE"
-    if final_status == "DONE":
-        ready, missing = check_completion_contract(args.req_id, args.task_name)
-        if not ready:
-            die("completion contract unsatisfied: " + ", ".join(missing), code=1)
+    ready, missing = check_completion_contract(args.req_id, args.task_name)
+    if not ready:
+        die("completion contract unsatisfied: " + ", ".join(missing), code=1)
 
     run_id = ensure_run(args.req_id)
 

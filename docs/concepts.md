@@ -193,3 +193,4 @@ workflows/<req_id>/
 | 接入真实 Agent 到框架 | [Agent 接入指南 →](agent-guide.md) |
 | 了解动态任务提案 | [提案协议 →](proposal-protocol.md) |
 | 了解任务间消息通信 | [消息总线 →](message-bus.md) |
+| 配置任务内独立 Review 与人工确认 | [Executor–Reviewer 闭环 →](internal-review-loop.md) |

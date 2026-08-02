@@ -4,7 +4,7 @@ import pytest
 
 from harness_framework.contracts import (
     AgentContract, ArtifactManifest, CheckpointManifest, CompletionContract,
-    EvaluatorLoopPolicy, FailureEnvelope,
+    EvaluatorLoopPolicy, FailureEnvelope, ReviewPolicy, ReviewResult,
     VerifierEvidence,
 )
 
@@ -56,6 +56,40 @@ def test_completion_contract_and_verifier_evidence():
         observed_at="2026-01-01T00:00:00Z", details={"passed": 10},
     )
     assert evidence.to_dict()["verdict"] == "PASS"
+
+
+def test_review_policy_and_result_round_trip():
+    policy = ReviewPolicy.from_dict({
+        "max_rounds": 2,
+        "dimensions": ["correctness"],
+        "blocking_severities": ["HIGH"],
+        "require_independent_agent": True,
+        "human_approval_after_pass": True,
+    })
+    assert policy.max_rounds == 2
+    assert policy.human_approval_after_pass is True
+    result = ReviewResult.from_dict({
+        "verdict": "CHANGES_REQUIRED",
+        "summary": "fix race",
+        "reviewer": "reviewer-1",
+        "findings": [{"id": "R-1"}],
+    })
+    assert result.findings == [{"id": "R-1"}]
+
+
+@pytest.mark.parametrize("value", [
+    {"max_rounds": 0},
+    {"dimensions": "correctness"},
+    {"require_independent_agent": "yes"},
+])
+def test_review_policy_rejects_invalid_values(value):
+    with pytest.raises(ValueError):
+        ReviewPolicy.from_dict(value)
+
+
+def test_review_result_rejects_unknown_verdict():
+    with pytest.raises(ValueError):
+        ReviewResult.from_dict({"verdict": "MAYBE"})
 
 
 def test_evaluator_loop_policy_round_trip_and_defaults():

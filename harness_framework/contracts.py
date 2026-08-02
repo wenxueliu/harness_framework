@@ -114,6 +114,91 @@ class CompletionContract:
 
 
 @dataclass(frozen=True)
+class ReviewPolicy:
+    """Bounded executor-reviewer loop attached to one executable task."""
+
+    max_rounds: int = 3
+    dimensions: list[str] = field(default_factory=list)
+    blocking_severities: list[str] = field(
+        default_factory=lambda: ["CRITICAL", "HIGH"]
+    )
+    require_independent_agent: bool = True
+    human_approval_after_pass: bool = False
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any] | None) -> "ReviewPolicy":
+        value = value or {}
+        if not isinstance(value, dict):
+            raise ValueError("review_policy must be an object")
+        max_rounds = value.get("max_rounds", 3)
+        if isinstance(max_rounds, bool) or not isinstance(max_rounds, int) or max_rounds < 1:
+            raise ValueError("review_policy.max_rounds must be a positive integer")
+        parsed: dict[str, Any] = {"max_rounds": max_rounds}
+        for name in ("dimensions", "blocking_severities"):
+            default = ["CRITICAL", "HIGH"] if name == "blocking_severities" else []
+            items = value.get(name, default)
+            if not isinstance(items, list) or not all(
+                isinstance(item, str) and item.strip() for item in items
+            ):
+                raise ValueError(f"review_policy.{name} must be a list of strings")
+            parsed[name] = list(items)
+        for name, default in (
+            ("require_independent_agent", True),
+            ("human_approval_after_pass", False),
+        ):
+            flag = value.get(name, default)
+            if not isinstance(flag, bool):
+                raise ValueError(f"review_policy.{name} must be boolean")
+            parsed[name] = flag
+        return cls(**parsed)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class ReviewResult:
+    """Structured output returned by an independent reviewer process."""
+
+    verdict: str
+    summary: str = ""
+    findings: list[dict[str, Any]] = field(default_factory=list)
+    criteria: list[dict[str, Any]] = field(default_factory=list)
+    reviewer: str = ""
+    artifact_refs: list[str] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> "ReviewResult":
+        if not isinstance(value, dict):
+            raise ValueError("review result must be an object")
+        verdict = value.get("verdict", "")
+        if verdict not in {"PASS", "CHANGES_REQUIRED", "ERROR"}:
+            raise ValueError(
+                "review result verdict must be PASS, CHANGES_REQUIRED, or ERROR"
+            )
+        summary = value.get("summary", "")
+        reviewer = value.get("reviewer", "")
+        if not isinstance(summary, str) or not isinstance(reviewer, str):
+            raise ValueError("review result summary and reviewer must be strings")
+        parsed = {"verdict": verdict, "summary": summary, "reviewer": reviewer}
+        for name in ("findings", "criteria"):
+            items = value.get(name, [])
+            if not isinstance(items, list) or not all(isinstance(item, dict) for item in items):
+                raise ValueError(f"review result {name} must be a list of objects")
+            parsed[name] = list(items)
+        artifact_refs = value.get("artifact_refs", [])
+        if not isinstance(artifact_refs, list) or not all(
+            isinstance(item, str) and item.strip() for item in artifact_refs
+        ):
+            raise ValueError("review result artifact_refs must be a list of strings")
+        parsed["artifact_refs"] = list(artifact_refs)
+        return cls(**parsed)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
 class VerifierEvidence:
     gate: str
     verdict: str

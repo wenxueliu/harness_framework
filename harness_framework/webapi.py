@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -24,6 +25,12 @@ from .workflow_skills import WorkflowSkills
 from .run_manager import RunManager
 
 log = logging.getLogger("webapi")
+
+
+def _now_iso() -> str:
+    return datetime.datetime.now(datetime.timezone.utc).isoformat().replace(
+        "+00:00", "Z"
+    )
 
 
 class APIHandler(BaseHTTPRequestHandler):
@@ -114,6 +121,13 @@ class APIHandler(BaseHTTPRequestHandler):
             if path.startswith("/api/workflow/") and path.endswith("/proposals"):
                 req_id = path.split("/")[-2]
                 return self._confirm_proposal(req_id, body)
+            parts = path.split("/")
+            if (len(parts) == 7 and parts[1:3] == ["api", "workflow"]
+                    and parts[4] == "task"
+                    and parts[6] in {"approve", "reject"}):
+                return self._review_decision(
+                    parts[3], parts[5], parts[6], body
+                )
             self._send_json(404, {"error": "not found"})
         except Exception as e:
             log.exception("POST %s failed", self.path)
@@ -361,6 +375,79 @@ class APIHandler(BaseHTTPRequestHandler):
             self.consul.kv_put(f"workflows/{req_id}/control", action)
 
         self._send_json(200, {"ok": True, "action": action, "req_id": req_id})
+
+    def _review_decision(self, req_id: str, task_name: str,
+                         action: str, body: dict):
+        """Approve or reject a task waiting at the human review gate."""
+        actor = body.get("actor", "")
+        comment = body.get("comment", "")
+        if not isinstance(actor, str) or not actor.strip():
+            return self._send_json(400, {"error": "actor is required"})
+        if not isinstance(comment, str):
+            return self._send_json(400, {"error": "comment must be a string"})
+        if action == "reject" and not comment.strip():
+            return self._send_json(
+                400, {"error": "comment is required when rejecting"}
+            )
+
+        base = f"workflows/{req_id}/tasks/{task_name}"
+        status, status_index = self.consul.kv_get(f"{base}/status")
+        if status != "AWAITING_REVIEW":
+            return self._send_json(
+                409, {"error": f"task status is {status}, expected AWAITING_REVIEW"}
+            )
+
+        decision = {
+            "decision": action.upper(),
+            "actor": actor,
+            "comment": comment,
+            "decided_at": _now_iso(),
+        }
+        history_key = decision["decided_at"].replace(":", "-")
+        self.consul.kv_put(
+            f"{base}/review/human_decisions/{history_key}",
+            json.dumps(decision, ensure_ascii=False),
+        )
+        run_id = self.run_manager.get_or_create_run(req_id, actor)
+
+        if action == "approve":
+            if not self.consul.kv_put(f"{base}/status", "DONE", cas=status_index):
+                return self._send_json(409, {"error": "task changed concurrently"})
+            self.consul.kv_put(f"{base}/review/human_decision", "APPROVE")
+            self.consul.kv_put(f"{base}/approved_by", actor)
+            self.run_manager.record_transition(
+                req_id, run_id, task_name, "AWAITING_REVIEW", "DONE",
+                actor, "human approval",
+            )
+            self.run_manager.check_run_completion(req_id, run_id)
+            return self._send_json(200, {
+                "ok": True, "status": "DONE", "decision": decision,
+            })
+
+        feedback = {
+            "source": "human",
+            "actor": actor,
+            "verdict": "CHANGES_REQUIRED",
+            "comment": comment,
+            "observed_at": decision["decided_at"],
+        }
+        if not self.consul.kv_put(f"{base}/status", "PENDING", cas=status_index):
+            return self._send_json(409, {"error": "task changed concurrently"})
+        self.consul.kv_put(
+            f"{base}/review/human_feedback",
+            json.dumps(feedback, ensure_ascii=False),
+        )
+        # Fence the completed attempt before another worker claims the task.
+        self.consul.kv_put(f"{base}/attempt_id", "")
+        self.consul.kv_delete(f"{base}/assigned_agent")
+        self.consul.kv_delete(f"{base}/evidence/review", recurse=True)
+        self.run_manager.record_transition(
+            req_id, run_id, task_name, "AWAITING_REVIEW", "PENDING",
+            actor, "human requested changes", metadata={"comment": comment},
+        )
+        return self._send_json(200, {
+            "ok": True, "status": "PENDING", "decision": decision,
+        })
 
     def _load_tasks_for_abort(self, req_id: str) -> dict:
         """加载任务状态（用于 abort 时判断哪些任务需要标记为 ABORTED）。"""

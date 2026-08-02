@@ -245,6 +245,8 @@ stage-bridge 的 SKILL.md 在 Prompt 模板中以醒目格式列出上述节点�
 
 ## 第七章　P0-2　Generator-Verifier 自验证机制（执行层自治）
 
+除评分式 `evaluator_policy` 外，可执行任务还可以声明 `review_policy`，由 Worker 在同一个 task attempt 内运行有界的 Executor–Reviewer 循环。Reviewer 是独立外部进程，接收任务要求、显式上下文、当前执行结果和验收维度，返回 `PASS`、`CHANGES_REQUIRED` 或 `ERROR`。修订反馈直接进入下一轮 Executor；PASS 写入 `review` gate evidence；循环耗尽才将任务标记为失败。需要人工确认时，任务进入 `AWAITING_REVIEW`，由 WebAPI 批准为 `DONE` 或拒绝回 `PENDING`。详细协议见 [单任务 Executor–Reviewer 闭环](internal-review-loop.md)。
+
 ### 7.1 机制定位与归属
 
 Anthropic 文章引用实战数据：**Generator-Verifier 循环可将 LLM 输出一次通过率从约 60% 提升到 90% 以上**[1]。本平台将具体验证命令与修订动作归属执行层；框架不解析 `verify.yaml`，只解析与技术栈无关的 `evaluator_policy`，负责限制迭代、检测评分平台期、切换 fallback，并在策略耗尽后留下人工升级记录。

@@ -57,6 +57,7 @@
 |------|------|----------|
 | `agent_contract` | 输入、输出、职责、排除项、权限、上下文预算 | 列表字段必须为非空字符串列表 |
 | `completion_contract` | required artifacts 与 verifier gates | 未满足时拒绝 `DONE` |
+| `review_policy` | 单任务内独立 Reviewer、最大修订轮数与人工确认 | 启用时 `completion_contract.required_gates` 必须包含 `review` |
 | `context_inputs` | 精确选择 facts/artifacts/summaries | 缺省为空；不能通配 restricted/events |
 | `evaluator_policy` | 最大迭代、平台期、fallback、升级 | fallback 名称唯一且有序 |
 | `resource_budget` | token、cost、tool call、wall clock 上限 | 任一越界打开 circuit breaker |

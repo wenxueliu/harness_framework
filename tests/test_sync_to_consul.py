@@ -347,6 +347,42 @@ class TestWriteWorkflow:
         stored = json.loads(meta_calls[0][0][1])
         assert stored == metadata
 
+    def test_review_policy_is_validated_and_written(self):
+        consul = MagicMock()
+        consul.kv_put = Mock()
+        consul.kv_get = Mock(return_value=(None, 0))
+        data = {
+            "task": {
+                "type": "backend", "depends_on": [], "service_name": "x",
+                "review_policy": {
+                    "max_rounds": 2,
+                    "dimensions": ["correctness"],
+                    "human_approval_after_pass": True,
+                },
+                "completion_contract": {
+                    "required_artifacts": [], "required_gates": ["review"],
+                },
+            },
+        }
+        assert validate_dependencies(data) == []
+        write_workflow(consul, "req-001", data)
+        calls = [
+            call for call in consul.kv_put.call_args_list
+            if "tasks/task/review_policy" in str(call)
+        ]
+        assert len(calls) == 1
+        assert json.loads(calls[0][0][1])["max_rounds"] == 2
+
+    def test_review_policy_requires_review_completion_gate(self):
+        data = {
+            "task": {
+                "type": "backend", "depends_on": [], "service_name": "x",
+                "review_policy": {"max_rounds": 2},
+                "completion_contract": {"required_gates": []},
+            },
+        }
+        assert any("gate 'review'" in error for error in validate_dependencies(data))
+
     def test_dependencies_written(self):
         """dependencies JSON 写入 Consul。"""
         consul = MagicMock()

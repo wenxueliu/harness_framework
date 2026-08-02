@@ -163,6 +163,50 @@ def call_do_method(handler, method: str, path: str, body: bytes = b"", headers: 
 
 
 class TestWebAPI:
+    def test_human_approve_completes_awaiting_task(self):
+        store = {
+            "workflows/req-001/tasks/backend/status": "AWAITING_REVIEW",
+        }
+        handler, consul, _, _ = make_handler(store)
+        body = json.dumps({"actor": "alice", "comment": "approved"}).encode()
+        resp = call_do_method(
+            handler, "POST",
+            "/api/workflow/req-001/task/backend/approve", body,
+        )
+        assert resp["code"] == 200
+        assert consul._store["workflows/req-001/tasks/backend/status"] == "DONE"
+        assert consul._store["workflows/req-001/tasks/backend/approved_by"] == "alice"
+
+    def test_human_reject_returns_task_to_pending_with_feedback(self):
+        store = {
+            "workflows/req-001/tasks/backend/status": "AWAITING_REVIEW",
+            "workflows/req-001/tasks/backend/attempt_id": "attempt-old",
+            "workflows/req-001/tasks/backend/evidence/review/verdict": "PASS",
+        }
+        handler, consul, _, _ = make_handler(store)
+        body = json.dumps({"actor": "alice", "comment": "fix copy"}).encode()
+        resp = call_do_method(
+            handler, "POST",
+            "/api/workflow/req-001/task/backend/reject", body,
+        )
+        assert resp["code"] == 200
+        assert consul._store["workflows/req-001/tasks/backend/status"] == "PENDING"
+        feedback = json.loads(
+            consul._store["workflows/req-001/tasks/backend/review/human_feedback"]
+        )
+        assert feedback["comment"] == "fix copy"
+        assert consul._store["workflows/req-001/tasks/backend/attempt_id"] == ""
+
+    def test_human_decision_requires_awaiting_review(self):
+        store = {"workflows/req-001/tasks/backend/status": "IN_PROGRESS"}
+        handler, _, _, _ = make_handler(store)
+        body = json.dumps({"actor": "alice", "comment": "approved"}).encode()
+        resp = call_do_method(
+            handler, "POST",
+            "/api/workflow/req-001/task/backend/approve", body,
+        )
+        assert resp["code"] == 409
+
     def test_list_workflows_empty(self):
         handler, consul, _, _ = make_handler({})
 

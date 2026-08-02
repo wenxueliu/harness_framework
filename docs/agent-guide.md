@@ -245,6 +245,19 @@ curl -s -X PUT \
 
 当一个 Agent 绑定到某个 `service_name` 后，它只认领匹配该 service_name 的任务。Agent 不关心 DAG 的全貌——它只需要知道"有没有我能做的 PENDING 任务"。
 
+## 单任务内接入独立 Reviewer
+
+紧密耦合的代码审查可以通过 `review_policy` 放在当前任务内部。Worker 使用 `--executor` 执行业务工作，再用 `--reviewer` 发送结构化 Review Package；`CHANGES_REQUIRED` 会作为下一轮 Executor 的 `review_feedback`，直到 PASS 或达到最大轮数。
+
+```bash
+python skills/stage-bridge/scripts/worker.py \
+  --service user-service \
+  --executor "python /opt/agents/executor.py" \
+  --reviewer "python /opt/agents/reviewer.py"
+```
+
+完整协议、配置和人工 approve/reject API 见 [单任务 Executor–Reviewer 闭环](internal-review-loop.md)。需要独立排期或合规隔离的验收仍应定义为单独 DAG 任务。
+
 ## 任务完成后
 
 Agent 完成任务后，框架的 Aggregator 会在下一次轮询时（默认 5 秒内）检测到，并自动激活所有依赖该任务的下游任务。Agent 可以继续认领新的 PENDING 任务。
@@ -258,3 +271,4 @@ Agent 完成任务后，框架的 Aggregator 会在下一次轮询时（默认 5
 | 理解故障恢复机制（超时、Agent 死亡） | [核心概念 →](concepts.md) |
 | 了解任务间消息通信（Message Bus） | [消息总线 →](message-bus.md) |
 | 定义复杂 DAG（并行、聚合节点） | [架构设计 →](architecture.md) |
+| 配置任务内 Review 与人工确认 | [Executor–Reviewer 闭环 →](internal-review-loop.md) |

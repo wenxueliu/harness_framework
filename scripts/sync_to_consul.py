@@ -50,7 +50,7 @@ if _project_root not in sys.path:
 
 from harness_framework.consul_client import ConsulClient
 from harness_framework.contracts import (
-    AgentContract, CompletionContract, EvaluatorLoopPolicy,
+    AgentContract, CompletionContract, EvaluatorLoopPolicy, ReviewPolicy,
 )
 from harness_framework.versioning import VersionedResourceStore
 from harness_framework.budgets import ResourceBudget
@@ -96,7 +96,14 @@ def validate_dependencies(data: dict) -> list[str]:
             errors.append(f"task '{name}': missing 'service_name'")
         try:
             AgentContract.from_dict(info.get("agent_contract"))
-            CompletionContract.from_dict(info.get("completion_contract"))
+            completion = CompletionContract.from_dict(info.get("completion_contract"))
+            if "review_policy" in info:
+                ReviewPolicy.from_dict(info["review_policy"])
+                if "review" not in completion.required_gates:
+                    errors.append(
+                        f"task '{name}': review_policy requires completion_contract "
+                        "gate 'review'"
+                    )
             if "evaluator_policy" in info:
                 EvaluatorLoopPolicy.from_dict(info["evaluator_policy"])
             if "resource_budget" in info:
@@ -231,6 +238,12 @@ def write_workflow(
             consul.kv_put(
                 f"{t_base}/completion_contract",
                 json.dumps(contract.to_dict(), ensure_ascii=False),
+            )
+        if "review_policy" in info:
+            policy = ReviewPolicy.from_dict(info["review_policy"])
+            consul.kv_put(
+                f"{t_base}/review_policy",
+                json.dumps(policy.to_dict(), ensure_ascii=False),
             )
         if "evaluator_policy" in info:
             policy = EvaluatorLoopPolicy.from_dict(info["evaluator_policy"])

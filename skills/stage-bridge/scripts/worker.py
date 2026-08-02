@@ -31,7 +31,10 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(SCRIPT_DIR)))
+sys.path.insert(0, SCRIPT_DIR)
+sys.path.insert(0, PROJECT_ROOT)
 from _consul import (  # noqa: E402
     env, kv_get, kv_put, kv_delete, emit_json, die, now_iso,
     consul_health_check, service_register_safe, service_deregister_safe,
@@ -43,6 +46,7 @@ from _consul import (  # noqa: E402
     load_latest_checkpoint,
     build_failure_envelope,
 )
+from harness_framework.contracts import ReviewPolicy, ReviewResult  # noqa: E402
 
 # ── 状态文件 ───────────────────────────────────────────────────────────────
 
@@ -233,8 +237,11 @@ def claim_task(req_id: str, task_name: str, agent_id: str) -> tuple[bool, dict]:
 
 def complete_task(req_id: str, task_name: str, agent_id: str,
                   result: dict = None, attempt_id: str = "",
-                  lease_epoch: int = 0) -> bool:
+                  lease_epoch: int = 0,
+                  final_status: str = "DONE") -> bool:
     """标记任务完成。"""
+    if final_status not in {"DONE", "AWAITING_REVIEW"}:
+        raise ValueError("invalid completion status")
     base = f"workflows/{req_id}/tasks/{task_name}"
     ts = now_iso()
     current_attempt, _ = kv_get(f"{base}/attempt_id")
@@ -251,11 +258,12 @@ def complete_task(req_id: str, task_name: str, agent_id: str,
     record_transition(
         req_id, run_id, task_name,
         previous_state=prev_status or "IN_PROGRESS",
-        new_state="DONE",
+        new_state=final_status,
         actor=agent_id,
-        reason="task completed",
+        reason=("awaiting human approval" if final_status == "AWAITING_REVIEW"
+                else "task completed"),
     )
-    if not kv_put(f"{base}/status", "DONE", cas=status_idx):
+    if not kv_put(f"{base}/status", final_status, cas=status_idx):
         return False
     kv_put(f"{base}/completed_by", agent_id)
     kv_put(f"{base}/completed_at", ts)
@@ -419,6 +427,76 @@ def rank_tasks(tasks: list[dict], agent_id: str,
 
 # ── 任务执行 ────────────────────────────────────────────────────────────────
 
+def _json_meta(meta: dict, name: str, default):
+    value = meta.get(name)
+    if value in (None, ""):
+        return default
+    if isinstance(value, str):
+        return json.loads(value)
+    return value
+
+
+def _run_json_command(command: list[str], payload: dict, timeout: int) -> dict:
+    """Run one executor/reviewer command using the JSON stdin/stdout contract."""
+    proc = subprocess.run(
+        command,
+        input=json.dumps(payload, ensure_ascii=False),
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"command exited {proc.returncode}: {proc.stderr[:1000]}"
+        )
+    try:
+        result = json.loads(proc.stdout)
+    except json.JSONDecodeError as exc:
+        raise ValueError("command stdout must be a JSON object") from exc
+    if not isinstance(result, dict):
+        raise ValueError("command stdout must be a JSON object")
+    return result
+
+
+def _record_review_round(req_id: str, task_name: str, round_no: int,
+                         review_input: dict, review_result: dict,
+                         attempt_id: str) -> None:
+    base = (
+        f"workflows/{req_id}/tasks/{task_name}/review/attempts/"
+        f"{attempt_id}/rounds/{round_no}"
+    )
+    kv_put(f"{base}/input", json.dumps(review_input, ensure_ascii=False))
+    kv_put(f"{base}/output", json.dumps(review_result, ensure_ascii=False))
+    kv_put(f"{base}/verdict", review_result["verdict"])
+    kv_put(f"{base}/reviewer", review_result.get("reviewer", ""))
+    kv_put(
+        f"workflows/{req_id}/tasks/{task_name}/review/current_round",
+        str(round_no),
+    )
+
+
+def _record_review_pass(req_id: str, task_name: str, agent_id: str,
+                        round_no: int, review_result: dict,
+                        attempt_id: str, lease_epoch: int) -> None:
+    reviewer = review_result.get("reviewer") or agent_id
+    base = f"workflows/{req_id}/tasks/{task_name}/evidence/review"
+    record = {
+        "gate": "review",
+        "verdict": "PASS",
+        "verifier": reviewer,
+        "observed_at": now_iso(),
+        "details": {
+            "round": round_no,
+            "summary": review_result.get("summary", ""),
+        },
+        "artifact_refs": review_result.get("artifact_refs", []),
+        "producer_attempt_id": attempt_id,
+        "producer_lease_epoch": lease_epoch,
+    }
+    kv_put(f"{base}/verdict", "PASS")
+    kv_put(f"{base}/record", json.dumps(record, ensure_ascii=False))
+
+
 def execute_task(req_id: str, task_name: str, task_meta: dict,
                  context: dict, config: dict) -> dict:
     """
@@ -437,6 +515,7 @@ def execute_task(req_id: str, task_name: str, task_meta: dict,
     """
     agent_id = config["agent_id"]
     executor = config.get("executor")
+    reviewer = config.get("reviewer")
 
     # 记录 session 开始
     run_id = get_current_run(req_id) or ensure_run(req_id)
@@ -456,52 +535,117 @@ def execute_task(req_id: str, task_name: str, task_meta: dict,
                            status="completed", summary=f"占位模式完成 {task_name}")
         return {"status": "DONE", "mode": "placeholder", "message": "无 executor，跳过实际执行"}
 
-    # 构建 executor 输入
-    task_input = {
-        "req_id": req_id,
-        "task_name": task_name,
-        "task_meta": task_meta,
-        "context": context,
-        "config": {
-            "agent_id": agent_id,
-            "service_name": config.get("service_name", ""),
-            "repo_path": config.get("repo_path", ""),
-            "worktree_base": config.get("worktree_base", ".worktree"),
-        },
-    }
-
     try:
-        input_json = json.dumps(task_input, ensure_ascii=False)
-        proc = subprocess.run(
-            executor,
-            input=input_json,
-            capture_output=True,
-            text=True,
-            timeout=config.get("task_timeout", 7200),  # 默认 2h
-        )
+        policy_raw = _json_meta(task_meta, "review_policy", None)
+        policy = ReviewPolicy.from_dict(policy_raw) if policy_raw else None
+        if policy and not reviewer:
+            raise ValueError("task has review_policy but worker has no --reviewer")
 
-        if proc.returncode == 0:
-            try:
-                result = json.loads(proc.stdout)
-            except json.JSONDecodeError:
-                result = {"status": "DONE", "stdout": proc.stdout}
-            log_step(req_id, task_name, agent_id, "EXEC_END",
-                     f"任务执行成功: {task_name}")
-            record_session_end(req_id, run_id, task_name, event_count=2, error_count=0,
-                               status="completed", summary=f"任务 {task_name} 执行成功")
-            return result
+        human_feedback, _ = kv_get(
+            f"workflows/{req_id}/tasks/{task_name}/review/human_feedback"
+        )
+        feedback = json.loads(human_feedback) if human_feedback else None
+        max_rounds = policy.max_rounds if policy else 1
+        last_result = {}
+
+        for round_no in range(1, max_rounds + 1):
+            task_input = {
+                "req_id": req_id,
+                "task_name": task_name,
+                "round": round_no,
+                "attempt_id": config.get("attempt_id", ""),
+                "lease_epoch": config.get("lease_epoch", 0),
+                "task_meta": task_meta,
+                "context": context,
+                "review_feedback": feedback,
+                "config": {
+                    "agent_id": agent_id,
+                    "service_name": config.get("service_name", ""),
+                    "repo_path": config.get("repo_path", ""),
+                    "worktree_base": config.get("worktree_base", ".worktree"),
+                },
+            }
+            last_result = _run_json_command(
+                executor, task_input, config.get("task_timeout", 7200)
+            )
+            if last_result.get("status") != "DONE":
+                return last_result
+            if not policy:
+                break
+
+            review_input = {
+                "req_id": req_id,
+                "task_name": task_name,
+                "round": round_no,
+                "attempt_id": config.get("attempt_id", ""),
+                "task": {
+                    "description": task_meta.get("description", ""),
+                    "agent_contract": _json_meta(
+                        task_meta, "agent_contract", {}
+                    ),
+                },
+                "acceptance": {
+                    "completion_contract": _json_meta(
+                        task_meta, "completion_contract", {}
+                    ),
+                    "dimensions": policy.dimensions,
+                    "blocking_severities": policy.blocking_severities,
+                },
+                "context": context,
+                "execution_result": last_result,
+            }
+            parsed = ReviewResult.from_dict(
+                _run_json_command(
+                    reviewer, review_input, config.get("review_timeout", 1800)
+                )
+            )
+            review_result = parsed.to_dict()
+            if policy.require_independent_agent:
+                if not parsed.reviewer:
+                    raise ValueError("independent reviewer must return reviewer identity")
+                if parsed.reviewer == agent_id:
+                    raise ValueError("executor cannot review its own task")
+            _record_review_round(
+                req_id, task_name, round_no, review_input, review_result,
+                config.get("attempt_id", ""),
+            )
+            log_step(
+                req_id, task_name, agent_id, "REVIEW",
+                f"review round {round_no}: {parsed.verdict}",
+                data={"summary": parsed.summary, "reviewer": parsed.reviewer},
+            )
+            if parsed.verdict == "PASS":
+                _record_review_pass(
+                    req_id, task_name, agent_id, round_no, review_result,
+                    config.get("attempt_id", ""),
+                    config.get("lease_epoch", 0),
+                )
+                last_result["review"] = review_result
+                last_result["review_rounds"] = round_no
+                break
+            if parsed.verdict == "ERROR":
+                return {
+                    "status": "FAILED",
+                    "error": parsed.summary or "reviewer returned ERROR",
+                }
+            feedback = review_result
         else:
-            error_count = 1
-            log_step(req_id, task_name, agent_id, "EXEC_ERROR",
-                     f"executor 退出码 {proc.returncode}: {proc.stderr[:500]}")
-            record_session_end(req_id, run_id, task_name, event_count=2, error_count=1,
-                               status="error",
-                               summary=f"executor 退出码 {proc.returncode}")
             return {
                 "status": "FAILED",
-                "exit_code": proc.returncode,
-                "stderr": proc.stderr[:1000],
+                "error": f"review did not pass after {max_rounds} rounds",
+                "review": feedback,
             }
+
+        log_step(req_id, task_name, agent_id, "EXEC_END",
+                 f"任务执行成功: {task_name}")
+        record_session_end(req_id, run_id, task_name, event_count=2,
+                           error_count=0, status="completed",
+                           summary=f"任务 {task_name} 执行成功")
+        if policy:
+            last_result["human_approval_required"] = (
+                policy.human_approval_after_pass
+            )
+        return last_result
 
     except subprocess.TimeoutExpired:
         log_step(req_id, task_name, agent_id, "EXEC_TIMEOUT",
@@ -696,20 +840,30 @@ class Worker:
         context = load_context(req_id, task_name)
         if result.get("resume_checkpoint"):
             context["_resume_checkpoint"] = result["resume_checkpoint"]
-        exec_result = execute_task(req_id, task_name, meta, context, self.config)
+        execution_config = dict(self.config)
+        execution_config["attempt_id"] = result.get("attempt_id", "")
+        execution_config["lease_epoch"] = result.get("lease_epoch", 0)
+        exec_result = execute_task(
+            req_id, task_name, meta, context, execution_config
+        )
 
         # 5. 报告结果
         if exec_result.get("status") == "DONE":
+            final_status = (
+                "AWAITING_REVIEW"
+                if exec_result.get("human_approval_required") else "DONE"
+            )
             completed = complete_task(
                 req_id, task_name, self.agent_id, exec_result,
                 attempt_id=result.get("attempt_id", ""),
                 lease_epoch=result.get("lease_epoch", 0),
+                final_status=final_status,
             )
             if not completed:
                 print(f"[worker] 任务 attempt 已失效，丢弃完成结果: {req_id}/{task_name}")
                 self._clear_current()
                 return
-            print(f"[worker] 任务完成: {req_id}/{task_name}")
+            print(f"[worker] 任务状态 {final_status}: {req_id}/{task_name}")
         else:
             error = exec_result.get("error", exec_result.get("stderr", "未知错误"))
             fail_task(
@@ -746,6 +900,10 @@ def main():
                         help="单任务最大执行时间（秒），默认 7200 (2h)")
     parser.add_argument("--executor", default="",
                         help="任务执行脚本/程序路径。接收 JSON stdin，输出 JSON stdout")
+    parser.add_argument("--reviewer", default="",
+                        help="独立评审脚本/程序。接收 Review Package JSON，输出 ReviewResult JSON")
+    parser.add_argument("--review-timeout", type=int, default=1800,
+                        help="单轮评审最长时间（秒），默认 1800")
     parser.add_argument("--worktree-base", default=".worktree",
                         help="Worktree 目录前缀，默认 .worktree")
     parser.add_argument("--once", action="store_true",
@@ -776,6 +934,8 @@ def main():
         "poll_interval": args.poll_interval,
         "task_timeout": args.task_timeout,
         "executor": args.executor.split() if args.executor else None,
+        "reviewer": args.reviewer.split() if args.reviewer else None,
+        "review_timeout": args.review_timeout,
         "worktree_base": args.worktree_base,
     }
 
