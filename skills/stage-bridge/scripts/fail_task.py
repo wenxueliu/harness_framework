@@ -7,6 +7,7 @@ fail_task.py — 标记任务失败
   fail_task.py <req_id> <task_name> --error "..." --traceback-file ./trace.txt
 """
 import argparse
+import json
 import os
 import sys
 
@@ -14,6 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _consul import (  # noqa: E402
     env, kv_get, kv_put, task_base, emit_json, die, now_iso,
     ensure_run, record_transition, record_session_end, validate_attempt,
+    build_failure_envelope,
 )
 
 
@@ -27,6 +29,13 @@ def main():
                    help="错误日志的可访问 URL")
     p.add_argument("--retry-hint", choices=("retry", "blocked", "manual"),
                    default="retry", help="给 Watchdog 的处理建议")
+    p.add_argument("--failure-type", choices=(
+        "HARD", "SILENT", "PARTIAL", "CONTRADICTION", "CASCADE", "LOOP", "CONTEXT",
+    ), default="HARD")
+    p.add_argument("--severity", choices=("LOW", "MEDIUM", "HIGH", "CRITICAL"),
+                   default="HIGH")
+    p.add_argument("--evidence", default="{}", help="JSON failure evidence")
+    p.add_argument("--caused-by", action="append", default=[])
     p.add_argument("--session-id", default="",
                    help="当前 Session ID，提供则在任务失败前自动关闭 Session")
     p.add_argument("--attempt-id", default=os.environ.get("ATTEMPT_ID", ""))
@@ -40,11 +49,29 @@ def main():
     )
     if not valid:
         die(reason, code=1)
+    try:
+        evidence = json.loads(args.evidence)
+        if not isinstance(evidence, dict):
+            raise ValueError
+    except (json.JSONDecodeError, ValueError):
+        die("--evidence 必须是 JSON 对象", code=1)
+    envelope = build_failure_envelope(
+        task_name=args.task_name, attempt_id=args.attempt_id,
+        lease_epoch=int(args.lease_epoch), message=args.error,
+        failure_type=args.failure_type, severity=args.severity,
+        retryable=args.retry_hint == "retry", evidence=evidence,
+        caused_by=args.caused_by,
+    )
 
     kv_put(f"{base}/error_message", args.error)
     kv_put(f"{base}/failed_at", now_iso())
     kv_put(f"{base}/failed_by", agent_id)
     kv_put(f"{base}/retry_hint", args.retry_hint)
+    kv_put(f"{base}/failure/current", json.dumps(envelope, ensure_ascii=False))
+    kv_put(
+        f"{base}/failure/history/{envelope['failure_id']}",
+        json.dumps(envelope, ensure_ascii=False),
+    )
 
     if args.traceback_file:
         try:
@@ -87,6 +114,7 @@ def main():
         "task_name": args.task_name,
         "status": "FAILED",
         "retry_hint": args.retry_hint,
+        "failure": envelope,
     })
 
 

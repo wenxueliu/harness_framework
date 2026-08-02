@@ -41,6 +41,7 @@ from _consul import (  # noqa: E402
     renew_attempt_lease, check_completion_contract,
     load_declared_context,
     load_latest_checkpoint,
+    build_failure_envelope,
 )
 
 # ── 状态文件 ───────────────────────────────────────────────────────────────
@@ -291,6 +292,15 @@ def fail_task(req_id: str, task_name: str, agent_id: str,
     kv_put(f"{base}/failed_at", ts)
     kv_put(f"{base}/error_message", error)
     kv_put(f"{base}/retry_hint", retry_hint)
+    envelope = build_failure_envelope(
+        task_name=task_name, attempt_id=attempt_id, lease_epoch=lease_epoch,
+        message=error, retryable=retry_hint == "retry",
+    )
+    kv_put(f"{base}/failure/current", json.dumps(envelope, ensure_ascii=False))
+    kv_put(
+        f"{base}/failure/history/{envelope['failure_id']}",
+        json.dumps(envelope, ensure_ascii=False),
+    )
     return True
 
 

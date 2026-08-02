@@ -1,5 +1,6 @@
 from .contracts import (
-    AgentContract, ArtifactManifest, CheckpointManifest, CompletionContract, EvaluatorLoopPolicy,
+    AgentContract, ArtifactManifest, CheckpointManifest, CompletionContract,
+    EvaluatorLoopPolicy, FailureEnvelope, FAILURE_TYPES,
     VerifierEvidence,
 )
 from .evaluator import EvaluationDecision, decide_evaluator_action
@@ -13,6 +14,7 @@ __all__ = [
     "AgentContract", "ArtifactManifest", "CompletionContract", "VerifierEvidence",
     "EvaluatorLoopPolicy", "EvaluationDecision", "decide_evaluator_action",
     "CheckpointManifest",
+    "FailureEnvelope", "FAILURE_TYPES",
     "ResourceVersion", "VersionConflict", "VersionedResourceStore",
     "ChangeSet", "ChangeSetConflict", "ChangeSetStore",
     "affected_downstream_closure", "invalidate_impacted_tasks",

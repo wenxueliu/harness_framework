@@ -222,3 +222,35 @@ class CheckpointManifest:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+FAILURE_TYPES = frozenset({
+    "HARD", "SILENT", "PARTIAL", "CONTRADICTION", "CASCADE", "LOOP", "CONTEXT",
+})
+
+
+@dataclass(frozen=True)
+class FailureEnvelope:
+    schema_version: str
+    failure_id: str
+    failure_type: str
+    severity: str
+    retryable: bool
+    message: str
+    observed_at: str
+    task_name: str
+    producer_attempt_id: str
+    producer_lease_epoch: int
+    evidence: dict[str, Any] = field(default_factory=dict)
+    caused_by: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if self.failure_type not in FAILURE_TYPES:
+            raise ValueError("invalid failure_type")
+        if self.severity not in {"LOW", "MEDIUM", "HIGH", "CRITICAL"}:
+            raise ValueError("invalid failure severity")
+        if not self.failure_id or not self.message or not self.task_name:
+            raise ValueError("failure_id, message, and task_name are required")
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)

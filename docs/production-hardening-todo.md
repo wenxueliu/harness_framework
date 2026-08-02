@@ -67,7 +67,7 @@ risk. A checked item requires implementation, tests, and documentation.
 
 ## P1 — Failure and recovery policy
 
-- [ ] Add a structured Failure Envelope covering hard, silent, partial,
+- [x] Add a structured Failure Envelope covering hard, silent, partial,
   contradiction, cascade, loop, and context failures.
 - [ ] Add idempotency keys and compensation tasks for side-effecting work.
 - [ ] Define primary, narrowed fallback, degraded, and human escalation paths.

@@ -3,7 +3,8 @@ from __future__ import annotations
 import pytest
 
 from harness_framework.contracts import (
-    AgentContract, ArtifactManifest, CheckpointManifest, CompletionContract, EvaluatorLoopPolicy,
+    AgentContract, ArtifactManifest, CheckpointManifest, CompletionContract,
+    EvaluatorLoopPolicy, FailureEnvelope,
     VerifierEvidence,
 )
 
@@ -99,3 +100,17 @@ def test_checkpoint_manifest_contains_resume_integrity_and_owner():
     assert manifest["producer_attempt_id"] == "attempt-1"
     assert manifest["checksum"].startswith("sha256:")
     assert manifest["cursor"] == "batch:10"
+
+
+@pytest.mark.parametrize("failure_type", [
+    "HARD", "SILENT", "PARTIAL", "CONTRADICTION", "CASCADE", "LOOP", "CONTEXT",
+])
+def test_failure_envelope_supports_production_failure_taxonomy(failure_type):
+    envelope = FailureEnvelope(
+        schema_version="1.0", failure_id="failure-1", failure_type=failure_type,
+        severity="HIGH", retryable=True, message="failed",
+        observed_at="2026-01-01T00:00:00Z", task_name="api",
+        producer_attempt_id="attempt-1", producer_lease_epoch=2,
+        evidence={"log": "ref"}, caused_by=["failure-upstream"],
+    )
+    assert envelope.to_dict()["failure_type"] == failure_type

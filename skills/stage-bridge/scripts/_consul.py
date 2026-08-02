@@ -542,6 +542,21 @@ def load_latest_checkpoint(req_id: str, task_name: str) -> dict | None:
     return {"version": int(current), "manifest": manifest, "payload": payload}
 
 
+def build_failure_envelope(
+    *, task_name: str, attempt_id: str, lease_epoch: int, message: str,
+    failure_type: str = "HARD", severity: str = "HIGH", retryable: bool = True,
+    evidence: dict | None = None, caused_by: list[str] | None = None,
+) -> dict:
+    from harness_framework.contracts import FailureEnvelope
+    return FailureEnvelope(
+        schema_version="1.0", failure_id=f"failure-{uuid.uuid4().hex}",
+        failure_type=failure_type, severity=severity, retryable=retryable,
+        message=message, observed_at=now_iso(), task_name=task_name,
+        producer_attempt_id=attempt_id, producer_lease_epoch=int(lease_epoch),
+        evidence=dict(evidence or {}), caused_by=list(caused_by or []),
+    ).to_dict()
+
+
 def session_base(req_id: str, task_name: str, session_id: str) -> str:
     return f"workflows/{req_id}/sessions/{task_name}/{session_id}"
 
