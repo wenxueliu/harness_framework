@@ -25,6 +25,9 @@ from .kv_store_protocol import KVStore
 log = logging.getLogger("run_manager")
 
 RUN_TERMINAL_STATES = frozenset({"COMPLETED", "FAILED", "ABORTED", "SUPERSEDED"})
+TASK_TERMINAL_STATES = frozenset({
+    "DONE", "FAILED", "ABORTED", "SKIPPED_UPSTREAM_FAILED",
+})
 
 
 class RunManager:
@@ -75,11 +78,24 @@ class RunManager:
         done = sum(1 for t in tasks.values() if t.get("status") == "DONE")
         failed = sum(1 for t in tasks.values() if t.get("status") == "FAILED")
         aborted = sum(1 for t in tasks.values() if t.get("status") == "ABORTED")
-        terminal = done + failed + aborted
+        skipped = sum(
+            1 for t in tasks.values()
+            if t.get("status") == "SKIPPED_UPSTREAM_FAILED"
+        )
+        terminal = sum(
+            1 for t in tasks.values()
+            if t.get("status") in TASK_TERMINAL_STATES
+        )
 
         base = f"workflows/{req_id}/runs/{run_id}"
         self.consul.kv_put(f"{base}/summary", json.dumps(
-            {"total": total, "done": done, "failed": failed, "aborted": aborted}
+            {
+                "total": total,
+                "done": done,
+                "failed": failed,
+                "aborted": aborted,
+                "skipped": skipped,
+            }
         ))
 
         if terminal < total:
@@ -87,7 +103,7 @@ class RunManager:
 
         if aborted == total:
             self.end_run(req_id, run_id, "ABORTED")
-        elif failed > 0 and terminal == total:
+        elif (failed > 0 or skipped > 0) and terminal == total:
             self.end_run(req_id, run_id, "FAILED")
         else:
             self.end_run(req_id, run_id, "COMPLETED")

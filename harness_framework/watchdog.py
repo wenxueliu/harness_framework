@@ -64,6 +64,7 @@ class Watchdog:
         # 按 (req_id, task_name) 聚合，收集每个 req_id 的 published 状态
         tasks: dict = {}
         published_reqs: set = set()
+        frozen_reqs: set = set()
         for it in items:
             parts = it["Key"].split("/")
             if len(parts) >= 2 and parts[0] == "workflows":
@@ -77,10 +78,15 @@ class Watchdog:
             elif len(parts) == 3 and parts[2] == "published":
                 if it.get("_decoded", "") == "true":
                     published_reqs.add(parts[1])
+            elif len(parts) == 3 and parts[2] == "status":
+                if it.get("_decoded", "") == "Proposal":
+                    frozen_reqs.add(parts[1])
 
         for (req_id, task_name), meta in tasks.items():
             if req_id not in published_reqs:
                 continue  # 草稿模式，跳过
+            if req_id in frozen_reqs:
+                continue  # Proposal 冻结期间不回收/重派任务
             if meta.get("status") != "IN_PROGRESS":
                 continue
 
@@ -133,6 +139,8 @@ class Watchdog:
         # 记录回收原因
         self.consul.kv_put(f"{base}/last_recovery_reason", reason)
         self.consul.kv_put(f"{base}/last_recovery_at", _now_iso())
+        # 立即 fence 旧 worker；即使尚未有新 worker claim，晚到写也会失败。
+        self.consul.kv_put(f"{base}/attempt_id", "")
 
         # 增加重试计数
         cur, _ = self.consul.kv_get(f"{base}/retry_count")

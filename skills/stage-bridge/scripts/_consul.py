@@ -351,6 +351,19 @@ def task_base(req_id: str, task_name: str) -> str:
     return f"workflows/{req_id}/tasks/{task_name}"
 
 
+def validate_attempt(req_id: str, task_name: str, attempt_id: str,
+                     lease_epoch: str) -> tuple[bool, str]:
+    """Fence stale workers before any task-scoped mutation."""
+    base = task_base(req_id, task_name)
+    current_attempt, _ = kv_get(f"{base}/attempt_id")
+    current_epoch, _ = kv_get(f"{base}/lease_epoch")
+    if not attempt_id or not lease_epoch:
+        return False, "attempt_id and lease_epoch are required"
+    if current_attempt != attempt_id or str(current_epoch) != str(lease_epoch):
+        return False, "stale task attempt; write fenced"
+    return True, ""
+
+
 def context_base(req_id: str) -> str:
     return f"workflows/{req_id}/context"
 

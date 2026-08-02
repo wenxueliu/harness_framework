@@ -13,6 +13,7 @@ claim_task.py — 通过 CAS 原子操作抢占任务
 import argparse
 import os
 import sys
+import uuid
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _consul import (  # noqa: E402
@@ -30,6 +31,14 @@ def main():
 
     agent_id = env("AGENT_ID", required=True)
     base = task_base(args.req_id, args.task_name)
+
+    workflow_status, _ = kv_get(f"workflows/{args.req_id}/status")
+    if workflow_status == "Proposal":
+        die("workflow 正在等待 Proposal 审批，任务抢占已冻结", code=1)
+
+    control, _ = kv_get(f"workflows/{args.req_id}/control")
+    if control in ("PAUSE", "ABORT"):
+        die(f"workflow control={control}，任务抢占已冻结", code=1)
 
     # 1. 读取当前状态
     status, modify_index = kv_get(f"{base}/status")
@@ -58,7 +67,12 @@ def main():
     if not ok:
         die("CAS 失败，其他 Agent 抢先一步", code=1)
 
-    # 4. 写入抢占元数据
+    # 4. 写入抢占元数据和 fencing token
+    previous_epoch, _ = kv_get(f"{base}/lease_epoch")
+    lease_epoch = int(previous_epoch or "0") + 1
+    attempt_id = f"attempt-{uuid.uuid4().hex}"
+    kv_put(f"{base}/attempt_id", attempt_id)
+    kv_put(f"{base}/lease_epoch", str(lease_epoch))
     kv_put(f"{base}/assigned_agent", agent_id)
     kv_put(f"{base}/started_at", now_iso())
 
@@ -94,6 +108,8 @@ def main():
         "agent_id": agent_id,
         "req_id": args.req_id,
         "task_name": args.task_name,
+        "attempt_id": attempt_id,
+        "lease_epoch": lease_epoch,
         "task_meta": task_meta,
         "context": context,
         "hints": {

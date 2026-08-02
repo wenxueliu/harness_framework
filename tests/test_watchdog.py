@@ -86,6 +86,10 @@ class TestWatchdog:
             for c in put_calls
         )
         assert retry_inc, "retry_count should be incremented to 2"
+        assert any(
+            "backend/attempt_id" in str(c) and c[0][1] == ""
+            for c in put_calls
+        ), "recovery must fence the previous attempt immediately"
 
     def test_recover_timeout(self):
         """started_at 超过 task_timeout → 任务回滚为 PENDING。"""
@@ -176,6 +180,20 @@ class TestWatchdog:
         wd._tick()
 
         assert not consul.kv_put.called, "DONE tasks should be skipped"
+
+    def test_proposal_freezes_recovery(self):
+        store = {
+            "workflows/req-001/published": "true",
+            "workflows/req-001/status": "Proposal",
+            "workflows/req-001/tasks/backend/status": "IN_PROGRESS",
+            "workflows/req-001/tasks/backend/assigned_agent": "dead-agent",
+            "workflows/req-001/tasks/backend/started_at": "2025-04-22T10:00:00",
+        }
+        consul = _make_store(store)
+        consul.list_services = Mock(return_value=[])
+        wd = Watchdog(consul, run_manager=make_mock_run_manager())
+        wd._tick()
+        assert not consul.kv_put.called
 
     def test_record_recovery_reason(self):
         """恢复时应记录原因和时间。"""

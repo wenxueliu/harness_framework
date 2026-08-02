@@ -17,7 +17,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _consul import (  # noqa: E402
-    env, kv_put, task_base, context_base, emit_json, die
+    env, kv_put, task_base, context_base, emit_json, die, validate_attempt
 )
 
 
@@ -29,6 +29,8 @@ def main():
     p.add_argument("--from-file", default="",
                    help="从文件读取 value 内容（支持 JSON / 文本）")
     p.add_argument("--scope", choices=("task", "context"), default="task")
+    p.add_argument("--attempt-id", default=os.environ.get("ATTEMPT_ID", ""))
+    p.add_argument("--lease-epoch", default=os.environ.get("LEASE_EPOCH", ""))
     args = p.parse_args()
 
     if args.from_file:
@@ -43,6 +45,11 @@ def main():
         path = f"{context_base(args.req_id)}/{args.key}"
     else:
         task_name = env("TASK_NAME", required=True)
+        valid, reason = validate_attempt(
+            args.req_id, task_name, args.attempt_id, args.lease_epoch
+        )
+        if not valid:
+            die(reason, code=1)
         path = f"{task_base(args.req_id, task_name)}/{args.key}"
 
     kv_put(path, value)

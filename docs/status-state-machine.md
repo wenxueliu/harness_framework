@@ -52,6 +52,7 @@ BLOCKED ──→ PENDING ──→ IN_PROGRESS ──→ DONE        │
 | `DONE` | 任务完成 | Agent |
 | `FAILED` | 任务失败 | Agent 或 Watchdog |
 | `AWAITING_REVIEW` | 等待人工 Code Review | Agent（`complete_task.py --await-review`） |
+| `SKIPPED_UPSTREAM_FAILED` | 阻塞依赖已失败，任务不会执行 | Aggregator |
 
 ### 状态转换规则
 
@@ -95,8 +96,12 @@ _tick():
 
 | 节点类型 | 行为 |
 |---------|------|
-| `parallel` | 依赖全部 DONE 时，将 `children` 全部激活为 PENDING，自身 DONE |
-| `aggregate` | 上游 parallel 全部 DONE 时，自身 DONE 并激活下游 |
+| `parallel` | 依赖满足后激活 `children` 并进入 IN_PROGRESS；仅当 join policy 满足后 DONE |
+| `aggregate` | 上游 parallel 真正 DONE 后自身 DONE 并激活下游 |
+
+`parallel.join.strategy` 支持 `all`（默认）、`any`、`quorum`。`quorum`
+必须同时声明 `minimum_success`。当剩余 children 已不可能满足策略时，parallel
+进入 `FAILED`，其阻塞下游进入 `SKIPPED_UPSTREAM_FAILED`。
 
 ## Watchdog 恢复逻辑
 

@@ -157,6 +157,20 @@ class TestRunCompletion:
         run_status, _ = store.kv_get(f"workflows/req-001/runs/{run_id}/status")
         assert run_status == "RUNNING"
 
+    def test_check_completion_failed_with_skipped_downstream(self):
+        rm, store, consul = make_run_manager()
+        run_id = rm.get_or_create_run("req-001", "aggregator")
+        self._seed_tasks(store, "req-001", {
+            "design": "DONE",
+            "backend": "FAILED",
+            "test": "SKIPPED_UPSTREAM_FAILED",
+        })
+        rm.check_run_completion("req-001", run_id)
+        run_status, _ = store.kv_get(
+            f"workflows/req-001/runs/{run_id}/status"
+        )
+        assert run_status == "FAILED"
+
     def test_check_completion_no_tasks(self):
         rm, store, consul = make_run_manager()
         run_id = rm.get_or_create_run("req-001", "aggregator")

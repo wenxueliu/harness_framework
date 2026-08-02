@@ -27,6 +27,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -169,6 +170,11 @@ def claim_task(req_id: str, task_name: str, agent_id: str) -> tuple[bool, dict]:
 
     # 3. 写入元数据
     ts = now_iso()
+    previous_epoch, _ = kv_get(f"{base}/lease_epoch")
+    lease_epoch = int(previous_epoch or "0") + 1
+    attempt_id = f"attempt-{uuid.uuid4().hex}"
+    kv_put(f"{base}/attempt_id", attempt_id)
+    kv_put(f"{base}/lease_epoch", str(lease_epoch))
     kv_put(f"{base}/assigned_agent", agent_id)
     kv_put(f"{base}/started_at", ts)
     kv_put(f"{base}/worker_pid", str(os.getpid()))
@@ -190,18 +196,26 @@ def claim_task(req_id: str, task_name: str, agent_id: str) -> tuple[bool, dict]:
     return True, {
         "req_id": req_id,
         "task_name": task_name,
+        "attempt_id": attempt_id,
+        "lease_epoch": lease_epoch,
         "task_meta": task_meta,
         "context": context,
     }
 
 
 def complete_task(req_id: str, task_name: str, agent_id: str,
-                  result: dict = None) -> None:
+                  result: dict = None, attempt_id: str = "",
+                  lease_epoch: int = 0) -> bool:
     """标记任务完成。"""
     base = f"workflows/{req_id}/tasks/{task_name}"
     ts = now_iso()
-    # 记录状态转换
-    prev_status, _ = kv_get(f"{base}/status")
+    current_attempt, _ = kv_get(f"{base}/attempt_id")
+    current_epoch, _ = kv_get(f"{base}/lease_epoch")
+    if current_attempt != attempt_id or str(current_epoch) != str(lease_epoch):
+        return False
+    prev_status, status_idx = kv_get(f"{base}/status")
+    if prev_status != "IN_PROGRESS":
+        return False
     run_id = ensure_run(req_id)
     record_transition(
         req_id, run_id, task_name,
@@ -210,20 +224,29 @@ def complete_task(req_id: str, task_name: str, agent_id: str,
         actor=agent_id,
         reason="task completed",
     )
-    kv_put(f"{base}/status", "DONE")
+    if not kv_put(f"{base}/status", "DONE", cas=status_idx):
+        return False
     kv_put(f"{base}/completed_by", agent_id)
     kv_put(f"{base}/completed_at", ts)
     if result:
         kv_put(f"{base}/result", json.dumps(result, ensure_ascii=False))
+    return True
 
 
 def fail_task(req_id: str, task_name: str, agent_id: str,
-              error: str, retry_hint: str = "retry") -> None:
+              error: str, retry_hint: str = "retry", attempt_id: str = "",
+              lease_epoch: int = 0) -> bool:
     """标记任务失败。"""
     base = f"workflows/{req_id}/tasks/{task_name}"
     ts = now_iso()
     # 记录状态转换
-    prev_status, _ = kv_get(f"{base}/status")
+    current_attempt, _ = kv_get(f"{base}/attempt_id")
+    current_epoch, _ = kv_get(f"{base}/lease_epoch")
+    if current_attempt != attempt_id or str(current_epoch) != str(lease_epoch):
+        return False
+    prev_status, status_idx = kv_get(f"{base}/status")
+    if prev_status != "IN_PROGRESS":
+        return False
     run_id = ensure_run(req_id)
     record_transition(
         req_id, run_id, task_name,
@@ -232,11 +255,13 @@ def fail_task(req_id: str, task_name: str, agent_id: str,
         actor=agent_id,
         reason=error,
     )
-    kv_put(f"{base}/status", "FAILED")
+    if not kv_put(f"{base}/status", "FAILED", cas=status_idx):
+        return False
     kv_put(f"{base}/failed_by", agent_id)
     kv_put(f"{base}/failed_at", ts)
     kv_put(f"{base}/error_message", error)
     kv_put(f"{base}/retry_hint", retry_hint)
+    return True
 
 
 def log_step(req_id: str, task_name: str, agent_id: str,
@@ -605,6 +630,8 @@ class Worker:
             "req_id": req_id,
             "task_name": task_name,
             "claimed_at": now_iso(),
+            "attempt_id": result.get("attempt_id", ""),
+            "lease_epoch": result.get("lease_epoch", 0),
         })
 
         print(f"[worker] 开始执行: {req_id}/{task_name} "
@@ -614,7 +641,9 @@ class Worker:
         ctl = check_control(req_id)
         if ctl == "ABORT":
             fail_task(req_id, task_name, self.agent_id,
-                      "任务被 ABORT", retry_hint="manual")
+                      "任务被 ABORT", retry_hint="manual",
+                      attempt_id=result.get("attempt_id", ""),
+                      lease_epoch=result.get("lease_epoch", 0))
             self._clear_current()
             return
 
@@ -624,11 +653,23 @@ class Worker:
 
         # 5. 报告结果
         if exec_result.get("status") == "DONE":
-            complete_task(req_id, task_name, self.agent_id, exec_result)
+            completed = complete_task(
+                req_id, task_name, self.agent_id, exec_result,
+                attempt_id=result.get("attempt_id", ""),
+                lease_epoch=result.get("lease_epoch", 0),
+            )
+            if not completed:
+                print(f"[worker] 任务 attempt 已失效，丢弃完成结果: {req_id}/{task_name}")
+                self._clear_current()
+                return
             print(f"[worker] 任务完成: {req_id}/{task_name}")
         else:
             error = exec_result.get("error", exec_result.get("stderr", "未知错误"))
-            fail_task(req_id, task_name, self.agent_id, error)
+            fail_task(
+                req_id, task_name, self.agent_id, error,
+                attempt_id=result.get("attempt_id", ""),
+                lease_epoch=result.get("lease_epoch", 0),
+            )
             print(f"[worker] 任务失败: {req_id}/{task_name}: {error[:200]}")
 
         self._clear_current()

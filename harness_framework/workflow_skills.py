@@ -64,24 +64,39 @@ class WorkflowSkills:
             {"success": True, "status": "Proposal", "already_proposed": True}
             {"success": False, "reason": "..."}
         """
-        deps_str, _ = self.consul.kv_get(f"workflows/{req_id}/dependencies")
+        deps_key = f"workflows/{req_id}/dependencies"
+        deps_str, deps_idx = self.consul.kv_get(deps_key)
         deps = json.loads(deps_str) if deps_str else {}
 
         if task_name in deps and not force:
             return {"success": False, "reason": "task already exists"}
 
-        deps[task_name] = task_def
-        self.consul.kv_put(f"workflows/{req_id}/dependencies", json.dumps(deps))
+        proposed_at = _now_iso()
+        task_def = dict(task_def)
+        task_def.setdefault("proposed_by", "unknown")
+        task_def["proposed_at"] = proposed_at
+        candidate = dict(deps)
+        candidate[task_name] = task_def
+        validation_error = _validate_dag(candidate)
+        if validation_error:
+            return {"success": False, "reason": validation_error}
 
         current, idx = self.consul.kv_get(f"workflows/{req_id}/status")
-        if current == "Proposal":
-            return {"success": True, "status": "Proposal", "already_proposed": True}
+        already_proposed = current == "Proposal"
+        if not already_proposed:
+            success = self.consul.kv_put(
+                f"workflows/{req_id}/status", "Proposal", cas=idx
+            )
+            if not success and not force:
+                return {"success": False, "reason": "concurrent proposal detected"}
 
-        success = self.consul.kv_put(
-            f"workflows/{req_id}/status", "Proposal", cas=idx
+        deps_written = self.consul.kv_put(
+            deps_key, json.dumps(candidate), cas=deps_idx
         )
-        if not success and not force:
-            return {"success": False, "reason": "concurrent proposal detected"}
+        if not deps_written and not force:
+            return {"success": False, "reason": "concurrent DAG update detected"}
+        if force and not deps_written:
+            self.consul.kv_put(deps_key, json.dumps(candidate))
 
         self.consul.kv_put(
             f"workflows/{req_id}/tasks/{task_name}/proposed_by",
@@ -89,10 +104,14 @@ class WorkflowSkills:
         )
         self.consul.kv_put(
             f"workflows/{req_id}/tasks/{task_name}/proposed_at",
-            _now_iso(),
+            proposed_at,
         )
 
-        return {"success": True, "status": "Proposal", "already_proposed": False}
+        return {
+            "success": True,
+            "status": "Proposal",
+            "already_proposed": already_proposed,
+        }
 
     def list_pending_proposals(self, req_id: str) -> list[dict]:
         """查看当前待确认的提案"""
@@ -142,6 +161,16 @@ class WorkflowSkills:
             deps_str, _ = self.consul.kv_get(f"workflows/{req_id}/dependencies")
             deps = json.loads(deps_str) if deps_str else {}
             for task_name in rejected_tasks:
+                rejected = deps.get(task_name)
+                if rejected is not None:
+                    self.consul.kv_put(
+                        f"workflows/{req_id}/proposal_history/{task_name}/{_history_seq()}",
+                        json.dumps({
+                            "decision": "rejected",
+                            "decided_at": _now_iso(),
+                            "task": rejected,
+                        }),
+                    )
                 deps.pop(task_name, None)
             self.consul.kv_put(
                 f"workflows/{req_id}/dependencies", json.dumps(deps)
@@ -162,3 +191,42 @@ class WorkflowSkills:
 
 def _now_iso() -> str:
     return datetime.datetime.utcnow().isoformat() + "Z"
+
+
+def _history_seq() -> str:
+    return f"{int(time.time() * 1000000):021d}"
+
+
+def _dependency_name(value: object) -> str:
+    if isinstance(value, dict):
+        return str(value.get("task", ""))
+    return str(value)
+
+
+def _validate_dag(deps: dict) -> str:
+    """验证引用完整性和环；返回空字符串表示合法。"""
+    for task_name, task_def in deps.items():
+        for raw_dep in task_def.get("depends_on", []):
+            dependency = _dependency_name(raw_dep)
+            if not dependency or dependency not in deps:
+                return f"unknown dependency for {task_name}: {dependency}"
+
+    visiting: set[str] = set()
+    visited: set[str] = set()
+
+    def visit(task_name: str) -> bool:
+        if task_name in visiting:
+            return False
+        if task_name in visited:
+            return True
+        visiting.add(task_name)
+        for raw_dep in deps[task_name].get("depends_on", []):
+            if not visit(_dependency_name(raw_dep)):
+                return False
+        visiting.remove(task_name)
+        visited.add(task_name)
+        return True
+
+    if not all(visit(task_name) for task_name in deps):
+        return "dependency cycle detected"
+    return ""
