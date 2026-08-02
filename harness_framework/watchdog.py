@@ -92,6 +92,8 @@ class Watchdog:
 
             agent_id = meta.get("assigned_agent", "")
             started_at = meta.get("started_at", "")
+            lease_expires_at = meta.get("lease_expires_at", "")
+            hard_deadline_at = meta.get("hard_deadline_at", "")
 
             # 1. Agent 存活检查
             if agent_id and agent_id not in alive:
@@ -100,11 +102,23 @@ class Watchdog:
                 self._recover(req_id, task_name, meta)
                 continue
 
-            # 2. 超时检查
-            if started_at and self._is_overtime(started_at):
-                log.warning("task %s/%s timed out (>%ss), recovering",
+            # 2. 硬超时：从首次 claim 起计算，续租不能延长。
+            hard_expired = (
+                self._is_expired(hard_deadline_at) if hard_deadline_at
+                else bool(started_at and self._is_overtime(started_at))
+            )
+            if hard_expired:
+                log.warning("task %s/%s hit hard timeout (>%ss), recovering",
                             req_id, task_name, self.task_timeout)
-                self._recover(req_id, task_name, meta, reason="timeout")
+                self._recover(req_id, task_name, meta, reason="hard_timeout")
+                continue
+
+            # 3. 软超时：worker 应周期续租。旧任务没有 lease 字段时仍按
+            # started_at 的硬超时规则处理，保持向后兼容。
+            if lease_expires_at and self._is_expired(lease_expires_at):
+                log.warning("task %s/%s lease expired, recovering",
+                            req_id, task_name)
+                self._recover(req_id, task_name, meta, reason="soft_timeout")
                 continue
 
     def _alive_agents(self) -> set:
@@ -133,9 +147,43 @@ class Watchdog:
         except Exception:
             return False
 
+    @staticmethod
+    def _is_expired(ts_str: str) -> bool:
+        try:
+            deadline = datetime.datetime.fromisoformat(ts_str.rstrip("Z"))
+            return datetime.datetime.utcnow() > deadline
+        except Exception:
+            return False
+
     def _recover(self, req_id: str, task_name: str, meta: dict,
                  reason: str = "agent_dead") -> None:
         base = f"workflows/{req_id}/tasks/{task_name}"
+        # Revalidate the recursive-scan snapshot and acquire recovery ownership.
+        # A lease renewal or a new attempt between scan and recovery must win.
+        current_status, status_index = self.consul.kv_get(f"{base}/status")
+        if current_status != "IN_PROGRESS":
+            return
+        current_attempt, _ = self.consul.kv_get(f"{base}/attempt_id")
+        snapshot_attempt = meta.get("attempt_id", "")
+        if snapshot_attempt and current_attempt != snapshot_attempt:
+            return
+        if reason == "soft_timeout":
+            current_expiry, _ = self.consul.kv_get(f"{base}/lease_expires_at")
+            if not current_expiry or not self._is_expired(current_expiry):
+                return
+        elif reason == "hard_timeout":
+            current_deadline, _ = self.consul.kv_get(f"{base}/hard_deadline_at")
+            if current_deadline and not self._is_expired(current_deadline):
+                return
+
+        cur, _ = self.consul.kv_get(f"{base}/retry_count")
+        retry_count = int(cur or "0") + 1
+        target_status = "FAILED" if retry_count >= self.max_retry else "PENDING"
+        if not self.consul.kv_put(
+            f"{base}/status", target_status, cas=status_index
+        ):
+            return
+
         # 记录回收原因
         self.consul.kv_put(f"{base}/last_recovery_reason", reason)
         self.consul.kv_put(f"{base}/last_recovery_at", _now_iso())
@@ -143,14 +191,11 @@ class Watchdog:
         self.consul.kv_put(f"{base}/attempt_id", "")
 
         # 增加重试计数
-        cur, _ = self.consul.kv_get(f"{base}/retry_count")
-        retry_count = int(cur or "0") + 1
         self.consul.kv_put(f"{base}/retry_count", str(retry_count))
 
         run_id = self.run_manager.get_or_create_run(req_id, "watchdog")
 
         if retry_count >= self.max_retry:
-            self.consul.kv_put(f"{base}/status", "FAILED")
             self.consul.kv_put(f"{base}/error_message",
                                f"Recovered {retry_count} times, exceeded limit")
             self.run_manager.record_transition(
@@ -173,7 +218,6 @@ class Watchdog:
             self.run_manager.check_run_completion(req_id, run_id)
         else:
             # 回滚为 PENDING 重新分配
-            self.consul.kv_put(f"{base}/status", "PENDING")
             # 清除上一次的 assigned_agent
             self.consul.kv_delete(f"{base}/assigned_agent")
             self.consul.kv_delete(f"{base}/started_at")

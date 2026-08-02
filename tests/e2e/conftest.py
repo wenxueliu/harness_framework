@@ -1,5 +1,5 @@
 """
-E2E 测试公共 fixtures — Playwright 浏览器 + 环境管理 + Consul 数据初始化
+E2E 测试公共 fixtures — Kimi WebBridge + 环境管理 + Consul 数据初始化
 
 参考 gstack：
 - browser fixture 相当于 gstack 的持久化 daemon（我们每次测试新建 browser，更隔离）
@@ -17,7 +17,7 @@ from typing import Any
 
 import pytest
 import requests
-from playwright.sync_api import Browser, BrowserContext, Page, expect, sync_playwright
+from .webbridge import Page
 
 
 # ---- 路径常量 ----
@@ -27,7 +27,6 @@ SCREENSHOT_DIR = BASELINE_DIR / "screenshots"
 REPORT_DIR = E2E_DIR / "reports"
 
 # ---- 环境变量配置 ----
-E2E_HEADED = os.environ.get("E2E_HEADED", "").lower() in ("1", "true", "yes")
 E2E_BASE_URL = os.environ.get("E2E_BASE_URL", "http://localhost:3000")
 CONSUL_URL = os.environ.get("CONSUL_ADDR", "http://127.0.0.1:8500")
 WEBAPI_URL = os.environ.get("WEBAPI_URL", "http://localhost:8080")
@@ -124,45 +123,14 @@ def cleanup_test_workflow(req_id: str) -> None:
         pass  # 清理失败不阻断测试
 
 
-# ---- Playwright fixtures ----
-
-@pytest.fixture(scope="session")
-def browser() -> Browser:
-    """会话级 Playwright Chromium 实例。
-
-    参考 gstack 的持久化 daemon：session 级复用，避免重复启动浏览器。
-    """
-    with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=not E2E_HEADED,
-            args=["--no-sandbox", "--disable-setuid-sandbox"],
-        )
-        yield browser
-        browser.close()
-
-
 @pytest.fixture
-def context(browser: Browser) -> BrowserContext:
-    """每个测试独立的 browser context。
-
-    相当于 gstack 的 tab isolation 模式：每个测试有独立的 cookies/localStorage/视口。
-    """
-    ctx = browser.new_context(
-        viewport={"width": 1280, "height": 720},
-        locale="zh-CN",
-        timezone_id="Asia/Shanghai",
-    )
-    yield ctx
-    ctx.close()
-
-
-@pytest.fixture
-def page(context: BrowserContext) -> Page:
-    """每个测试独立的 page 对象。"""
-    pg = context.new_page()
+def page(request: pytest.FixtureRequest) -> Page:
+    """每个测试独立的 WebBridge session，操作用户真实 Chrome。"""
+    if not Page.available():
+        pytest.skip("Kimi WebBridge daemon unavailable at 127.0.0.1:10086")
+    pg = Page(session=f"harness-e2e-{request.node.name}")
     pg.set_default_timeout(DEFAULT_TIMEOUT)
     yield pg
-    pg.close()
 
 
 @pytest.fixture
@@ -282,7 +250,7 @@ def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo) -> None:
 
 def pytest_sessionstart(session: pytest.Session) -> None:
     """测试套件开始前检查环境。"""
-    print(f"\n[E2E] BASE_URL={E2E_BASE_URL}, HEADED={E2E_HEADED}")
+    print(f"\n[E2E] BASE_URL={E2E_BASE_URL}, browser=Kimi WebBridge")
 
     # 检查 Consul 连通性
     try:

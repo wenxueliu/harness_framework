@@ -32,6 +32,40 @@ from scripts.sync_to_consul import (
 )
 
 
+def test_validate_rejects_invalid_agent_contract():
+    data = {
+        "task": {
+            "type": "backend", "depends_on": [], "service_name": "x",
+            "agent_contract": {"inputs": "not-a-list", "context_budget": -1},
+        }
+    }
+    assert any(
+        "agent_contract.inputs" in error
+        for error in validate_dependencies(data)
+    )
+
+
+def test_write_workflow_persists_agent_contract():
+    consul = MagicMock()
+    data = {
+        "task": {
+            "type": "backend", "depends_on": [], "service_name": "x",
+            "agent_contract": {
+                "inputs": ["spec"], "outputs": ["code"],
+                "responsibilities": ["tests"], "exclusions": ["deploy"],
+                "permissions": ["repo:write"], "context_budget": 4096,
+            },
+        }
+    }
+    write_workflow(consul, "req-001", data)
+    calls = [
+        call for call in consul.kv_put.call_args_list
+        if call[0][0].endswith("/agent_contract")
+    ]
+    assert len(calls) == 1
+    assert json.loads(calls[0][0][1])["context_budget"] == 4096
+
+
 class TestValidateDependencies:
     def test_valid_minimal(self):
         """最小合法格式。"""

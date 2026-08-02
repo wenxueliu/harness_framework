@@ -31,7 +31,7 @@ python3 skills/stage-bridge/scripts/read_context.py <req_id> e2e_test_cases
 
 ## Step 2: 运行 E2E 测试
 
-运行 E2E 测试套件（Playwright / Cypress / Selenium 等）。
+运行 E2E 测试套件（Kimi WebBridge 或项目约定的浏览器测试工具）。
 
 ```bash
 python3 skills/stage-bridge/scripts/log_step.py <req_id> "<task_name>" \

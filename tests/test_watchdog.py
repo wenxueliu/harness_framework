@@ -51,7 +51,7 @@ def _make_store(initial: dict) -> MagicMock:
 
     consul = MagicMock()
     consul.kv_get = Mock(side_effect=kv_get)
-    consul.kv_put = Mock()
+    consul.kv_put = Mock(return_value=True)
     consul.kv_delete = Mock()
     return consul
 
@@ -115,6 +115,60 @@ class TestWatchdog:
             for c in consul.kv_put.call_args_list
         )
         assert backend_pending, "task should be reset due to timeout"
+
+    def test_recover_expired_soft_lease(self):
+        """续租截止已过但硬截止未到 → soft_timeout 回收。"""
+        import datetime
+        now = datetime.datetime.utcnow()
+        store = {
+            "workflows/req-001/published": "true",
+            "workflows/req-001/tasks/backend/status": "IN_PROGRESS",
+            "workflows/req-001/tasks/backend/assigned_agent": "agent-001",
+            "workflows/req-001/tasks/backend/started_at": now.isoformat() + "Z",
+            "workflows/req-001/tasks/backend/lease_expires_at": (
+                now - datetime.timedelta(seconds=1)
+            ).isoformat() + "Z",
+            "workflows/req-001/tasks/backend/hard_deadline_at": (
+                now + datetime.timedelta(hours=1)
+            ).isoformat() + "Z",
+        }
+        consul = _make_store(store)
+        consul.list_services = Mock(return_value=[
+            {"Service": {"ID": "agent-001"}, "Checks": [{"Status": "passing"}]}
+        ])
+        wd = Watchdog(consul, run_manager=make_mock_run_manager())
+        wd._tick()
+        assert any(
+            "last_recovery_reason" in str(c) and c[0][1] == "soft_timeout"
+            for c in consul.kv_put.call_args_list
+        )
+
+    def test_hard_timeout_wins_even_with_valid_soft_lease(self):
+        """硬截止不可由软 lease 续租绕过。"""
+        import datetime
+        now = datetime.datetime.utcnow()
+        store = {
+            "workflows/req-001/published": "true",
+            "workflows/req-001/tasks/backend/status": "IN_PROGRESS",
+            "workflows/req-001/tasks/backend/assigned_agent": "agent-001",
+            "workflows/req-001/tasks/backend/started_at": now.isoformat() + "Z",
+            "workflows/req-001/tasks/backend/lease_expires_at": (
+                now + datetime.timedelta(hours=2)
+            ).isoformat() + "Z",
+            "workflows/req-001/tasks/backend/hard_deadline_at": (
+                now - datetime.timedelta(seconds=1)
+            ).isoformat() + "Z",
+        }
+        consul = _make_store(store)
+        consul.list_services = Mock(return_value=[
+            {"Service": {"ID": "agent-001"}, "Checks": [{"Status": "passing"}]}
+        ])
+        wd = Watchdog(consul, run_manager=make_mock_run_manager())
+        wd._tick()
+        assert any(
+            "last_recovery_reason" in str(c) and c[0][1] == "hard_timeout"
+            for c in consul.kv_put.call_args_list
+        )
 
     def test_fail_after_max_retry(self):
         """retry_count >= max_retry → 任务→FAILED + 告警写入。"""

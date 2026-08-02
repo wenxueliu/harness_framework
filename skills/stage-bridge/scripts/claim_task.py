@@ -18,7 +18,7 @@ import uuid
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _consul import (  # noqa: E402
     env, kv_get, kv_put, task_base, context_base,
-    emit_json, die, now_iso,
+    emit_json, die, now_iso, lease_deadline_iso,
     ensure_run, record_transition,
 )
 
@@ -74,7 +74,14 @@ def main():
     kv_put(f"{base}/attempt_id", attempt_id)
     kv_put(f"{base}/lease_epoch", str(lease_epoch))
     kv_put(f"{base}/assigned_agent", agent_id)
-    kv_put(f"{base}/started_at", now_iso())
+    claimed_at = now_iso()
+    lease_duration = int(env("LEASE_DURATION_SECONDS", "120"))
+    hard_timeout = int(env("HARD_TASK_TIMEOUT_SECONDS", "7200"))
+    hard_deadline_at = lease_deadline_iso(hard_timeout)
+    kv_put(f"{base}/started_at", claimed_at)
+    kv_put(f"{base}/lease_renewed_at", claimed_at)
+    kv_put(f"{base}/lease_expires_at", lease_deadline_iso(lease_duration))
+    kv_put(f"{base}/hard_deadline_at", hard_deadline_at)
 
     # 5. 记录状态转换到 run 审计日志
     run_id = ensure_run(args.req_id)
@@ -110,6 +117,8 @@ def main():
         "task_name": args.task_name,
         "attempt_id": attempt_id,
         "lease_epoch": lease_epoch,
+        "lease_duration_seconds": lease_duration,
+        "hard_deadline_at": hard_deadline_at,
         "task_meta": task_meta,
         "context": context,
         "hints": {
@@ -117,6 +126,7 @@ def main():
                 "执行业务逻辑",
                 "调用 log_step.py 记录关键事件",
                 "调用 write_artifact.py 写入产物",
+                "长任务需在 lease_expires_at 前调用 renew_lease.py 续租",
                 "成功时调用 complete_task.py，失败时调用 fail_task.py",
             ]
         }

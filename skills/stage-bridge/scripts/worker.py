@@ -37,7 +37,8 @@ from _consul import (  # noqa: E402
     consul_health_check, service_register_safe, service_deregister_safe,
     health_check_pass_safe,
     ensure_run, record_transition, get_current_run,
-    record_session_start, record_session_end,
+    record_session_start, record_session_end, lease_deadline_iso,
+    renew_attempt_lease, check_completion_contract,
 )
 
 # ── 状态文件 ───────────────────────────────────────────────────────────────
@@ -78,6 +79,18 @@ class Heartbeat:
         self.interval = interval
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
+        self._lease_lock = threading.Lock()
+        self._lease: Optional[tuple[str, str, str, int, int]] = None
+
+    def set_lease(self, req_id: str, task_name: str, attempt_id: str,
+                  lease_epoch: int, duration_seconds: int) -> None:
+        with self._lease_lock:
+            self._lease = (req_id, task_name, attempt_id, lease_epoch,
+                           duration_seconds)
+
+    def clear_lease(self) -> None:
+        with self._lease_lock:
+            self._lease = None
 
     def start(self):
         self._thread = threading.Thread(target=self._run, daemon=True, name="heartbeat")
@@ -94,6 +107,16 @@ class Heartbeat:
             ok, msg = health_check_pass_safe(check_id)
             if not ok:
                 print(f"[heartbeat] 心跳失败: {msg}", file=sys.stderr)
+            with self._lease_lock:
+                lease = self._lease
+            if lease:
+                req_id, task_name, attempt_id, lease_epoch, duration = lease
+                renewed, reason, _ = renew_attempt_lease(
+                    req_id, task_name, attempt_id, str(lease_epoch), duration,
+                    self.agent_id,
+                )
+                if not renewed:
+                    print(f"[lease] 续租失败: {reason}", file=sys.stderr)
             self._stop.wait(self.interval)
 
 
@@ -170,6 +193,8 @@ def claim_task(req_id: str, task_name: str, agent_id: str) -> tuple[bool, dict]:
 
     # 3. 写入元数据
     ts = now_iso()
+    lease_duration = int(env("LEASE_DURATION_SECONDS", "120"))
+    hard_timeout = int(env("HARD_TASK_TIMEOUT_SECONDS", "7200"))
     previous_epoch, _ = kv_get(f"{base}/lease_epoch")
     lease_epoch = int(previous_epoch or "0") + 1
     attempt_id = f"attempt-{uuid.uuid4().hex}"
@@ -177,6 +202,10 @@ def claim_task(req_id: str, task_name: str, agent_id: str) -> tuple[bool, dict]:
     kv_put(f"{base}/lease_epoch", str(lease_epoch))
     kv_put(f"{base}/assigned_agent", agent_id)
     kv_put(f"{base}/started_at", ts)
+    kv_put(f"{base}/lease_renewed_at", ts)
+    kv_put(f"{base}/lease_expires_at", lease_deadline_iso(lease_duration))
+    hard_deadline_at = lease_deadline_iso(hard_timeout)
+    kv_put(f"{base}/hard_deadline_at", hard_deadline_at)
     kv_put(f"{base}/worker_pid", str(os.getpid()))
 
     # 4. 记录状态转换
@@ -198,6 +227,8 @@ def claim_task(req_id: str, task_name: str, agent_id: str) -> tuple[bool, dict]:
         "task_name": task_name,
         "attempt_id": attempt_id,
         "lease_epoch": lease_epoch,
+        "lease_duration_seconds": lease_duration,
+        "hard_deadline_at": hard_deadline_at,
         "task_meta": task_meta,
         "context": context,
     }
@@ -215,6 +246,9 @@ def complete_task(req_id: str, task_name: str, agent_id: str,
         return False
     prev_status, status_idx = kv_get(f"{base}/status")
     if prev_status != "IN_PROGRESS":
+        return False
+    ready, _ = check_completion_contract(req_id, task_name)
+    if not ready:
         return False
     run_id = ensure_run(req_id)
     record_transition(
@@ -633,6 +667,11 @@ class Worker:
             "attempt_id": result.get("attempt_id", ""),
             "lease_epoch": result.get("lease_epoch", 0),
         })
+        self.heartbeat.set_lease(
+            req_id, task_name, result.get("attempt_id", ""),
+            result.get("lease_epoch", 0),
+            result.get("lease_duration_seconds", 120),
+        )
 
         print(f"[worker] 开始执行: {req_id}/{task_name} "
               f"(type={meta.get('type')}, service={meta.get('service_name')})")
@@ -675,6 +714,7 @@ class Worker:
         self._clear_current()
 
     def _clear_current(self):
+        self.heartbeat.clear_lease()
         self._current_req_id = None
         self._current_task_name = None
         clear_state()

@@ -14,6 +14,7 @@ _consul.py — stage-bridge 共享 Consul HTTP 客户端
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import sys
@@ -345,6 +346,30 @@ def now_iso() -> str:
     return datetime.datetime.utcnow().isoformat() + "Z"
 
 
+def lease_deadline_iso(duration_seconds: int) -> str:
+    """Return the UTC expiry for a renewable soft lease."""
+    import datetime
+    duration = max(1, int(duration_seconds))
+    deadline = datetime.datetime.utcnow() + datetime.timedelta(seconds=duration)
+    return deadline.isoformat() + "Z"
+
+
+def bounded_lease_deadline_iso(duration_seconds: int,
+                               hard_deadline_at: str = "") -> str:
+    """Return a soft lease deadline capped by the immutable hard deadline."""
+    import datetime
+    soft = datetime.datetime.utcnow() + datetime.timedelta(
+        seconds=max(1, int(duration_seconds))
+    )
+    if hard_deadline_at:
+        try:
+            hard = datetime.datetime.fromisoformat(hard_deadline_at.rstrip("Z"))
+            soft = min(soft, hard)
+        except ValueError:
+            pass
+    return soft.isoformat() + "Z"
+
+
 # ── 路径工具 ──────────────────────────────────────────────────────────────────
 
 def task_base(req_id: str, task_name: str) -> str:
@@ -362,6 +387,74 @@ def validate_attempt(req_id: str, task_name: str, attempt_id: str,
     if current_attempt != attempt_id or str(current_epoch) != str(lease_epoch):
         return False, "stale task attempt; write fenced"
     return True, ""
+
+
+def renew_attempt_lease(req_id: str, task_name: str, attempt_id: str,
+                        lease_epoch: str, duration_seconds: int = 120,
+                        agent_id: str = ""
+                        ) -> tuple[bool, str, str]:
+    """Renew the current attempt's soft lease without extending hard timeout."""
+    valid, reason = validate_attempt(req_id, task_name, attempt_id, lease_epoch)
+    if not valid:
+        return False, reason, ""
+    base = task_base(req_id, task_name)
+    status, _ = kv_get(f"{base}/status")
+    if status != "IN_PROGRESS":
+        return False, f"task status is {status}, not IN_PROGRESS", ""
+    assigned_agent, _ = kv_get(f"{base}/assigned_agent")
+    if agent_id and assigned_agent != agent_id:
+        return False, "task lease is owned by another agent", ""
+    hard_deadline_at, _ = kv_get(f"{base}/hard_deadline_at")
+    renewed_at = now_iso()
+    expires_at = bounded_lease_deadline_iso(
+        duration_seconds, hard_deadline_at or ""
+    )
+    kv_put(f"{base}/lease_renewed_at", renewed_at)
+    kv_put(f"{base}/lease_expires_at", expires_at)
+    return True, "", expires_at
+
+
+def create_artifact_manifest(*, version: int, key: str, value: str,
+                             attempt_id: str, lease_epoch: str,
+                             lineage: list[str], validation_status: str,
+                             retention: dict) -> dict:
+    """Build a portable schema-1.0 artifact manifest for stage-bridge."""
+    encoded = value.encode("utf-8")
+    return {
+        "schema_version": "1.0",
+        "artifact_version": version,
+        "key": key,
+        "producer_attempt_id": attempt_id,
+        "producer_lease_epoch": int(lease_epoch),
+        "checksum": "sha256:" + hashlib.sha256(encoded).hexdigest(),
+        "size_bytes": len(encoded),
+        "created_at": now_iso(),
+        "lineage": list(lineage),
+        "validation_status": validation_status,
+        "retention": dict(retention),
+    }
+
+
+def check_completion_contract(req_id: str, task_name: str) -> tuple[bool, list[str]]:
+    """Return whether all required artifact manifests and PASS gates exist."""
+    base = task_base(req_id, task_name)
+    raw, _ = kv_get(f"{base}/completion_contract")
+    if not raw:
+        return True, []
+    try:
+        contract = json.loads(raw)
+    except json.JSONDecodeError:
+        return False, ["completion_contract is invalid JSON"]
+    missing = []
+    for key in contract.get("required_artifacts", []):
+        version, _ = kv_get(f"{base}/artifacts/{key}/current_version")
+        if not version:
+            missing.append(f"artifact:{key}")
+    for gate in contract.get("required_gates", []):
+        verdict, _ = kv_get(f"{base}/evidence/{gate}/verdict")
+        if verdict != "PASS":
+            missing.append(f"gate:{gate}")
+    return not missing, missing
 
 
 def context_base(req_id: str) -> str:

@@ -1,5 +1,5 @@
 """
-E2E 自动化测试套件 (Playwright + Chromium)
+E2E 自动化测试套件 (Kimi WebBridge + 用户真实 Chrome)
 
 参考 gstack 浏览器自动化体系建立的三层 E2E 测试：
 - test_dashboard.py   功能测试（参考 gstack /qa 的 diff-aware 模式）
@@ -15,8 +15,7 @@ E2E 自动化测试套件 (Playwright + Chromium)
 - cascade 认证探测      → dashboard 的 Consul/Mock 自动降级
 
 运行：
-  E2E_HEADED=true pytest tests/e2e/ -v          # headed 调试
-  pytest tests/e2e/ -v                           # headless 运行
+  pytest tests/e2e/ -v                           # 真实浏览器运行
   pytest tests/e2e/ -v --update-snapshots        # 更新视觉基线
   pytest tests/e2e/test_scenarios.py -v          # YAML 场景测试
 """

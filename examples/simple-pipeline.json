@@ -9,7 +9,19 @@
     "type": "backend",
     "depends_on": ["design"],
     "service_name": "myservice",
-    "description": "实现 /api/users 端点"
+    "description": "实现 /api/users 端点",
+    "agent_contract": {
+      "inputs": ["design API specification"],
+      "outputs": ["users endpoint implementation", "unit tests"],
+      "responsibilities": ["preserve backward compatibility"],
+      "exclusions": ["production deployment"],
+      "permissions": ["repository:write", "test:run"],
+      "context_budget": 12000
+    },
+    "completion_contract": {
+      "required_artifacts": ["implementation"],
+      "required_gates": ["unit-tests"]
+    }
   },
   "test": {
     "type": "test",

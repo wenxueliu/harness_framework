@@ -151,6 +151,8 @@ workflows/<req_id>/
 │   ├── type           # design / review / backend / test / deploy
 │   ├── assigned_agent # 正在执行的 Agent ID
 │   ├── started_at     # 开始时间
+│   ├── agent_contract # 输入/输出/职责/排除项/权限/上下文预算（JSON）
+│   ├── artifacts/     # 版本化产物、manifest、checksum 与 lineage
 │   └── retry_count    # 重试次数
 └── context/           # 任务间共享上下文
 ```

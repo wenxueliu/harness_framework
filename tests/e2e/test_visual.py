@@ -2,7 +2,7 @@
 视觉回归测试 (E2E)
 
 参考 gstack 的 screenshot + diff 模式：
-- 使用 Playwright 内置 toHaveScreenshot() 像素对比
+- 使用 Kimi WebBridge 的真实浏览器截图
 - 首次运行 --update-snapshots 生成基线，后续运行做对比
 - 参考 AutoCLI 的图像匹配 threshold 模式（max_diff_pixel_ratio）
 
@@ -16,7 +16,7 @@
 from __future__ import annotations
 
 import pytest
-from playwright.sync_api import Page, expect
+from .webbridge import Page, expect
 
 from .helpers import wait_for_network_idle
 

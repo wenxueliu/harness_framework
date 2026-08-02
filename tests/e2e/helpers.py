@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from playwright.sync_api import Page, expect
+from .webbridge import Page, expect
 
 
 # ============================================================
@@ -379,7 +379,7 @@ def assert_visual_match(
     参考 AutoCLI 的图像匹配 threshold 模式：
     - max_diff_pixel_ratio: 允许的像素差异比例（默认 1%）
 
-    使用 Playwright 内置的 toHaveScreenshot() 实现。
+    使用 Kimi WebBridge 截图实现。
     """
     snapshot_path = BASELINE_DIR / f"{name}.png"
     expect(page).to_have_screenshot(

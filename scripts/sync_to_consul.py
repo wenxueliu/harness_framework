@@ -49,6 +49,7 @@ if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
 from harness_framework.consul_client import ConsulClient
+from harness_framework.contracts import AgentContract, CompletionContract
 
 
 # 非任务元数据 key，自动从任务提取中排除
@@ -86,6 +87,11 @@ def validate_dependencies(data: dict) -> list[str]:
 
         if t not in ("parallel", "aggregate") and not info.get("service_name"):
             errors.append(f"task '{name}': missing 'service_name'")
+        try:
+            AgentContract.from_dict(info.get("agent_contract"))
+            CompletionContract.from_dict(info.get("completion_contract"))
+        except ValueError as exc:
+            errors.append(f"task '{name}': {exc}")
 
     # 验证 depends_on 引用的任务存在
     for name, info in tasks.items():
@@ -176,6 +182,18 @@ def write_workflow(
             consul.kv_put(f"{t_base}/blocking", str(info["blocking"]).lower())
         if info.get("metadata"):
             consul.kv_put(f"{t_base}/metadata", json.dumps(info["metadata"]))
+        if "agent_contract" in info:
+            contract = AgentContract.from_dict(info["agent_contract"])
+            consul.kv_put(
+                f"{t_base}/agent_contract",
+                json.dumps(contract.to_dict(), ensure_ascii=False),
+            )
+        if "completion_contract" in info:
+            contract = CompletionContract.from_dict(info["completion_contract"])
+            consul.kv_put(
+                f"{t_base}/completion_contract",
+                json.dumps(contract.to_dict(), ensure_ascii=False),
+            )
         if upstream:
             dep_strs = []
             for d in upstream:

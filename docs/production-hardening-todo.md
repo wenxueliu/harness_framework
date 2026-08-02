@@ -31,18 +31,18 @@ risk. A checked item requires implementation, tests, and documentation.
 - [x] Generate an immutable `attempt_id` and monotonic `lease_epoch` at claim.
 - [x] Require the current attempt and lease epoch for artifact writes,
   completion, and failure reporting.
-- [ ] Add renewable leases and distinguish soft timeout from hard timeout.
+- [x] Add renewable leases and distinguish soft timeout from hard timeout.
 - [x] Fence stale workers after watchdog recovery so late writes cannot overwrite
   the current attempt.
 
 ## P1 — Contracts, artifacts, and verification
 
-- [ ] Add `AgentContract` fields for inputs, outputs, responsibilities,
+- [x] Add `AgentContract` fields for inputs, outputs, responsibilities,
   exclusions, permissions, and context budget.
-- [ ] Add versioned Artifact Manifests with producer attempt, checksum, lineage,
+- [x] Add versioned Artifact Manifests with producer attempt, checksum, lineage,
   validation status, and retention metadata.
-- [ ] Add structured verifier evidence and completion contracts.
-- [ ] Prevent `DONE` unless required artifacts and gates are satisfied.
+- [x] Add structured verifier evidence and completion contracts.
+- [x] Prevent `DONE` unless required artifacts and gates are satisfied.
 - [ ] Add evaluator-loop policies: maximum iterations, score plateau detection,
   fallback chain, and escalation.
 

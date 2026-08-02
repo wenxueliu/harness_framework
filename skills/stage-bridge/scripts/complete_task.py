@@ -17,6 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _consul import (  # noqa: E402
     env, kv_get, kv_put, task_base, emit_json, die, now_iso,
     ensure_run, record_transition, record_session_end, validate_attempt,
+    check_completion_contract,
 )
 
 
@@ -65,6 +66,10 @@ def main():
     kv_put(f"{base}/completed_by", agent_id)
 
     final_status = "AWAITING_REVIEW" if args.await_review else "DONE"
+    if final_status == "DONE":
+        ready, missing = check_completion_contract(args.req_id, args.task_name)
+        if not ready:
+            die("completion contract unsatisfied: " + ", ".join(missing), code=1)
 
     run_id = ensure_run(args.req_id)
 
