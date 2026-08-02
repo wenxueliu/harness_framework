@@ -10,6 +10,7 @@ from .incremental import affected_downstream_closure, invalidate_impacted_tasks
 from .context_store import CONTEXT_NAMESPACES, ContextStore
 from .budgets import BudgetLedger, ResourceBudget
 from .side_effects import IdempotencyConflict, SideEffectLedger
+from .recovery import RecoveryDecision, RecoveryPolicy, select_recovery_path
 
 __all__ = [
     "AgentContract", "ArtifactManifest", "CompletionContract", "VerifierEvidence",
@@ -22,4 +23,5 @@ __all__ = [
     "CONTEXT_NAMESPACES", "ContextStore",
     "BudgetLedger", "ResourceBudget",
     "IdempotencyConflict", "SideEffectLedger",
+    "RecoveryDecision", "RecoveryPolicy", "select_recovery_path",
 ]

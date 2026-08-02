@@ -85,6 +85,7 @@ workflows/<req_id>/
 | 写检查点 | `write_checkpoint.py <req_id> <task_name> <cursor> <payload>` | 长任务持久化恢复点；下次领取自动返回 |
 | 记录用量 | `record_usage.py <req_id> <task_name> --tokens N ...` | 累计资源用量并执行 circuit breaker |
 | 副作用门禁 | `side_effect.py begin|complete|fail|compensated ...` | 幂等执行、结果重放与补偿激活 |
+| 恢复选路 | `select_recovery.py <req_id> <task_name>` | primary → narrowed → degraded → human 确定性选路 |
 | 完成 | `complete_task.sh <req_id> <task_name>` | 任务成功完成（支持 --session-id） |
 | 失败 | `fail_task.sh <req_id> <task_name> --error "..."` | 不可恢复错误（支持 --session-id） |
 | ABORT 检查 | `check_control.sh <req_id>` | LLM 调用前后 / verify 每轮 / feedback 唤醒时必检，收到 ABORT 立即退出 |

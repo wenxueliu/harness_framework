@@ -17,6 +17,15 @@
       "max_tool_calls": 200,
       "max_wall_clock_seconds": 7200
     },
+    "recovery_policy": {
+      "primary_action": "retry_same_strategy",
+      "narrowed_action": "retry_unit_tests_only",
+      "degraded_action": "continue_without_optional_checks",
+      "human_target": "service-owner",
+      "primary_attempts": 1,
+      "narrowed_attempts": 2,
+      "degraded_attempts": 1
+    },
     "agent_contract": {
       "inputs": ["design API specification"],
       "outputs": ["users endpoint implementation", "unit tests"],

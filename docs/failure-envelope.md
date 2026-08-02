@@ -17,3 +17,19 @@ attempt ownership, timestamp, structured evidence, and causal failure IDs.
 `--caused-by` arguments. The latest envelope is stored at `failure/current` and
 every envelope is retained under `failure/history/<failure_id>`. Persistent
 workers use the same envelope format for internal failures.
+
+## Recovery paths
+
+Each task may define a `recovery_policy` with four ordered paths:
+
+1. `PRIMARY` retries the same strategy for `primary_attempts`.
+2. `NARROWED` retries a smaller scope or cheaper verifier.
+3. `DEGRADED` continues with an explicitly reduced service level.
+4. `HUMAN` opens an intervention for `human_target`.
+
+`select_recovery.py` reads the current Failure Envelope and retry count, selects
+the path deterministically, and writes current plus append-only decision
+history. Critical failures and non-retryable failures escalate immediately;
+partial failures may still enter automatic recovery so their compensation path
+can run. Exhausting all configured attempt budgets creates a durable human
+intervention linked to the originating failure ID.

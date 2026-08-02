@@ -70,7 +70,7 @@ risk. A checked item requires implementation, tests, and documentation.
 - [x] Add a structured Failure Envelope covering hard, silent, partial,
   contradiction, cascade, loop, and context failures.
 - [x] Add idempotency keys and compensation tasks for side-effecting work.
-- [ ] Define primary, narrowed fallback, degraded, and human escalation paths.
+- [x] Define primary, narrowed fallback, degraded, and human escalation paths.
 
 ## P2 — Observability, security, and integration
 

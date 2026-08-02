@@ -54,6 +54,7 @@ from harness_framework.contracts import (
 )
 from harness_framework.versioning import VersionedResourceStore
 from harness_framework.budgets import ResourceBudget
+from harness_framework.recovery import RecoveryPolicy
 
 
 # 非任务元数据 key，自动从任务提取中排除
@@ -100,6 +101,8 @@ def validate_dependencies(data: dict) -> list[str]:
                 EvaluatorLoopPolicy.from_dict(info["evaluator_policy"])
             if "resource_budget" in info:
                 ResourceBudget.from_dict(info["resource_budget"])
+            if "recovery_policy" in info:
+                RecoveryPolicy.from_dict(info["recovery_policy"])
         except ValueError as exc:
             errors.append(f"task '{name}': {exc}")
         context_inputs = info.get("context_inputs", [])
@@ -251,6 +254,12 @@ def write_workflow(
             consul.kv_put(f"{t_base}/compensation_task", info["compensation_task"])
         if info.get("activation"):
             consul.kv_put(f"{t_base}/activation", info["activation"])
+        if "recovery_policy" in info:
+            policy = RecoveryPolicy.from_dict(info["recovery_policy"])
+            consul.kv_put(
+                f"{t_base}/recovery_policy",
+                json.dumps(policy.to_dict(), ensure_ascii=False),
+            )
         if upstream:
             dep_strs = []
             for d in upstream:
