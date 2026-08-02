@@ -58,12 +58,12 @@ risk. A checked item requires implementation, tests, and documentation.
 
 ## P1 — Context and long-running work
 
-- [ ] Separate immutable facts, versioned artifacts, task working memory, event
+- [x] Separate immutable facts, versioned artifacts, task working memory, event
   logs, derived summaries, and restricted data.
-- [ ] Declare task `context_inputs`; stop injecting the entire workflow context.
-- [ ] Store full artifacts plus bounded summaries with mandatory preserved fields.
-- [ ] Add checkpoint manifests and resume-from-checkpoint retry behavior.
-- [ ] Add token, cost, tool-call, and wall-clock budgets with circuit breakers.
+- [x] Declare task `context_inputs`; stop injecting the entire workflow context.
+- [x] Store full artifacts plus bounded summaries with mandatory preserved fields.
+- [x] Add checkpoint manifests and resume-from-checkpoint retry behavior.
+- [x] Add token, cost, tool-call, and wall-clock budgets with circuit breakers.
 
 ## P1 — Failure and recovery policy
 

@@ -77,7 +77,8 @@ class VersionedResourceStore:
             json.dumps(metadata.to_dict(), ensure_ascii=False, sort_keys=True),
         )
         pointer = json.dumps(metadata.to_dict(), ensure_ascii=False, sort_keys=True)
-        if not self.store.kv_put(pointer_key, pointer, cas=pointer_index):
+        pointer_cas = pointer_index if raw_pointer is not None else 0
+        if not self.store.kv_put(pointer_key, pointer, cas=pointer_cas):
             raise VersionConflict(f"concurrent {kind} publication detected")
         return metadata
 

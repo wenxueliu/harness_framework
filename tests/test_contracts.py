@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from harness_framework.contracts import (
-    AgentContract, ArtifactManifest, CompletionContract, EvaluatorLoopPolicy,
+    AgentContract, ArtifactManifest, CheckpointManifest, CompletionContract, EvaluatorLoopPolicy,
     VerifierEvidence,
 )
 
@@ -86,3 +86,16 @@ def test_evaluator_loop_policy_round_trip_and_defaults():
 def test_evaluator_loop_policy_rejects_unsafe_values(value):
     with pytest.raises(ValueError):
         EvaluatorLoopPolicy.from_dict(value)
+
+
+def test_checkpoint_manifest_contains_resume_integrity_and_owner():
+    manifest = CheckpointManifest.create(
+        checkpoint_version=2, payload='{"offset":10}',
+        attempt_id="attempt-1", lease_epoch=4,
+        created_at="2026-01-01T00:00:00Z", cursor="batch:10",
+        artifact_refs=["artifacts/output/v1"],
+    ).to_dict()
+    assert manifest["checkpoint_version"] == 2
+    assert manifest["producer_attempt_id"] == "attempt-1"
+    assert manifest["checksum"].startswith("sha256:")
+    assert manifest["cursor"] == "batch:10"

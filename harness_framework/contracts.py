@@ -186,3 +186,39 @@ class EvaluatorLoopPolicy:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+@dataclass(frozen=True)
+class CheckpointManifest:
+    schema_version: str
+    checkpoint_version: int
+    producer_attempt_id: str
+    producer_lease_epoch: int
+    checksum: str
+    created_at: str
+    cursor: str
+    artifact_refs: list[str] = field(default_factory=list)
+
+    @classmethod
+    def create(
+        cls, *, checkpoint_version: int, payload: str, attempt_id: str,
+        lease_epoch: int, created_at: str, cursor: str,
+        artifact_refs: list[str] | None = None,
+    ) -> "CheckpointManifest":
+        if checkpoint_version < 1:
+            raise ValueError("checkpoint_version must be positive")
+        if not attempt_id or not cursor:
+            raise ValueError("checkpoint attempt_id and cursor are required")
+        return cls(
+            schema_version="1.0",
+            checkpoint_version=checkpoint_version,
+            producer_attempt_id=attempt_id,
+            producer_lease_epoch=int(lease_epoch),
+            checksum="sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest(),
+            created_at=created_at,
+            cursor=cursor,
+            artifact_refs=list(artifact_refs or []),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)

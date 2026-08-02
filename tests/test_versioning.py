@@ -5,6 +5,7 @@ import json
 import pytest
 
 from harness_framework.versioning import VersionConflict, VersionedResourceStore
+from harness_framework.local_store import LocalStore
 from tests.conftest import MockConsulStore
 
 
@@ -55,3 +56,11 @@ def test_unknown_resource_kind_is_rejected():
         VersionedResourceStore(MockConsulStore()).publish(
             "req-1", "unknown", {}, actor="alice"
         )
+
+
+def test_first_publication_uses_create_cas_with_local_store():
+    versions = VersionedResourceStore(LocalStore())
+    published = versions.publish(
+        "req-local", "requirement", {"title": "safe"}, actor="alice"
+    )
+    assert published.revision == 1

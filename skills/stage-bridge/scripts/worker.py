@@ -39,6 +39,8 @@ from _consul import (  # noqa: E402
     ensure_run, record_transition, get_current_run,
     record_session_start, record_session_end, lease_deadline_iso,
     renew_attempt_lease, check_completion_contract,
+    load_declared_context,
+    load_latest_checkpoint,
 )
 
 # ── 状态文件 ───────────────────────────────────────────────────────────────
@@ -161,16 +163,9 @@ def load_task_meta(req_id: str, task_name: str) -> dict:
     return meta
 
 
-def load_context(req_id: str) -> dict:
-    """加载需求级上下文。"""
-    items, _ = kv_get(f"workflows/{req_id}/context", recurse=True)
-    ctx = {}
-    if items:
-        prefix = f"workflows/{req_id}/context/"
-        for it in items:
-            k = it["Key"].split(prefix, 1)[-1] if prefix in it["Key"] else it["Key"]
-            ctx[k] = it.get("_decoded", "")
-    return ctx
+def load_context(req_id: str, task_name: str) -> dict:
+    """加载任务显式声明的上下文。"""
+    return load_declared_context(req_id, task_name)
 
 
 def claim_task(req_id: str, task_name: str, agent_id: str) -> tuple[bool, dict]:
@@ -220,7 +215,7 @@ def claim_task(req_id: str, task_name: str, agent_id: str) -> tuple[bool, dict]:
 
     # 5. 读取完整上下文
     task_meta = load_task_meta(req_id, task_name)
-    context = load_context(req_id)
+    context = load_context(req_id, task_name)
 
     return True, {
         "req_id": req_id,
@@ -231,6 +226,7 @@ def claim_task(req_id: str, task_name: str, agent_id: str) -> tuple[bool, dict]:
         "hard_deadline_at": hard_deadline_at,
         "task_meta": task_meta,
         "context": context,
+        "resume_checkpoint": load_latest_checkpoint(req_id, task_name),
     }
 
 
@@ -687,7 +683,9 @@ class Worker:
             return
 
         # 执行任务
-        context = load_context(req_id)
+        context = load_context(req_id, task_name)
+        if result.get("resume_checkpoint"):
+            context["_resume_checkpoint"] = result["resume_checkpoint"]
         exec_result = execute_task(req_id, task_name, meta, context, self.config)
 
         # 5. 报告结果

@@ -17,9 +17,9 @@ import uuid
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _consul import (  # noqa: E402
-    env, kv_get, kv_put, task_base, context_base,
+    env, kv_get, kv_put, task_base, load_declared_context,
     emit_json, die, now_iso, lease_deadline_iso,
-    ensure_run, record_transition,
+    ensure_run, record_transition, load_latest_checkpoint,
 )
 
 
@@ -102,13 +102,10 @@ def main():
             if suffix:
                 task_meta[suffix] = it.get("_decoded", "")
 
-    context_items, _ = kv_get(context_base(args.req_id), recurse=True)
-    context = {}
-    if context_items:
-        prefix = context_base(args.req_id) + "/"
-        for it in context_items:
-            k = it["Key"].split(prefix, 1)[-1] if prefix in it["Key"] else it["Key"]
-            context[k] = it.get("_decoded", "")
+    try:
+        context = load_declared_context(args.req_id, args.task_name)
+    except (ValueError, PermissionError) as exc:
+        die(f"context_inputs 无法解析: {exc}", code=1)
 
     emit_json({
         "ok": True,
@@ -121,6 +118,7 @@ def main():
         "hard_deadline_at": hard_deadline_at,
         "task_meta": task_meta,
         "context": context,
+        "resume_checkpoint": load_latest_checkpoint(args.req_id, args.task_name),
         "hints": {
             "next_steps": [
                 "执行业务逻辑",

@@ -1,6 +1,7 @@
 """Attempt ownership and fencing invariants."""
 from __future__ import annotations
 
+import json
 import importlib.util
 from pathlib import Path
 
@@ -128,3 +129,14 @@ def test_completion_contract_requires_artifacts_and_passed_gates(monkeypatch):
     ready, missing = MODULE.check_completion_contract("req-1", "task-1")
     assert ready is False
     assert missing == ["gate:tests"]
+
+
+def test_open_budget_circuit_breaker_blocks_completion_without_contract(monkeypatch):
+    base = "workflows/req-1/tasks/task-1"
+    values = {
+        f"{base}/budget/circuit_breaker": json.dumps({"status": "OPEN"}),
+    }
+    monkeypatch.setattr(MODULE, "kv_get", lambda key, **kwargs: (values.get(key), 1))
+    assert MODULE.check_completion_contract("req-1", "task-1") == (
+        False, ["circuit_breaker:OPEN"]
+    )

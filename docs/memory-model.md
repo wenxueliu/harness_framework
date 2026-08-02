@@ -1,56 +1,94 @@
-# 记忆模型
+# Context and Memory Model
 
-> **初次接触？** 先看 [concepts.md](concepts.md)。本文说明框架对 Agent 记忆的设计立场。
+Harness separates runtime context by trust, mutability, ownership, and intended
+consumer. Agent-internal model memory remains outside the framework, while
+cross-task information uses the following explicit namespaces.
 
-本框架**不管理 Agent 的记忆**，记忆属于 Agent 的内部实现细节，由使用方自行规划。
+| Namespace | Semantics | Mutation rule | Default visibility |
+|---|---|---|---|
+| `facts` | Accepted immutable facts | create-only CAS | shared |
+| `artifacts` | Full task outputs | immutable versions + CAS current pointer | shared |
+| `working_memory/<task>` | Scratch state for one task | mutable, task-scoped | owning task only |
+| `events/<task>` | Execution observations | append-only | audit APIs only |
+| `summaries` | Derived context | replaceable, requires source references | shared |
+| `restricted` | Confidential or secret data | classified writes | explicit authorization only |
 
-## 设计原则
+All paths live below `workflows/<req_id>/knowledge/`. Legacy
+`workflows/<req_id>/context/` keys remain readable by explicit key during
+migration, but new writes must use a typed namespace.
 
-### 任务级记忆
+## Integrity boundaries
 
-每个任务（Task）由独立的 Agent 负责执行，其记忆由该 Agent 自行管理：
+- Facts cannot be overwritten. Corrections require a new fact key or a
+  versioned artifact explaining the supersession.
+- Artifact versions contain checksum, lineage, actor, and timestamp metadata.
+  Concurrent publication uses CAS and cannot overwrite another candidate.
+- Working memory is keyed by task and the generic reader rejects access to a
+  different task's memory.
+- Events receive unique sequence keys and are never returned by the generic
+  context reader.
+- Summaries must identify their source records, so derived text never becomes
+  indistinguishable from an original fact.
+- Restricted values require `CONFIDENTIAL` or `SECRET` classification and are
+  denied by default.
 
-- Agent 可以使用本地文件、向量数据库、KV 存储等任何方式保存上下文
-- 框架不假设、不干预、不强制任何记忆实现方式
-- Agent 销毁/重建时，记忆的持久化由 Agent 实现负责
+## Agent commands
 
-### 任务间通信
+`read_context.py <req_id>` returns only facts, artifacts, and summaries. An
+explicit namespaced key can select one record; restricted data and audit events
+cannot be accessed through this generic command.
 
-当一个任务需要其他任务提供上下文时，通过 `message_bus.py` 机制传递：
+`write_artifact.py --scope context` publishes a version under
+`knowledge/artifacts` and requires the current task's `attempt_id` and
+`lease_epoch`. Stale workers therefore cannot replace shared output.
 
-- 发送方主动 `send_message(target_task, payload)`
-- 接收方在执行时 `poll_messages()` 获取
-- 框架保证消息的可靠传递，但不关心消息内容
+Task-to-task commands and notifications continue to use `message_bus.py`; event
+logs describe what happened, while messages coordinate future work.
 
-详见 [message-bus.md](./message-bus.md)。
+## Declared task inputs
 
-### 全局/共享记忆
+Each executable task declares `context_inputs` in the workflow specification:
 
-如果多个 Agent 需要共享上下文（如项目级规范、代码规范、架构文档），这属于**顶层规划**问题，由使用方在启动 Agent 时统一配置：
+```json
+{
+  "context_inputs": [
+    "facts/coding-standards",
+    "artifacts/api-spec",
+    "summaries/product-requirement"
+  ]
+}
+```
 
-- 决定是否需要共享记忆库
-- 选择存储后端（文件系统、数据库、向量库等）
-- 设计访问权限和一致性策略
-- 多 Agent 间的读取/写入协调
+Claim paths resolve exactly these selectors. Artifact selectors resolve through
+their current version pointer to the full immutable value. An absent declaration
+injects an empty context; it never means “all workflow context.” Prefix selectors
+ending in `/*` are supported for bounded namespaces. Generic task inputs cannot
+select restricted data, event logs, or another task's working memory. Legacy
+keys require an explicit `legacy/<key>` selector during migration.
 
-框架本身不提供也不管理共享记忆能力。
+## Checkpoint and resume
 
-## 框架职责边界
+Long-running workers can persist a checkpoint with:
 
-| 能力 | 框架负责 | 使用方负责 |
-|------|---------|-----------|
-| 任务调度与 DAG 依赖 | ✅ | |
-| 任务状态机与流转 | ✅ | |
-| 容错恢复（Watchdog） | ✅ | |
-| 质量门禁（Aggregator 重测） | ✅ | |
-| 任务级记忆 | | ✅ |
-| 任务间上下文传递 | | ✅（使用 message_bus） |
-| 全局/共享记忆 | | ✅ |
-| Agent 生命周期管理 | | ✅ |
+```bash
+python skills/stage-bridge/scripts/write_checkpoint.py \
+  "$REQ_ID" "$TASK_NAME" "batch:10" '{"offset":10}' \
+  --attempt-id "$ATTEMPT_ID" --lease-epoch "$LEASE_EPOCH"
+```
 
-## 相关文档
+Each checkpoint has an immutable payload and a manifest containing producer
+attempt, lease epoch, cursor, checksum, artifact references, and timestamp.
+Writes are attempt-fenced and the current-version pointer uses CAS. Every claim
+path verifies and returns the latest checkpoint as `resume_checkpoint`; the
+persistent worker injects it as `_resume_checkpoint`. A recovered attempt can
+resume durable state while stale workers remain fenced.
 
-| 我想… | 看这里 |
-|-------|--------|
-| 回顾核心概念 | [concepts.md →](concepts.md) |
-| 了解任务间消息通信 | [message-bus.md →](message-bus.md) |
+## Resource budgets
+
+Tasks may declare `resource_budget` limits for tokens, USD cost, tool calls, and
+wall-clock seconds. Workers report deltas through `record_usage.py`; the ledger
+uses attempt fencing and CAS accumulation. Crossing any configured limit opens
+a durable circuit breaker with the exceeded dimensions and usage snapshot.
+While the breaker is open, completion contracts reject `DONE` even when no
+artifact gates were configured. Operators must inspect the usage and explicitly
+decide whether to revise the budget, retry with a narrowed strategy, or abort.

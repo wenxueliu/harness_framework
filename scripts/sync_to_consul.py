@@ -53,6 +53,7 @@ from harness_framework.contracts import (
     AgentContract, CompletionContract, EvaluatorLoopPolicy,
 )
 from harness_framework.versioning import VersionedResourceStore
+from harness_framework.budgets import ResourceBudget
 
 
 # 非任务元数据 key，自动从任务提取中排除
@@ -97,8 +98,15 @@ def validate_dependencies(data: dict) -> list[str]:
             CompletionContract.from_dict(info.get("completion_contract"))
             if "evaluator_policy" in info:
                 EvaluatorLoopPolicy.from_dict(info["evaluator_policy"])
+            if "resource_budget" in info:
+                ResourceBudget.from_dict(info["resource_budget"])
         except ValueError as exc:
             errors.append(f"task '{name}': {exc}")
+        context_inputs = info.get("context_inputs", [])
+        if not isinstance(context_inputs, list) or not all(
+            isinstance(item, str) and item.strip() for item in context_inputs
+        ):
+            errors.append(f"task '{name}': context_inputs must be a list of strings")
 
     # 验证 depends_on 引用的任务存在
     for name, info in tasks.items():
@@ -206,6 +214,16 @@ def write_workflow(
             consul.kv_put(
                 f"{t_base}/evaluator_policy",
                 json.dumps(policy.to_dict(), ensure_ascii=False),
+            )
+        consul.kv_put(
+            f"{t_base}/context_inputs",
+            json.dumps(info.get("context_inputs", []), ensure_ascii=False),
+        )
+        if "resource_budget" in info:
+            budget = ResourceBudget.from_dict(info["resource_budget"])
+            consul.kv_put(
+                f"{t_base}/resource_budget",
+                json.dumps(budget.to_dict(), ensure_ascii=False),
             )
         if upstream:
             dep_strs = []

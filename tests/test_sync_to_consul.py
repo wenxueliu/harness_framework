@@ -45,6 +45,16 @@ def test_validate_rejects_invalid_agent_contract():
     )
 
 
+def test_validate_rejects_invalid_context_inputs():
+    data = {
+        "task": {
+            "type": "backend", "depends_on": [], "service_name": "x",
+            "context_inputs": "facts/all",
+        }
+    }
+    assert any("context_inputs" in error for error in validate_dependencies(data))
+
+
 def test_write_workflow_persists_agent_contract():
     consul = MagicMock()
     consul.kv_get = Mock(return_value=(None, 0))

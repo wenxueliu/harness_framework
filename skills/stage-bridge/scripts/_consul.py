@@ -438,14 +438,21 @@ def create_artifact_manifest(*, version: int, key: str, value: str,
 def check_completion_contract(req_id: str, task_name: str) -> tuple[bool, list[str]]:
     """Return whether all required artifact manifests and PASS gates exist."""
     base = task_base(req_id, task_name)
+    missing = []
+    breaker_raw, _ = kv_get(f"{base}/budget/circuit_breaker")
+    if breaker_raw:
+        try:
+            if json.loads(breaker_raw).get("status") == "OPEN":
+                missing.append("circuit_breaker:OPEN")
+        except json.JSONDecodeError:
+            missing.append("circuit_breaker:INVALID")
     raw, _ = kv_get(f"{base}/completion_contract")
     if not raw:
-        return True, []
+        return not missing, missing
     try:
         contract = json.loads(raw)
     except json.JSONDecodeError:
         return False, ["completion_contract is invalid JSON"]
-    missing = []
     for key in contract.get("required_artifacts", []):
         version, _ = kv_get(f"{base}/artifacts/{key}/current_version")
         if not version:
@@ -459,6 +466,80 @@ def check_completion_contract(req_id: str, task_name: str) -> tuple[bool, list[s
 
 def context_base(req_id: str) -> str:
     return f"workflows/{req_id}/context"
+
+
+def load_declared_context(req_id: str, task_name: str) -> dict:
+    """Resolve only the task's declared context_inputs selectors."""
+    raw, _ = kv_get(f"{task_base(req_id, task_name)}/context_inputs")
+    if not raw:
+        return {}
+    try:
+        selectors = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError("task context_inputs is invalid JSON") from exc
+    if not isinstance(selectors, list) or not all(isinstance(v, str) for v in selectors):
+        raise ValueError("task context_inputs must be a list of strings")
+
+    result = {}
+    knowledge = f"workflows/{req_id}/knowledge"
+    for selector in selectors:
+        if selector.startswith(("restricted/", "events/")):
+            raise PermissionError(f"context selector is not generally readable: {selector}")
+        if selector.startswith("working_memory/"):
+            allowed = f"working_memory/{task_name}/"
+            if not selector.startswith(allowed):
+                raise PermissionError("task cannot inject another task's working memory")
+        namespace = selector.split("/", 1)[0]
+        if namespace not in {"facts", "artifacts", "summaries", "working_memory", "legacy"}:
+            raise ValueError(f"unknown context_inputs namespace: {namespace}")
+        if namespace == "legacy":
+            target = f"{context_base(req_id)}/{selector.split('/', 1)[1]}"
+        else:
+            target = f"{knowledge}/{selector}"
+
+        if selector.endswith("/*"):
+            prefix = target[:-1]
+            items, _ = kv_get(prefix, recurse=True)
+            for item in items or []:
+                result_key = selector[:-1] + item["Key"][len(prefix):]
+                result[result_key] = item.get("_decoded", "")
+            continue
+
+        if namespace == "artifacts":
+            pointer_raw, _ = kv_get(f"{target}/current")
+            if not pointer_raw:
+                continue
+            try:
+                version_id = json.loads(pointer_raw)["version_id"]
+            except (json.JSONDecodeError, KeyError, TypeError):
+                raise ValueError(f"invalid context artifact pointer: {selector}")
+            value, _ = kv_get(f"{target}/versions/{version_id}/value")
+        else:
+            value, _ = kv_get(target)
+        if value is not None:
+            result[selector] = value
+    return result
+
+
+def load_latest_checkpoint(req_id: str, task_name: str) -> dict | None:
+    """Load the latest durable checkpoint for resume after a retry claim."""
+    base = f"{task_base(req_id, task_name)}/checkpoints"
+    current, _ = kv_get(f"{base}/current_version")
+    if not current:
+        return None
+    payload, _ = kv_get(f"{base}/versions/{current}/payload")
+    manifest_raw, _ = kv_get(f"{base}/versions/{current}/manifest")
+    if payload is None or not manifest_raw:
+        raise ValueError("checkpoint current_version is incomplete")
+    try:
+        manifest = json.loads(manifest_raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError("checkpoint manifest is invalid JSON") from exc
+    expected = manifest.get("checksum", "")
+    actual = "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    if expected != actual:
+        raise ValueError("checkpoint checksum mismatch")
+    return {"version": int(current), "manifest": manifest, "payload": payload}
 
 
 def session_base(req_id: str, task_name: str, session_id: str) -> str:

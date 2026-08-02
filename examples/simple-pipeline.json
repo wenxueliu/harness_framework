@@ -10,6 +10,13 @@
     "depends_on": ["design"],
     "service_name": "myservice",
     "description": "实现 /api/users 端点",
+    "context_inputs": ["artifacts/api-design", "facts/coding-standards"],
+    "resource_budget": {
+      "max_tokens": 100000,
+      "max_cost_usd": 25.0,
+      "max_tool_calls": 200,
+      "max_wall_clock_seconds": 7200
+    },
     "agent_contract": {
       "inputs": ["design API specification"],
       "outputs": ["users endpoint implementation", "unit tests"],
