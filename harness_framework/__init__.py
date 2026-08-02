@@ -9,6 +9,7 @@ from .changesets import ChangeSet, ChangeSetConflict, ChangeSetStore
 from .incremental import affected_downstream_closure, invalidate_impacted_tasks
 from .context_store import CONTEXT_NAMESPACES, ContextStore
 from .budgets import BudgetLedger, ResourceBudget
+from .side_effects import IdempotencyConflict, SideEffectLedger
 
 __all__ = [
     "AgentContract", "ArtifactManifest", "CompletionContract", "VerifierEvidence",
@@ -20,4 +21,5 @@ __all__ = [
     "affected_downstream_closure", "invalidate_impacted_tasks",
     "CONTEXT_NAMESPACES", "ContextStore",
     "BudgetLedger", "ResourceBudget",
+    "IdempotencyConflict", "SideEffectLedger",
 ]

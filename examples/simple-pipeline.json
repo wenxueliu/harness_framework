@@ -42,5 +42,21 @@
     "depends_on": ["backend"],
     "service_name": "myservice",
     "description": "对 /api/users 做集成测试"
+  },
+  "deploy": {
+    "type": "deploy",
+    "depends_on": ["test"],
+    "service_name": "myservice",
+    "description": "发布 users 服务",
+    "side_effecting": true,
+    "idempotency_scope": "deployment",
+    "compensation_task": "rollback"
+  },
+  "rollback": {
+    "type": "deploy",
+    "depends_on": [],
+    "service_name": "myservice",
+    "description": "补偿失败的 users 服务发布",
+    "activation": "compensation_only"
   }
 }

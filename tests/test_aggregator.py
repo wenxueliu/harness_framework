@@ -62,6 +62,27 @@ def _make_store(initial: dict) -> MagicMock:
 
 
 class TestAggregator:
+    def test_compensation_only_task_is_not_activated_by_normal_scheduler(self):
+        store = {
+            "workflows/req-001/published": "true",
+            "workflows/req-001/dependencies": json.dumps({
+                "rollback": {
+                    "type": "deploy", "depends_on": [],
+                    "activation": "compensation_only",
+                },
+            }),
+            "workflows/req-001/tasks/rollback/status": "BLOCKED",
+        }
+        consul = _make_store(store)
+        Aggregator(consul, run_manager=make_mock_run_manager())._process_requirement(
+            "req-001"
+        )
+        assert not any(
+            call.args[0].endswith("tasks/rollback/status")
+            and call.args[1] == "PENDING"
+            for call in consul.kv_put.call_args_list
+        )
+
     def test_activate_blocked_task(self):
         """backend 依赖 design DONE → backend 应激活为 PENDING。"""
         store = {

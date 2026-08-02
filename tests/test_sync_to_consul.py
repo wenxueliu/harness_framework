@@ -55,6 +55,33 @@ def test_validate_rejects_invalid_context_inputs():
     assert any("context_inputs" in error for error in validate_dependencies(data))
 
 
+def test_side_effecting_task_requires_idempotency_and_compensation():
+    data = {
+        "deploy": {
+            "type": "deploy", "depends_on": [], "service_name": "x",
+            "side_effecting": True,
+        }
+    }
+    errors = validate_dependencies(data)
+    assert any("idempotency_scope" in error for error in errors)
+    assert any("compensation_task" in error for error in errors)
+
+
+def test_valid_compensation_task_is_not_normally_activated():
+    data = {
+        "deploy": {
+            "type": "deploy", "depends_on": [], "service_name": "x",
+            "side_effecting": True, "idempotency_scope": "release",
+            "compensation_task": "rollback",
+        },
+        "rollback": {
+            "type": "deploy", "depends_on": [], "service_name": "x",
+            "activation": "compensation_only",
+        },
+    }
+    assert validate_dependencies(data) == []
+
+
 def test_write_workflow_persists_agent_contract():
     consul = MagicMock()
     consul.kv_get = Mock(return_value=(None, 0))

@@ -107,6 +107,22 @@ def validate_dependencies(data: dict) -> list[str]:
             isinstance(item, str) and item.strip() for item in context_inputs
         ):
             errors.append(f"task '{name}': context_inputs must be a list of strings")
+        side_effecting = info.get("side_effecting", False)
+        if not isinstance(side_effecting, bool):
+            errors.append(f"task '{name}': side_effecting must be boolean")
+        if side_effecting:
+            compensation = info.get("compensation_task", "")
+            if not isinstance(info.get("idempotency_scope"), str) or not info.get("idempotency_scope", "").strip():
+                errors.append(f"task '{name}': side-effecting task requires idempotency_scope")
+            if compensation not in task_names:
+                errors.append(f"task '{name}': compensation_task '{compensation}' not found")
+            elif tasks[compensation].get("activation") != "compensation_only":
+                errors.append(
+                    f"task '{name}': compensation task '{compensation}' must use activation=compensation_only"
+                )
+        activation = info.get("activation", "normal")
+        if activation not in {"normal", "compensation_only"}:
+            errors.append(f"task '{name}': invalid activation '{activation}'")
 
     # 验证 depends_on 引用的任务存在
     for name, info in tasks.items():
@@ -154,6 +170,8 @@ def write_workflow(
             deps_dict[name]["blocking"] = info["blocking"]
         if "non_blocking_deps" in info:
             deps_dict[name]["non_blocking_deps"] = info["non_blocking_deps"]
+        if info.get("activation"):
+            deps_dict[name]["activation"] = info["activation"]
 
     consul.kv_put(f"workflows/{req_id}/dependencies", json.dumps(deps_dict))
 
@@ -163,7 +181,9 @@ def write_workflow(
         upstream = info.get("depends_on", [])
 
         # 判断初始状态：叶子任务（无依赖）→ PENDING，否则 → BLOCKED
-        if node_type in ("parallel", "aggregate"):
+        if info.get("activation") == "compensation_only":
+            initial_status = "BLOCKED"
+        elif node_type in ("parallel", "aggregate"):
             initial_status = "BLOCKED"
         elif not upstream:
             initial_status = "PENDING"
@@ -225,6 +245,12 @@ def write_workflow(
                 f"{t_base}/resource_budget",
                 json.dumps(budget.to_dict(), ensure_ascii=False),
             )
+        if info.get("side_effecting"):
+            consul.kv_put(f"{t_base}/side_effecting", "true")
+            consul.kv_put(f"{t_base}/idempotency_scope", info["idempotency_scope"])
+            consul.kv_put(f"{t_base}/compensation_task", info["compensation_task"])
+        if info.get("activation"):
+            consul.kv_put(f"{t_base}/activation", info["activation"])
         if upstream:
             dep_strs = []
             for d in upstream:

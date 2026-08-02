@@ -129,6 +129,10 @@ class Aggregator:
         cur_status = meta.get("status", "")
         node_type = info.get("type", "task")
 
+        # Compensation tasks are activated only by the side-effect ledger.
+        if info.get("activation") == "compensation_only":
+            return
+
         # Parallel / Aggregate 节点由独立逻辑处理
         if node_type in ("parallel", "aggregate"):
             self._maybe_activate_composite(req_id, task_name, info, tasks_meta, deps)
