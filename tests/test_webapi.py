@@ -179,6 +179,9 @@ class TestWebAPI:
 
     def test_human_reject_returns_task_to_pending_with_feedback(self):
         store = {
+            "workflows/req-001/dependencies": json.dumps({
+                "backend": {"depends_on": []},
+            }),
             "workflows/req-001/tasks/backend/status": "AWAITING_REVIEW",
             "workflows/req-001/tasks/backend/attempt_id": "attempt-old",
             "workflows/req-001/tasks/backend/evidence/review/verdict": "PASS",
@@ -191,11 +194,37 @@ class TestWebAPI:
         )
         assert resp["code"] == 200
         assert consul._store["workflows/req-001/tasks/backend/status"] == "PENDING"
-        feedback = json.loads(
-            consul._store["workflows/req-001/tasks/backend/review/human_feedback"]
+        feedback = json.loads(consul._store[
+            "workflows/req-001/tasks/backend/recovery_feedback/current"
+        ])
+        assert feedback["feedback"]["comment"] == "fix copy"
+        assert "workflows/req-001/tasks/backend/attempt_id" not in consul._store
+
+    def test_human_reject_can_rewind_to_allowed_upstream(self):
+        store = {
+            "workflows/req-001/dependencies": json.dumps({
+                "design": {"depends_on": []},
+                "backend": {"depends_on": ["design"]},
+            }),
+            "workflows/req-001/tasks/design/status": "DONE",
+            "workflows/req-001/tasks/backend/status": "AWAITING_REVIEW",
+            "workflows/req-001/tasks/backend/review_policy": json.dumps({
+                "allowed_recovery_targets": ["backend", "design"],
+                "default_recovery_target": "backend",
+            }),
+        }
+        handler, consul, _, _ = make_handler(store)
+        body = json.dumps({
+            "actor": "alice", "comment": "fix design",
+            "recovery_target": "design",
+        }).encode()
+        resp = call_do_method(
+            handler, "POST",
+            "/api/workflow/req-001/task/backend/reject", body,
         )
-        assert feedback["comment"] == "fix copy"
-        assert consul._store["workflows/req-001/tasks/backend/attempt_id"] == ""
+        assert resp["code"] == 200
+        assert consul._store["workflows/req-001/tasks/design/status"] == "PENDING"
+        assert consul._store["workflows/req-001/tasks/backend/status"] == "BLOCKED"
 
     def test_human_decision_requires_awaiting_review(self):
         store = {"workflows/req-001/tasks/backend/status": "IN_PROGRESS"}

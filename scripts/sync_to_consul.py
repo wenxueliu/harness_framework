@@ -54,7 +54,7 @@ from harness_framework.contracts import (
 )
 from harness_framework.versioning import VersionedResourceStore
 from harness_framework.budgets import ResourceBudget
-from harness_framework.recovery import RecoveryPolicy
+from harness_framework.recovery import RecoveryPolicy, validate_recovery_target
 
 
 # 非任务元数据 key，自动从任务提取中排除
@@ -142,6 +142,18 @@ def validate_dependencies(data: dict) -> list[str]:
                 errors.append(
                     f"task '{name}': depends_on '{dep_name}' not found in tasks"
                 )
+        if "review_policy" in info:
+            try:
+                review_policy = ReviewPolicy.from_dict(info["review_policy"])
+                for target in review_policy.allowed_recovery_targets:
+                    validate_recovery_target(tasks, name, target)
+                if review_policy.default_recovery_target:
+                    validate_recovery_target(
+                        tasks, name, review_policy.default_recovery_target,
+                        review_policy.allowed_recovery_targets,
+                    )
+            except ValueError as exc:
+                errors.append(f"task '{name}': {exc}")
 
     return errors
 

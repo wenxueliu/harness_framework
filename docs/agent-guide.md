@@ -249,6 +249,8 @@ curl -s -X PUT \
 
 紧密耦合的代码审查可以通过 `review_policy` 放在当前任务内部。Worker 使用 `--executor` 执行业务工作，再用 `--reviewer` 发送结构化 Review Package；`CHANGES_REQUIRED` 会作为下一轮 Executor 的 `review_feedback`，直到 PASS 或达到最大轮数。
 
+Reviewer 判断问题源于上游时，可以从任务配置的 `allowed_recovery_targets` 中选择 `recovery_target`。框架会回退该上游任务、阻塞其下游，并将 findings 作为目标 Agent 的 `recovery_feedback`；不允许跳转到无关任务。
+
 ```bash
 python skills/stage-bridge/scripts/worker.py \
   --service user-service \

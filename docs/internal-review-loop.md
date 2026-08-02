@@ -37,7 +37,9 @@ IN_PROGRESS
       ],
       "blocking_severities": ["CRITICAL", "HIGH"],
       "require_independent_agent": true,
-      "human_approval_after_pass": true
+      "human_approval_after_pass": true,
+      "allowed_recovery_targets": ["implement-login", "design-login"],
+      "default_recovery_target": "implement-login"
     },
     "completion_contract": {
       "required_artifacts": ["implementation", "review-report"],
@@ -153,6 +155,20 @@ Reviewer 必须输出：
 
 当 `require_independent_agent=true` 时，`reviewer` 必填，且不能等于执行 Worker 的 `agent_id`。
 
+`CHANGES_REQUIRED` 可以通过 `recovery_target` 指定整改任务：
+
+```json
+{
+  "verdict": "CHANGES_REQUIRED",
+  "reviewer": "review-agent-2",
+  "summary": "接口设计缺少锁定状态",
+  "recovery_target": "design-login",
+  "findings": []
+}
+```
+
+目标是当前任务时，Worker 在同一 attempt 内继续下一轮。目标是合法上游任务时，框架归档该目标及其下游的 artifact/evidence，清除旧 attempt，将目标置为 `PENDING`、下游置为 `BLOCKED`，并把反馈写入目标任务的 `recovery_feedback/current`。目标必须位于 `allowed_recovery_targets`，且必须是当前任务或其 DAG 祖先；Reviewer 不能跳转到无关任务。
+
 每轮输入输出持久化到：
 
 ```text
@@ -176,10 +192,10 @@ curl -X POST http://127.0.0.1:8080/api/workflow/req-001/task/implement-login/app
 ```bash
 curl -X POST http://127.0.0.1:8080/api/workflow/req-001/task/implement-login/reject \
   -H 'Content-Type: application/json' \
-  -d '{"actor":"alice","comment":"锁定提示需要显示剩余时间"}'
+  -d '{"actor":"alice","comment":"接口定义需要补充锁定状态","recovery_target":"design-login"}'
 ```
 
-批准使任务进入 `DONE`。拒绝使任务回到 `PENDING`、fence 旧 attempt，并把人工意见作为下一次领取后的首轮 `review_feedback`。生产部署时应由反向代理或认证层提供并审计真实用户身份；当前 API 要求显式提交 `actor`，本身不提供身份认证。
+批准使任务进入 `DONE`。拒绝使用相同的受限恢复目标机制；省略 `recovery_target` 时使用 `default_recovery_target`。人工意见写入目标任务的 `recovery_feedback`，并在下一次领取后注入 Executor。生产部署时应由反向代理或认证层提供并审计真实用户身份；当前 API 要求显式提交 `actor`，本身不提供身份认证。
 
 ## 失败语义
 
@@ -188,3 +204,4 @@ curl -X POST http://127.0.0.1:8080/api/workflow/req-001/task/implement-login/rej
 - 超过 `max_rounds`：任务 `FAILED`。
 - Reviewer 返回 `ERROR` 或协议无效：任务 `FAILED`。
 - 人工拒绝：任务回到 `PENDING`，产生新的 attempt。
+- 上游问题：回退到允许的祖先任务，并失效其下游闭包。

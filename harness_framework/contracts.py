@@ -124,6 +124,8 @@ class ReviewPolicy:
     )
     require_independent_agent: bool = True
     human_approval_after_pass: bool = False
+    allowed_recovery_targets: list[str] = field(default_factory=list)
+    default_recovery_target: str = ""
 
     @classmethod
     def from_dict(cls, value: dict[str, Any] | None) -> "ReviewPolicy":
@@ -134,7 +136,9 @@ class ReviewPolicy:
         if isinstance(max_rounds, bool) or not isinstance(max_rounds, int) or max_rounds < 1:
             raise ValueError("review_policy.max_rounds must be a positive integer")
         parsed: dict[str, Any] = {"max_rounds": max_rounds}
-        for name in ("dimensions", "blocking_severities"):
+        for name in (
+            "dimensions", "blocking_severities", "allowed_recovery_targets",
+        ):
             default = ["CRITICAL", "HIGH"] if name == "blocking_severities" else []
             items = value.get(name, default)
             if not isinstance(items, list) or not all(
@@ -142,6 +146,17 @@ class ReviewPolicy:
             ):
                 raise ValueError(f"review_policy.{name} must be a list of strings")
             parsed[name] = list(items)
+        default_target = value.get("default_recovery_target", "")
+        if not isinstance(default_target, str):
+            raise ValueError(
+                "review_policy.default_recovery_target must be a string"
+            )
+        if (default_target and parsed["allowed_recovery_targets"]
+                and default_target not in parsed["allowed_recovery_targets"]):
+            raise ValueError(
+                "review_policy.default_recovery_target must be allowed"
+            )
+        parsed["default_recovery_target"] = default_target
         for name, default in (
             ("require_independent_agent", True),
             ("human_approval_after_pass", False),
@@ -166,6 +181,7 @@ class ReviewResult:
     criteria: list[dict[str, Any]] = field(default_factory=list)
     reviewer: str = ""
     artifact_refs: list[str] = field(default_factory=list)
+    recovery_target: str = ""
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "ReviewResult":
@@ -178,9 +194,17 @@ class ReviewResult:
             )
         summary = value.get("summary", "")
         reviewer = value.get("reviewer", "")
-        if not isinstance(summary, str) or not isinstance(reviewer, str):
-            raise ValueError("review result summary and reviewer must be strings")
-        parsed = {"verdict": verdict, "summary": summary, "reviewer": reviewer}
+        recovery_target = value.get("recovery_target", "")
+        if not all(isinstance(item, str) for item in (
+            summary, reviewer, recovery_target,
+        )):
+            raise ValueError(
+                "review result summary, reviewer, and recovery_target must be strings"
+            )
+        parsed = {
+            "verdict": verdict, "summary": summary, "reviewer": reviewer,
+            "recovery_target": recovery_target,
+        }
         for name in ("findings", "criteria"):
             items = value.get(name, [])
             if not isinstance(items, list) or not all(isinstance(item, dict) for item in items):

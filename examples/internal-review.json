@@ -1,8 +1,14 @@
 {
+  "design-login": {
+    "type": "design",
+    "service_name": "design-service",
+    "depends_on": [],
+    "description": "设计用户登录接口"
+  },
   "implement-login": {
     "type": "backend",
     "service_name": "user-service",
-    "depends_on": [],
+    "depends_on": ["design-login"],
     "description": "实现用户登录功能",
     "agent_contract": {
       "inputs": ["登录需求", "API 设计"],
@@ -26,7 +32,9 @@
       ],
       "blocking_severities": ["CRITICAL", "HIGH"],
       "require_independent_agent": true,
-      "human_approval_after_pass": true
+      "human_approval_after_pass": true,
+      "allowed_recovery_targets": ["implement-login", "design-login"],
+      "default_recovery_target": "implement-login"
     },
     "completion_contract": {
       "required_artifacts": ["implementation", "review-report"],

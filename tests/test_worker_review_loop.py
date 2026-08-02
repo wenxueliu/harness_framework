@@ -117,3 +117,63 @@ def test_review_pass_can_request_human_approval(monkeypatch):
     )
     assert result["status"] == "DONE"
     assert result["human_approval_required"] is True
+
+
+def test_reviewer_can_request_rewind_to_allowed_upstream(monkeypatch):
+    _quiet_worker(monkeypatch)
+
+    def run(command, _payload, _timeout):
+        if command[0] == "review":
+            return {
+                "verdict": "CHANGES_REQUIRED",
+                "reviewer": "review-agent",
+                "summary": "design is incomplete",
+                "recovery_target": "design",
+            }
+        return {"status": "DONE"}
+
+    monkeypatch.setattr(WORKER, "_run_json_command", run)
+    result = WORKER.execute_task(
+        "req-1", "api", {
+            "review_policy": json.dumps({
+                "allowed_recovery_targets": ["api", "design"],
+                "default_recovery_target": "api",
+            }),
+            "completion_contract": json.dumps({"required_gates": ["review"]}),
+        }, {}, {
+            "agent_id": "exec-agent",
+            "executor": ["exec"],
+            "reviewer": ["review"],
+        },
+    )
+    assert result["status"] == "REWIND_REQUIRED"
+    assert result["target_task"] == "design"
+
+
+def test_reviewer_cannot_select_disallowed_recovery_target(monkeypatch):
+    _quiet_worker(monkeypatch)
+
+    def run(command, _payload, _timeout):
+        if command[0] == "review":
+            return {
+                "verdict": "CHANGES_REQUIRED",
+                "reviewer": "review-agent",
+                "recovery_target": "unrelated",
+            }
+        return {"status": "DONE"}
+
+    monkeypatch.setattr(WORKER, "_run_json_command", run)
+    result = WORKER.execute_task(
+        "req-1", "api", {
+            "review_policy": json.dumps({
+                "allowed_recovery_targets": ["api", "design"],
+            }),
+            "completion_contract": json.dumps({"required_gates": ["review"]}),
+        }, {}, {
+            "agent_id": "exec-agent",
+            "executor": ["exec"],
+            "reviewer": ["review"],
+        },
+    )
+    assert result["status"] == "FAILED"
+    assert "disallowed recovery target" in result["error"]

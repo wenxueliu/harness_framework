@@ -33,3 +33,13 @@ history. Critical failures and non-retryable failures escalate immediately;
 partial failures may still enter automatic recovery so their compensation path
 can run. Exhausting all configured attempt budgets creates a durable human
 intervention linked to the originating failure ID.
+
+## Rewinding to an upstream task
+
+Review rejection is not always a retry of the current task. A task-level
+`review_policy` may list `allowed_recovery_targets`; a reviewer or human may
+select the current task or one of its DAG ancestors. The framework validates
+the target, archives artifacts/evidence for its downstream closure, fences old
+attempts, marks the target `PENDING` and descendants `BLOCKED`, and stores the
+structured findings under the target task's `recovery_feedback`. Unrelated or
+unconfigured targets are rejected instead of mutating the DAG.

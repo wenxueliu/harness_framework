@@ -47,6 +47,14 @@ from _consul import (  # noqa: E402
     build_failure_envelope,
 )
 from harness_framework.contracts import ReviewPolicy, ReviewResult  # noqa: E402
+from harness_framework.recovery import rewind_to_task  # noqa: E402
+from harness_framework.run_manager import RunManager  # noqa: E402
+
+
+class _WorkerKVAdapter:
+    kv_get = staticmethod(kv_get)
+    kv_put = staticmethod(kv_put)
+    kv_delete = staticmethod(kv_delete)
 
 # ── 状态文件 ───────────────────────────────────────────────────────────────
 
@@ -265,6 +273,7 @@ def complete_task(req_id: str, task_name: str, agent_id: str,
     )
     if not kv_put(f"{base}/status", final_status, cas=status_idx):
         return False
+    kv_delete(f"{base}/recovery_feedback/current")
     kv_put(f"{base}/completed_by", agent_id)
     kv_put(f"{base}/completed_at", ts)
     if result:
@@ -541,10 +550,14 @@ def execute_task(req_id: str, task_name: str, task_meta: dict,
         if policy and not reviewer:
             raise ValueError("task has review_policy but worker has no --reviewer")
 
+        recovery_feedback, _ = kv_get(
+            f"workflows/{req_id}/tasks/{task_name}/recovery_feedback/current"
+        )
         human_feedback, _ = kv_get(
             f"workflows/{req_id}/tasks/{task_name}/review/human_feedback"
         )
-        feedback = json.loads(human_feedback) if human_feedback else None
+        raw_feedback = recovery_feedback or human_feedback
+        feedback = json.loads(raw_feedback) if raw_feedback else None
         max_rounds = policy.max_rounds if policy else 1
         last_result = {}
 
@@ -590,6 +603,12 @@ def execute_task(req_id: str, task_name: str, task_meta: dict,
                     ),
                     "dimensions": policy.dimensions,
                     "blocking_severities": policy.blocking_severities,
+                    "allowed_recovery_targets": (
+                        policy.allowed_recovery_targets or [task_name]
+                    ),
+                    "default_recovery_target": (
+                        policy.default_recovery_target or task_name
+                    ),
                 },
                 "context": context,
                 "execution_result": last_result,
@@ -627,6 +646,23 @@ def execute_task(req_id: str, task_name: str, task_meta: dict,
                 return {
                     "status": "FAILED",
                     "error": parsed.summary or "reviewer returned ERROR",
+                }
+            recovery_target = (
+                parsed.recovery_target
+                or policy.default_recovery_target
+                or task_name
+            )
+            allowed_targets = policy.allowed_recovery_targets or [task_name]
+            if recovery_target not in allowed_targets:
+                raise ValueError(
+                    f"reviewer selected disallowed recovery target: "
+                    f"{recovery_target}"
+                )
+            if recovery_target != task_name:
+                return {
+                    "status": "REWIND_REQUIRED",
+                    "target_task": recovery_target,
+                    "review": review_result,
                 }
             feedback = review_result
         else:
@@ -864,6 +900,35 @@ class Worker:
                 self._clear_current()
                 return
             print(f"[worker] 任务状态 {final_status}: {req_id}/{task_name}")
+        elif exec_result.get("status") == "REWIND_REQUIRED":
+            try:
+                policy = ReviewPolicy.from_dict(
+                    _json_meta(meta, "review_policy", {})
+                )
+                recovery = rewind_to_task(
+                    _WorkerKVAdapter(), req_id, task_name,
+                    exec_result["target_task"], exec_result.get("review", {}),
+                    actor=self.agent_id,
+                    allowed_targets=(policy.allowed_recovery_targets
+                                     or [task_name]),
+                    run_manager=RunManager(_WorkerKVAdapter()),
+                )
+                print(
+                    f"[worker] 任务回退到 {exec_result['target_task']}: "
+                    f"{','.join(recovery['impacted_tasks'])}"
+                )
+            except Exception as exc:
+                current_status, _ = kv_get(
+                    f"workflows/{req_id}/tasks/{task_name}/status"
+                )
+                if current_status == "IN_PROGRESS":
+                    fail_task(
+                        req_id, task_name, self.agent_id,
+                        f"recovery failed: {exc}", retry_hint="manual",
+                        attempt_id=result.get("attempt_id", ""),
+                        lease_epoch=result.get("lease_epoch", 0),
+                    )
+                print(f"[worker] 回退失败: {req_id}/{task_name}: {exc}")
         else:
             error = exec_result.get("error", exec_result.get("stderr", "未知错误"))
             fail_task(

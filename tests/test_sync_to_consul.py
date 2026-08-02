@@ -383,6 +383,27 @@ class TestWriteWorkflow:
         }
         assert any("gate 'review'" in error for error in validate_dependencies(data))
 
+    def test_review_recovery_target_must_be_an_ancestor(self):
+        data = {
+            "design": {
+                "type": "design", "depends_on": [], "service_name": "design",
+            },
+            "api": {
+                "type": "backend", "depends_on": ["design"],
+                "service_name": "api",
+                "review_policy": {
+                    "allowed_recovery_targets": ["unrelated"],
+                    "default_recovery_target": "unrelated",
+                },
+                "completion_contract": {"required_gates": ["review"]},
+            },
+            "unrelated": {
+                "type": "backend", "depends_on": [], "service_name": "other",
+            },
+        }
+        errors = validate_dependencies(data)
+        assert any("not the current task or an ancestor" in error for error in errors)
+
     def test_dependencies_written(self):
         """dependencies JSON 写入 Consul。"""
         consul = MagicMock()

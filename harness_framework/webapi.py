@@ -23,6 +23,8 @@ from .kv_store_protocol import KVStore
 from .message_bus import MessageBus, MessageStatus
 from .workflow_skills import WorkflowSkills
 from .run_manager import RunManager
+from .contracts import ReviewPolicy
+from .recovery import rewind_to_task
 
 log = logging.getLogger("webapi")
 
@@ -431,22 +433,29 @@ class APIHandler(BaseHTTPRequestHandler):
             "comment": comment,
             "observed_at": decision["decided_at"],
         }
-        if not self.consul.kv_put(f"{base}/status", "PENDING", cas=status_index):
-            return self._send_json(409, {"error": "task changed concurrently"})
-        self.consul.kv_put(
-            f"{base}/review/human_feedback",
-            json.dumps(feedback, ensure_ascii=False),
-        )
-        # Fence the completed attempt before another worker claims the task.
-        self.consul.kv_put(f"{base}/attempt_id", "")
-        self.consul.kv_delete(f"{base}/assigned_agent")
-        self.consul.kv_delete(f"{base}/evidence/review", recurse=True)
-        self.run_manager.record_transition(
-            req_id, run_id, task_name, "AWAITING_REVIEW", "PENDING",
-            actor, "human requested changes", metadata={"comment": comment},
-        )
+        policy_raw, _ = self.consul.kv_get(f"{base}/review_policy")
+        try:
+            policy = ReviewPolicy.from_dict(
+                json.loads(policy_raw) if policy_raw else None
+            )
+            target_task = (
+                body.get("recovery_target")
+                or policy.default_recovery_target
+                or task_name
+            )
+            allowed = policy.allowed_recovery_targets or [task_name]
+            recovery = rewind_to_task(
+                self.consul, req_id, task_name, target_task, feedback,
+                actor=actor, allowed_targets=allowed,
+                run_manager=self.run_manager,
+            )
+        except (ValueError, RuntimeError, json.JSONDecodeError) as exc:
+            return self._send_json(400, {"error": str(exc)})
         return self._send_json(200, {
-            "ok": True, "status": "PENDING", "decision": decision,
+            "ok": True,
+            "status": self.consul.kv_get(f"{base}/status")[0],
+            "decision": decision,
+            "recovery": recovery,
         })
 
     def _load_tasks_for_abort(self, req_id: str) -> dict:

@@ -65,22 +65,32 @@ def test_review_policy_and_result_round_trip():
         "blocking_severities": ["HIGH"],
         "require_independent_agent": True,
         "human_approval_after_pass": True,
+        "allowed_recovery_targets": ["api", "design"],
+        "default_recovery_target": "api",
     })
     assert policy.max_rounds == 2
     assert policy.human_approval_after_pass is True
+    assert policy.default_recovery_target == "api"
     result = ReviewResult.from_dict({
         "verdict": "CHANGES_REQUIRED",
         "summary": "fix race",
         "reviewer": "reviewer-1",
         "findings": [{"id": "R-1"}],
+        "recovery_target": "design",
     })
     assert result.findings == [{"id": "R-1"}]
+    assert result.recovery_target == "design"
 
 
 @pytest.mark.parametrize("value", [
     {"max_rounds": 0},
     {"dimensions": "correctness"},
     {"require_independent_agent": "yes"},
+    {"allowed_recovery_targets": [1]},
+    {
+        "allowed_recovery_targets": ["design"],
+        "default_recovery_target": "api",
+    },
 ])
 def test_review_policy_rejects_invalid_values(value):
     with pytest.raises(ValueError):
