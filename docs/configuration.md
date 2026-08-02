@@ -48,6 +48,54 @@
 
 **优先级**：命令行参数 > 环境变量
 
+## 任务级生产策略
+
+以下字段写在 `dependencies.json` 的任务定义中，由
+`scripts/sync_to_consul.py` 校验并下发：
+
+| 字段 | 用途 | 关键约束 |
+|------|------|----------|
+| `agent_contract` | 输入、输出、职责、排除项、权限、上下文预算 | 列表字段必须为非空字符串列表 |
+| `completion_contract` | required artifacts 与 verifier gates | 未满足时拒绝 `DONE` |
+| `context_inputs` | 精确选择 facts/artifacts/summaries | 缺省为空；不能通配 restricted/events |
+| `evaluator_policy` | 最大迭代、平台期、fallback、升级 | fallback 名称唯一且有序 |
+| `resource_budget` | token、cost、tool call、wall clock 上限 | 任一越界打开 circuit breaker |
+| `recovery_policy` | primary/narrowed/degraded/human 路径 | 尝试次数必须为非负整数 |
+| `side_effecting` | 声明任务会修改外部状态 | 为 true 时必须配置下面两项 |
+| `idempotency_scope` | 业务幂等键作用域 | side-effecting task 必填 |
+| `compensation_task` | 失败后的补偿任务 | 目标必须存在且为 `compensation_only` |
+| `activation` | `normal` 或 `compensation_only` | 补偿任务不会被 Aggregator 正常激活 |
+
+示例：
+
+```json
+{
+  "deploy": {
+    "type": "deploy",
+    "service_name": "users",
+    "depends_on": ["test"],
+    "context_inputs": ["artifacts/release", "facts/region"],
+    "resource_budget": {
+      "max_tokens": 50000,
+      "max_cost_usd": 10,
+      "max_tool_calls": 100,
+      "max_wall_clock_seconds": 3600
+    },
+    "side_effecting": true,
+    "idempotency_scope": "deployment",
+    "compensation_task": "rollback"
+  },
+  "rollback": {
+    "type": "deploy",
+    "service_name": "users",
+    "depends_on": [],
+    "activation": "compensation_only"
+  }
+}
+```
+
+完整配置实例见 [simple-pipeline.json](../examples/simple-pipeline.json)。
+
 ## 常用启动组合
 
 ```bash
