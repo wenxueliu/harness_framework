@@ -68,6 +68,72 @@ class RunManager:
         self.consul.kv_delete(f"workflows/{req_id}/current_run")
         log.info("ended run %s for workflow %s: %s", run_id, req_id, status)
 
+    def roll_forward_run(
+        self, req_id: str, *, actor: str, change_id: str,
+        affected_tasks: list[str],
+    ) -> str:
+        """Atomically select a successor run and preserve the active run.
+
+        A short CAS lock serializes roll-forward operations.  The successor is
+        fully initialized before the current pointer moves; only after a
+        successful pointer CAS is the predecessor marked SUPERSEDED.
+        """
+        if not actor or not change_id:
+            raise ValueError("actor and change_id are required")
+        lock_key = f"workflows/{req_id}/roll_forward_lock"
+        lock_id = uuid.uuid4().hex
+        if not self.consul.kv_put(lock_key, lock_id, cas=0):
+            raise RuntimeError("another roll-forward is in progress")
+        try:
+            current_key = f"workflows/{req_id}/current_run"
+            current_run, current_index = self.consul.kv_get(current_key)
+            if not current_run:
+                raise ValueError("workflow has no active run to roll forward")
+            current_status, _ = self.consul.kv_get(
+                f"workflows/{req_id}/runs/{current_run}/status"
+            )
+            if current_status in RUN_TERMINAL_STATES or not current_status:
+                raise ValueError(f"run is not active: {current_status}")
+
+            new_run = _generate_run_id()
+            now = _now_iso()
+            base = f"workflows/{req_id}/runs/{new_run}"
+            self.consul.kv_put(f"{base}/status", "RUNNING")
+            self.consul.kv_put(f"{base}/started_at", now)
+            self.consul.kv_put(f"{base}/started_by", actor)
+            self.consul.kv_put(f"{base}/supersedes", current_run)
+            self.consul.kv_put(f"{base}/change_id", change_id)
+            self.consul.kv_put(
+                f"{base}/affected_tasks", json.dumps(sorted(set(affected_tasks)))
+            )
+            version_snapshot = {}
+            for kind in ("requirement", "workflow_spec", "dag", "plan"):
+                pointer, _ = self.consul.kv_get(
+                    f"workflows/{req_id}/versions/{kind}/current"
+                )
+                if pointer:
+                    version_snapshot[kind] = json.loads(pointer)
+            self.consul.kv_put(
+                f"{base}/resource_versions",
+                json.dumps(version_snapshot, ensure_ascii=False, sort_keys=True),
+            )
+            self.consul.kv_put(
+                f"{base}/summary",
+                json.dumps({"total": 0, "done": 0, "failed": 0, "aborted": 0}),
+            )
+            if not self.consul.kv_put(current_key, new_run, cas=current_index):
+                raise RuntimeError("active run changed concurrently")
+
+            old_base = f"workflows/{req_id}/runs/{current_run}"
+            self.consul.kv_put(f"{old_base}/status", "SUPERSEDED")
+            self.consul.kv_put(f"{old_base}/finished_at", now)
+            self.consul.kv_put(f"{old_base}/superseded_by", new_run)
+            self.consul.kv_put(f"{old_base}/change_id", change_id)
+            log.info("rolled workflow %s from %s to %s", req_id, current_run, new_run)
+            return new_run
+        finally:
+            self.consul.kv_delete(lock_key)
+
     def check_run_completion(self, req_id: str, run_id: str) -> None:
         """检查所有任务是否均已终态，若是则终止 run。"""
         tasks = self._load_tasks(req_id)

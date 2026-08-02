@@ -3,7 +3,8 @@ from __future__ import annotations
 import pytest
 
 from harness_framework.contracts import (
-    AgentContract, ArtifactManifest, CompletionContract, VerifierEvidence,
+    AgentContract, ArtifactManifest, CompletionContract, EvaluatorLoopPolicy,
+    VerifierEvidence,
 )
 
 
@@ -54,3 +55,34 @@ def test_completion_contract_and_verifier_evidence():
         observed_at="2026-01-01T00:00:00Z", details={"passed": 10},
     )
     assert evidence.to_dict()["verdict"] == "PASS"
+
+
+def test_evaluator_loop_policy_round_trip_and_defaults():
+    policy = EvaluatorLoopPolicy.from_dict({
+        "max_iterations": 4,
+        "plateau_window": 2,
+        "plateau_delta": 0.25,
+        "fallback_chain": ["primary", "narrowed", "degraded"],
+        "escalation_target": "release-manager",
+    })
+    assert policy.to_dict() == {
+        "max_iterations": 4,
+        "plateau_window": 2,
+        "plateau_delta": 0.25,
+        "fallback_chain": ["primary", "narrowed", "degraded"],
+        "escalation_target": "release-manager",
+    }
+    assert EvaluatorLoopPolicy.from_dict(None).fallback_chain == ["primary"]
+
+
+@pytest.mark.parametrize("value", [
+    {"max_iterations": 0},
+    {"plateau_window": 1},
+    {"plateau_delta": -0.1},
+    {"fallback_chain": []},
+    {"fallback_chain": ["primary", "primary"]},
+    {"escalation_target": ""},
+])
+def test_evaluator_loop_policy_rejects_unsafe_values(value):
+    with pytest.raises(ValueError):
+        EvaluatorLoopPolicy.from_dict(value)

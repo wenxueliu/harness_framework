@@ -49,11 +49,16 @@ if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
 from harness_framework.consul_client import ConsulClient
-from harness_framework.contracts import AgentContract, CompletionContract
+from harness_framework.contracts import (
+    AgentContract, CompletionContract, EvaluatorLoopPolicy,
+)
+from harness_framework.versioning import VersionedResourceStore
 
 
 # 非任务元数据 key，自动从任务提取中排除
-_META_KEYS = {"req_id", "title", "guardrails"}
+_META_KEYS = {
+    "req_id", "title", "guardrails", "requirement", "workflow_spec", "plan",
+}
 
 
 def _now_iso() -> str:
@@ -90,6 +95,8 @@ def validate_dependencies(data: dict) -> list[str]:
         try:
             AgentContract.from_dict(info.get("agent_contract"))
             CompletionContract.from_dict(info.get("completion_contract"))
+            if "evaluator_policy" in info:
+                EvaluatorLoopPolicy.from_dict(info["evaluator_policy"])
         except ValueError as exc:
             errors.append(f"task '{name}': {exc}")
 
@@ -194,6 +201,12 @@ def write_workflow(
                 f"{t_base}/completion_contract",
                 json.dumps(contract.to_dict(), ensure_ascii=False),
             )
+        if "evaluator_policy" in info:
+            policy = EvaluatorLoopPolicy.from_dict(info["evaluator_policy"])
+            consul.kv_put(
+                f"{t_base}/evaluator_policy",
+                json.dumps(policy.to_dict(), ensure_ascii=False),
+            )
         if upstream:
             dep_strs = []
             for d in upstream:
@@ -213,6 +226,26 @@ def write_workflow(
 
     if guardrails and isinstance(guardrails, dict):
         consul.kv_put(f"workflows/{req_id}/guardrails", json.dumps(guardrails))
+
+    # 4. Publish independently addressable immutable resource revisions.  The
+    # legacy keys above remain as compatibility projections during migration.
+    versions = VersionedResourceStore(consul)
+    versions.publish(
+        req_id, "requirement",
+        data.get("requirement", {
+            "req_id": req_id, "title": title or data.get("title", ""),
+        }),
+        actor="sync_to_consul",
+    )
+    versions.publish(
+        req_id, "workflow_spec", data.get("workflow_spec", tasks),
+        actor="sync_to_consul",
+    )
+    versions.publish(req_id, "dag", deps_dict, actor="sync_to_consul")
+    versions.publish(
+        req_id, "plan", data.get("plan", {"tasks": list(tasks)}),
+        actor="sync_to_consul",
+    )
 
     return {"ok": True, "task_count": len(tasks)}
 

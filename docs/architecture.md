@@ -247,20 +247,20 @@ stage-bridge 的 SKILL.md 在 Prompt 模板中以醒目格式列出上述节点�
 
 ### 7.1 机制定位与归属
 
-Anthropic 文章引用实战数据：**Generator-Verifier 循环可将 LLM 输出一次通过率从约 60% 提升到 90% 以上**[1]。本平台**将自验证完全归属执行层**——是否做、何时做、做几轮、用什么工具，由开发 Agent 根据当前任务和服务的实际情况自行决策。框架既不解析任何 `verify.yaml`，也不提供 `verify-output` 命令。这种归属选择有三个理由。
+Anthropic 文章引用实战数据：**Generator-Verifier 循环可将 LLM 输出一次通过率从约 60% 提升到 90% 以上**[1]。本平台将具体验证命令与修订动作归属执行层；框架不解析 `verify.yaml`，只解析与技术栈无关的 `evaluator_policy`，负责限制迭代、检测评分平台期、切换 fallback，并在策略耗尽后留下人工升级记录。
 
 其一是**避免框架变重**。验证规则千差万别（前端 vs 后端、TypeScript vs Java、单元测试 vs 静态分析），平台一旦把规则抽象出来就要被迫维护一套小型 DSL，复杂度急剧上升。其二是**尊重服务自治**。每个微服务的代码仓里早已有自己成熟的 lint / test 命令（在 package.json scripts、Makefile、CI 配置里），让开发 Agent 直接调用现成命令比另搞一套元配置更直接。其三是**保留灵活性**。某些任务（如纯文档撰写）不需要验证，某些任务（如核心算法）可能需要更严格的多轮交叉验证，把决策权交给 Agent 反而更合理。
 
 ### 7.2 框架与执行层的契约
 
-框架对自验证只提出二条契约。**契约一**：开发 Agent **被建议**在 `complete-task` 之前自行运行验证；如果决定不验证，应在 `log-step` 中说明理由（例如"本任务为文档变更，无代码产出"）。**契约二**：每次验证迭代的关键事件（开始时间、执行命令、退出码、stdout/stderr 摘要）应通过 `log-step --type verify --step lint --status pass` 上报到 Session 事件流，看板据此渲染验证轨迹。
+框架对自验证提出三条契约。**契约一**：开发 Agent 在 `complete-task` 之前自行运行具体验证。**契约二**：配置策略的任务每轮通过 `record_evaluation.py` 上报 score、verdict 与摘要，并遵循返回的下一动作。**契约三**：required gate 仍须写入 verifier evidence；evaluator 的 `PASS` 不替代 completion contract。
 
-### 7.3 推荐实现模式（仅供参考，不强制）
+### 7.3 有界执行模式
 
 为方便执行层快速接入，stage-bridge 的 SKILL.md 中给出一个**参考实现模式**，开发者可以照抄、改造或完全忽略。模式的核心循环用伪代码描述如下：
 
 ```
-for iteration in range(max_iterations):
+while evaluator_state not in {"PASS", "ESCALATE"}:
   check_control()                                # 必检 ABORT
   code = llm.generate(prompt)
   log_step(type="generate", iteration=iteration)
@@ -271,14 +271,18 @@ for iteration in range(max_iterations):
              status="pass" if result.ok else "fail")
     if not result.ok and step.must_pass:
       prompt = build_fix_prompt(code, result.stderr)
-      break                                      # 跳回 LLM 修订
+      action = record_evaluation(score, "FAIL")
+      if action == "SWITCH_FALLBACK":
+        prompt = narrow_or_degrade(prompt)
+      break
   else:
-    return write_artifact(code) and complete_task()
+    record_evaluation(score, "PASS")
+    return write_artifact(code) and record_evidence() and complete_task()
 
-fail_task(reason="verify_max_iterations_exceeded")
+escalate_with_persisted_history()
 ```
 
-`self.verify_steps` 由开发 Agent 在内部硬编码或从代码仓自定义文件（例如 `Makefile`、`package.json` 或自创的 `.agent/verify.local.yaml`）解析得到，**框架完全不感知该文件的存在**。Agent 之间可以共享这个解析逻辑，但通过执行层 SDK 共享，与框架层无关。
+`self.verify_steps` 仍由开发 Agent 从 `Makefile`、`package.json` 等服务配置中解析；框架只感知通用策略和评分。字段与命令见 [Evaluator Loop Policies](evaluator-loop.md)。
 
 ### 7.4 与 feedback 链路的区别
 

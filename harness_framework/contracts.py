@@ -128,3 +128,61 @@ class VerifierEvidence:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+@dataclass(frozen=True)
+class EvaluatorLoopPolicy:
+    """Bounded evaluator/optimizer policy attached to a task.
+
+    ``max_iterations`` applies to each strategy in ``fallback_chain``.  A
+    plateau or an exhausted strategy advances to the next strategy; exhausting
+    the final strategy produces a durable human escalation.
+    """
+
+    max_iterations: int = 3
+    plateau_window: int = 3
+    plateau_delta: float = 0.0
+    fallback_chain: list[str] = field(default_factory=lambda: ["primary"])
+    escalation_target: str = "human"
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any] | None) -> "EvaluatorLoopPolicy":
+        value = value or {}
+        if not isinstance(value, dict):
+            raise ValueError("evaluator_policy must be an object")
+
+        max_iterations = value.get("max_iterations", 3)
+        plateau_window = value.get("plateau_window", 3)
+        plateau_delta = value.get("plateau_delta", 0.0)
+        fallback_chain = value.get("fallback_chain", ["primary"])
+        escalation_target = value.get("escalation_target", "human")
+
+        if (isinstance(max_iterations, bool)
+                or not isinstance(max_iterations, int) or max_iterations < 1):
+            raise ValueError("evaluator_policy.max_iterations must be a positive integer")
+        if (isinstance(plateau_window, bool)
+                or not isinstance(plateau_window, int) or plateau_window < 2):
+            raise ValueError("evaluator_policy.plateau_window must be at least 2")
+        if (isinstance(plateau_delta, bool)
+                or not isinstance(plateau_delta, (int, float))
+                or plateau_delta < 0):
+            raise ValueError("evaluator_policy.plateau_delta must be non-negative")
+        if (not isinstance(fallback_chain, list) or not fallback_chain
+                or not all(isinstance(item, str) and item.strip()
+                           for item in fallback_chain)):
+            raise ValueError("evaluator_policy.fallback_chain must be a non-empty list of strings")
+        if len(set(fallback_chain)) != len(fallback_chain):
+            raise ValueError("evaluator_policy.fallback_chain must not contain duplicates")
+        if not isinstance(escalation_target, str) or not escalation_target.strip():
+            raise ValueError("evaluator_policy.escalation_target must be a non-empty string")
+
+        return cls(
+            max_iterations=max_iterations,
+            plateau_window=plateau_window,
+            plateau_delta=float(plateau_delta),
+            fallback_chain=list(fallback_chain),
+            escalation_target=escalation_target,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)

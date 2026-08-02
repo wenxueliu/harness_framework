@@ -47,6 +47,8 @@ def test_validate_rejects_invalid_agent_contract():
 
 def test_write_workflow_persists_agent_contract():
     consul = MagicMock()
+    consul.kv_get = Mock(return_value=(None, 0))
+    consul.kv_put = Mock(return_value=True)
     data = {
         "task": {
             "type": "backend", "depends_on": [], "service_name": "x",
@@ -64,6 +66,33 @@ def test_write_workflow_persists_agent_contract():
     ]
     assert len(calls) == 1
     assert json.loads(calls[0][0][1])["context_budget"] == 4096
+
+
+def test_write_workflow_publishes_four_independent_initial_versions():
+    consul = MagicMock()
+    consul.kv_get = Mock(return_value=(None, 0))
+    consul.kv_put = Mock(return_value=True)
+    data = {
+        "title": "Versioned workflow",
+        "requirement": {"summary": "ship safely"},
+        "workflow_spec": {"mode": "strict"},
+        "plan": {"waves": [["task"]]},
+        "task": {
+            "type": "backend", "depends_on": [], "service_name": "x",
+        },
+    }
+
+    write_workflow(consul, "req-001", data)
+
+    current_keys = {
+        call.args[0]
+        for call in consul.kv_put.call_args_list
+        if "/versions/" in call.args[0] and call.args[0].endswith("/current")
+    }
+    assert current_keys == {
+        f"workflows/req-001/versions/{kind}/current"
+        for kind in ("requirement", "workflow_spec", "dag", "plan")
+    }
 
 
 class TestValidateDependencies:

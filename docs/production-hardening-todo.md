@@ -43,17 +43,17 @@ risk. A checked item requires implementation, tests, and documentation.
   validation status, and retention metadata.
 - [x] Add structured verifier evidence and completion contracts.
 - [x] Prevent `DONE` unless required artifacts and gates are satisfied.
-- [ ] Add evaluator-loop policies: maximum iterations, score plateau detection,
+- [x] Add evaluator-loop policies: maximum iterations, score plateau detection,
   fallback chain, and escalation.
 
 ## P1 — Requirement changes and incremental delivery
 
-- [ ] Version Requirement, WorkflowSpec, DAG, and Plan independently.
-- [ ] Add ChangeSet lifecycle: proposed, impact-analyzed, approved, applied,
+- [x] Version Requirement, WorkflowSpec, DAG, and Plan independently.
+- [x] Add ChangeSet lifecycle: proposed, impact-analyzed, approved, applied,
   rejected, superseded.
-- [ ] Compute affected downstream closure and invalidate only impacted artifacts,
+- [x] Compute affected downstream closure and invalidate only impacted artifacts,
   evidence, tasks, and attempts.
-- [ ] Support safe roll-forward of an active run and preserve the previous run as
+- [x] Support safe roll-forward of an active run and preserve the previous run as
   `SUPERSEDED`.
 
 ## P1 — Context and long-running work
