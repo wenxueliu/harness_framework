@@ -1,0 +1,21 @@
+{
+  "execution_profiles": {
+    "codex-high": {
+      "provider": "codex",
+      "command": ["/usr/local/bin/harness-codex-wrapper"],
+      "args": ["--json"],
+      "model": "configured-model-name",
+      "model_args": ["--model", "{model}"],
+      "new_session_args": [],
+      "resume_session_args": ["--resume", "{session_id}"]
+    },
+    "claude-standard": {
+      "provider": "claude-code",
+      "command": ["/usr/local/bin/harness-claude-wrapper"],
+      "model": "configured-model-name",
+      "model_args": ["--model", "{model}"],
+      "new_session_args": [],
+      "resume_session_args": ["--resume", "{session_id}"]
+    }
+  }
+}

@@ -364,6 +364,30 @@ Anthropic 文章将 Workflow 模式细分为五种：Prompt Chaining、Routing�
 
 ---
 
+## 第十章　运行中需求变更
+
+需求身份与执行轮次分离：`req_id` 表示同一个业务需求，`run_id` 表示基于某一需求
+版本的一轮执行。开发中修改需求时继续复用原 workflow，并发布新的 requirement
+revision；若有实现任务受到影响，则创建 successor run，而不是创建新 `req_id`。
+
+调用 `scripts/change_requirement.py` 时，操作者只指定需求直接改变的任务。框架通过
+反向 DAG 计算其下游闭包，归档这些任务的 artifact、evidence 和 attempt ownership，
+将可立即执行的入口任务置为 `PENDING`，其余下游置为 `BLOCKED`。不在闭包中的
+`DONE` 或 `IN_PROGRESS` 任务保持原状态。受影响的旧 Worker 因 attempt fencing
+不能提交迟到结果。
+
+```text
+req-001
+├── requirement v1 → run-001 (SUPERSEDED)
+└── requirement v2 → run-002 (RUNNING)
+```
+
+省略变更任务时只发布文字版本，不切换 run。只有当修改后的内容已经成为可独立
+开发、验收和交付的另一项业务目标时，才应创建新的 workflow。操作说明和 KV 路径
+见[开发中修改需求](change-requirement.md)。
+
+---
+
 ## 参考文献
 
 [1] Anthropic Engineering. *Building Effective Agents*. https://www.anthropic.com/engineering/building-effective-agents
@@ -380,3 +404,4 @@ Anthropic 文章将 Workflow 模式细分为五种：Prompt Chaining、Routing�
 | 了解存储后端差异 | [storage-modes.md →](storage-modes.md) |
 | 查看状态机完整定义 | [status-state-machine.md →](status-state-machine.md) |
 | 查配置项 | [configuration.md →](configuration.md) |
+| 开发中修改需求并局部重跑 | [change-requirement.md →](change-requirement.md) |

@@ -84,6 +84,36 @@ curl -s -X PUT "http://$CONSUL_ADDR/v1/kv/workflows/$REQ_ID/status?cas=$INDEX" -
 
 > 详见 [proposal-protocol.md](proposal-protocol.md)
 
+## 分派任务时选择模型会话
+
+```bash
+python scripts/add_task.py req-001 fix-login \
+  --type backend --service-name users \
+  --depends-on implement-login \
+  --execution-profile codex-high \
+  --session-mode continue --session-from-task implement-login
+```
+
+独立会话使用 `--session-mode new`；恢复已知会话使用
+`--session-mode resume --session-id <id>`。参见
+[按任务选择模型与会话](task-model-execution.md)。
+
+## 开发中修改需求
+
+继续使用原 workflow，只重跑直接变更任务及其下游：
+
+```bash
+python scripts/change_requirement.py req-001 \
+  --content-file requirement-v2.md \
+  --reason "调整账号锁定规则" \
+  --redo implement-account-lock \
+  --actor alice
+```
+
+系统发布需求新版本，并将当前 run roll-forward 到 successor run。省略 `--redo`
+表示只修改文字，不重置任务。完整说明见
+[开发中修改需求](change-requirement.md)。
+
 ## 人工干预
 
 ```bash

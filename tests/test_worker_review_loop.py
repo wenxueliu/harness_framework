@@ -73,6 +73,46 @@ def test_executor_receives_review_feedback_until_reviewer_passes(monkeypatch):
     assert writes["workflows/req-1/tasks/api/evidence/review/verdict"] == "PASS"
 
 
+def test_review_rounds_resume_new_native_session(monkeypatch):
+    _quiet_worker(monkeypatch)
+    commands = []
+    review_results = iter([
+        {"verdict": "CHANGES_REQUIRED", "reviewer": "review-agent"},
+        {"verdict": "PASS", "reviewer": "review-agent"},
+    ])
+
+    def run(command, _payload, _timeout):
+        commands.append(command)
+        if command[0] == "review":
+            return next(review_results)
+        return {"status": "DONE", "native_session_id": "native-1"}
+
+    monkeypatch.setattr(WORKER, "_run_json_command", run)
+    result = WORKER.execute_task(
+        "req-1", "api", {
+            "execution": json.dumps({
+                "profile": "codex", "session": {"mode": "new"},
+            }),
+            "review_policy": json.dumps({"max_rounds": 2}),
+            "completion_contract": json.dumps({"required_gates": ["review"]}),
+        }, {}, {
+            "agent_id": "exec-agent", "reviewer": ["review"],
+            "execution_profiles": {
+                "codex": {
+                    "provider": "codex", "command": ["wrapper"],
+                    "resume_session_args": ["--resume", "{session_id}"],
+                },
+            },
+            "allowed_executables": {"wrapper"},
+        },
+    )
+    assert result["status"] == "DONE"
+    executor_commands = [cmd for cmd in commands if cmd[0] == "wrapper"]
+    assert executor_commands == [
+        ["wrapper"], ["wrapper", "--resume", "native-1"],
+    ]
+
+
 def test_independent_reviewer_cannot_be_executor(monkeypatch):
     _quiet_worker(monkeypatch)
 
@@ -117,6 +157,128 @@ def test_review_pass_can_request_human_approval(monkeypatch):
     )
     assert result["status"] == "DONE"
     assert result["human_approval_required"] is True
+
+
+def test_task_execution_profile_persists_native_and_harness_sessions(monkeypatch):
+    writes = _quiet_worker(monkeypatch)
+    monkeypatch.setattr(
+        WORKER, "_run_json_command",
+        lambda command, payload, _timeout: {
+            "status": "DONE", "native_session_id": "native-new-1",
+            "command": command, "payload": payload,
+        },
+    )
+    result = WORKER.execute_task(
+        "req-1", "api", {
+            "execution": json.dumps({
+                "profile": "codex", "model": "fast",
+                "session": {"mode": "new"},
+            }),
+        }, {}, {
+            "agent_id": "exec-agent",
+            "executor": ["legacy"],
+            "reviewer": None,
+            "execution_profiles": {
+                "codex": {
+                    "provider": "codex", "command": ["codex-wrapper"],
+                    "model_args": ["--model", "{model}"],
+                },
+            },
+            "allowed_executables": {"codex-wrapper"},
+        },
+    )
+    assert result["command"] == ["codex-wrapper", "--model", "fast"]
+    assert result["payload"]["config"]["execution"]["session_mode"] == "new"
+    assert writes["workflows/req-1/tasks/api/native_session_id"] == "native-new-1"
+    assert writes["workflows/req-1/tasks/api/harness_session_id"].startswith("exec-agent-")
+
+
+def test_native_session_lock_rejects_concurrent_owner(monkeypatch):
+    now = WORKER.time.time()
+    monkeypatch.setattr(
+        WORKER, "kv_get",
+        lambda _key: (json.dumps({"owner": "other", "expires_at": now + 60}), 3),
+    )
+    resolved = WORKER.ResolvedExecution(
+        provider="codex", model="fast", command=["wrapper"],
+        session_mode="resume", native_session_id="native-1",
+    )
+    try:
+        WORKER._acquire_native_session_lock(resolved, "this-owner", 30)
+    except RuntimeError as exc:
+        assert "already in use" in str(exc)
+    else:
+        raise AssertionError("expected concurrent native session to be rejected")
+
+
+def test_missing_execution_continues_unique_upstream_session(monkeypatch):
+    writes = {}
+    source_execution = {
+        "profile": "codex", "model": "fast", "session": {"mode": "new"},
+    }
+    reads = {
+        "workflows/req-1/tasks/build/native_session_id": "native-build",
+        "workflows/req-1/tasks/build/execution_effective": json.dumps(source_execution),
+    }
+
+    def get(key):
+        return reads.get(key), 1
+
+    monkeypatch.setattr(WORKER, "kv_get", get)
+    monkeypatch.setattr(
+        WORKER, "kv_put",
+        lambda key, value, **_: writes.__setitem__(key, value) or True,
+    )
+    monkeypatch.setattr(WORKER, "kv_delete", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(WORKER, "log_step", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(WORKER, "record_session_start", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(WORKER, "record_session_end", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(WORKER, "get_current_run", lambda _req_id: "run-1")
+    monkeypatch.setattr(
+        WORKER, "_run_json_command",
+        lambda command, payload, _timeout: {
+            "status": "DONE", "command": command, "payload": payload,
+        },
+    )
+    result = WORKER.execute_task(
+        "req-1", "test", {"depends_on": "build"}, {}, {
+            "agent_id": "exec-agent", "executor": ["legacy"],
+            "execution_profiles": {
+                "codex": {
+                    "provider": "codex", "command": ["wrapper"],
+                    "model_args": ["--model", "{model}"],
+                    "resume_session_args": ["--resume", "{session_id}"],
+                },
+            },
+            "allowed_executables": {"wrapper"},
+        },
+    )
+    assert result["command"] == [
+        "wrapper", "--model", "fast", "--resume", "native-build",
+    ]
+    effective = json.loads(
+        writes["workflows/req-1/tasks/test/execution_effective"]
+    )
+    assert effective["session"] == {
+        "mode": "continue", "from_task": "build",
+    }
+
+
+def test_missing_execution_rejects_multiple_resumable_upstreams(monkeypatch):
+    def get(key):
+        if key.endswith("/native_session_id"):
+            return "native", 1
+        return None, 1
+
+    monkeypatch.setattr(WORKER, "kv_get", get)
+    result = WORKER.execute_task(
+        "req-1", "merge", {"depends_on": "left,right"}, {}, {
+            "agent_id": "exec-agent", "executor": ["legacy"],
+            "execution_profiles": {}, "allowed_executables": set(),
+        },
+    )
+    assert result["status"] == "FAILED"
+    assert "multiple resumable upstream sessions" in result["error"]
 
 
 def test_reviewer_can_request_rewind_to_allowed_upstream(monkeypatch):

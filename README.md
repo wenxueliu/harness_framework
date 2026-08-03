@@ -57,6 +57,8 @@ python -m harness_framework.daemon                  # Consul 模式（生产）
 | 了解记忆模型 | [memory-model.md](docs/memory-model.md) |
 | 配置验证闭环 | [evaluator-loop.md](docs/evaluator-loop.md) |
 | 在单个任务内运行 Executor–Reviewer 修订循环 | [internal-review-loop.md](docs/internal-review-loop.md) |
+| 按任务选择模型并创建或延续原生会话 | [task-model-execution.md](docs/task-model-execution.md) |
+| 在开发过程中修改需求并局部重跑 | [change-requirement.md](docs/change-requirement.md) |
 | 管理需求变更 | [changesets.md](docs/changesets.md) / [resource-versioning.md](docs/resource-versioning.md) |
 | 处理失败与恢复 | [failure-envelope.md](docs/failure-envelope.md) |
 | 保护外部副作用 | [side-effects.md](docs/side-effects.md) |

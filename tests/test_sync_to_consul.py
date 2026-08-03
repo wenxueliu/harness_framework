@@ -105,6 +105,44 @@ def test_write_workflow_persists_agent_contract():
     assert json.loads(calls[0][0][1])["context_budget"] == 4096
 
 
+def test_write_workflow_persists_task_execution():
+    consul = MagicMock()
+    consul.kv_get = Mock(return_value=(None, 0))
+    consul.kv_put = Mock(return_value=True)
+    execution = {
+        "profile": "codex",
+        "model": "fast",
+        "session": {"mode": "continue", "from_task": "design"},
+    }
+    data = {
+        "design": {"type": "design", "depends_on": [], "service_name": "x"},
+        "task": {
+            "type": "backend", "depends_on": ["design"], "service_name": "x",
+            "execution": execution,
+        },
+    }
+    assert validate_dependencies(data) == []
+    write_workflow(consul, "req-001", data)
+    values = {
+        call.args[0]: call.args[1] for call in consul.kv_put.call_args_list
+    }
+    assert json.loads(values["workflows/req-001/tasks/task/execution"]) == execution
+
+
+def test_validate_rejects_unknown_continue_source_task():
+    data = {
+        "task": {
+            "type": "backend", "depends_on": [], "service_name": "x",
+            "execution": {
+                "profile": "codex",
+                "session": {"mode": "continue", "from_task": "missing"},
+            },
+        },
+    }
+    assert any("source task 'missing' not found" in error
+               for error in validate_dependencies(data))
+
+
 def test_write_workflow_publishes_four_independent_initial_versions():
     consul = MagicMock()
     consul.kv_get = Mock(return_value=(None, 0))

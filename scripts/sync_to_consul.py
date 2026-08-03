@@ -55,6 +55,7 @@ from harness_framework.contracts import (
 from harness_framework.versioning import VersionedResourceStore
 from harness_framework.budgets import ResourceBudget
 from harness_framework.recovery import RecoveryPolicy, validate_recovery_target
+from harness_framework.model_execution import validate_execution
 
 
 # 非任务元数据 key，自动从任务提取中排除
@@ -110,6 +111,8 @@ def validate_dependencies(data: dict) -> list[str]:
                 ResourceBudget.from_dict(info["resource_budget"])
             if "recovery_policy" in info:
                 RecoveryPolicy.from_dict(info["recovery_policy"])
+            if "execution" in info:
+                validate_execution(info["execution"])
         except ValueError as exc:
             errors.append(f"task '{name}': {exc}")
         context_inputs = info.get("context_inputs", [])
@@ -154,6 +157,16 @@ def validate_dependencies(data: dict) -> list[str]:
                     )
             except ValueError as exc:
                 errors.append(f"task '{name}': {exc}")
+        execution = info.get("execution")
+        if isinstance(execution, dict):
+            session = execution.get("session", {})
+            if session.get("mode") == "continue":
+                source_task = session.get("from_task", "")
+                if source_task not in task_names:
+                    errors.append(
+                        f"task '{name}': execution session source task "
+                        f"'{source_task}' not found in tasks"
+                    )
 
     return errors
 
@@ -194,6 +207,8 @@ def write_workflow(
             deps_dict[name]["non_blocking_deps"] = info["non_blocking_deps"]
         if info.get("activation"):
             deps_dict[name]["activation"] = info["activation"]
+        if "execution" in info:
+            deps_dict[name]["execution"] = info["execution"]
 
     consul.kv_put(f"workflows/{req_id}/dependencies", json.dumps(deps_dict))
 
@@ -239,6 +254,11 @@ def write_workflow(
             consul.kv_put(f"{t_base}/blocking", str(info["blocking"]).lower())
         if info.get("metadata"):
             consul.kv_put(f"{t_base}/metadata", json.dumps(info["metadata"]))
+        if "execution" in info:
+            consul.kv_put(
+                f"{t_base}/execution",
+                json.dumps(info["execution"], ensure_ascii=False),
+            )
         if "agent_contract" in info:
             contract = AgentContract.from_dict(info["agent_contract"])
             consul.kv_put(

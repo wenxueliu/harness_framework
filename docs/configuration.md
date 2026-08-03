@@ -66,6 +66,7 @@
 | `idempotency_scope` | 业务幂等键作用域 | side-effecting task 必填 |
 | `compensation_task` | 失败后的补偿任务 | 目标必须存在且为 `compensation_only` |
 | `activation` | `normal` 或 `compensation_only` | 补偿任务不会被 Aggregator 正常激活 |
+| `execution` | 按任务选择模型命令和原生会话策略 | 使用 profile；支持 `new`、`continue`、`resume` |
 
 示例：
 
@@ -96,6 +97,16 @@
 ```
 
 完整配置实例见 [simple-pipeline.json](../examples/simple-pipeline.json)。
+
+### Worker 模型执行参数
+
+| 参数 / 环境变量 | 说明 |
+|-----------------|------|
+| `--execution-profiles` / `EXECUTION_PROFILES_FILE` | 命名 execution profile JSON 文件 |
+| `--allowed-executables` / `ALLOWED_MODEL_EXECUTABLES` | 允许任务直接指定的可执行文件名，逗号分隔 |
+| `--executor` | 根任务或没有可续接上游会话时使用的兼容 executor |
+
+配置格式和安全边界见[按任务选择模型与会话](task-model-execution.md)。
 
 ## 常用启动组合
 

@@ -260,6 +260,16 @@ python skills/stage-bridge/scripts/worker.py \
 
 完整协议、配置和人工 approve/reject API 见 [单任务 Executor–Reviewer 闭环](internal-review-loop.md)。需要独立排期或合规隔离的验收仍应定义为单独 DAG 任务。
 
+## 按任务选择模型与会话
+
+Worker 可从任务的 `execution` 字段选择命名 profile，并决定创建独立原生会话、
+延续来源任务会话或恢复指定 session ID。未声明该字段时默认延续唯一可续接的
+直接上游；根任务没有可续接上游时继续使用 `--executor`。
+模型 CLI 通过 JSON wrapper 接入，任务命令始终以 argv 和 `shell=False` 执行。
+
+完整 schema、profile、增量分派命令和 wrapper 协议见
+[按任务选择模型与会话](task-model-execution.md)。
+
 ## 任务完成后
 
 Agent 完成任务后，框架的 Aggregator 会在下一次轮询时（默认 5 秒内）检测到，并自动激活所有依赖该任务的下游任务。Agent 可以继续认领新的 PENDING 任务。
@@ -274,3 +284,4 @@ Agent 完成任务后，框架的 Aggregator 会在下一次轮询时（默认 5
 | 了解任务间消息通信（Message Bus） | [消息总线 →](message-bus.md) |
 | 定义复杂 DAG（并行、聚合节点） | [架构设计 →](architecture.md) |
 | 配置任务内 Review 与人工确认 | [Executor–Reviewer 闭环 →](internal-review-loop.md) |
+| 按任务选择模型和延续会话 | [任务模型执行 →](task-model-execution.md) |

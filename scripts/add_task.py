@@ -18,6 +18,12 @@ import datetime
 import json
 import sys
 
+_project_root = __import__("os").path.dirname(__import__("os").path.dirname(__import__("os").path.abspath(__file__)))
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
+from harness_framework.model_execution import validate_execution
+
 try:
     import requests
 except ImportError:
@@ -104,12 +110,51 @@ def main():
     parser.add_argument("--type", default="generic", help="Task type: design, review, backend, test, deploy, generic")
     parser.add_argument("--depends-on", default="", help="Comma-separated list of upstream task names")
     parser.add_argument("--service-name", default="", help="Associated service name")
+    parser.add_argument("--execution-profile", default="", help="Named worker execution profile")
+    parser.add_argument("--model", default="", help="Model override for this task")
+    parser.add_argument(
+        "--command-json", default="",
+        help='Direct command argv as JSON, e.g. ["model-wrapper"] (worker allowlist applies)',
+    )
+    parser.add_argument(
+        "--session-mode", choices=("new", "continue", "resume"), default="new",
+        help="Provider-native session policy",
+    )
+    parser.add_argument("--session-from-task", default="", help="Source task for continue mode")
+    parser.add_argument("--session-id", default="", help="Provider-native session ID for resume mode")
     parser.add_argument(
         "--consul",
         default=__import__("os").environ.get("CONSUL_ADDR", "127.0.0.1:8500"),
         help="Consul address (default: 127.0.0.1:8500)",
     )
     args = parser.parse_args()
+
+    execution = None
+    if args.execution_profile or args.command_json:
+        command = None
+        if args.command_json:
+            try:
+                command = json.loads(args.command_json)
+            except json.JSONDecodeError as exc:
+                parser.error(f"--command-json is invalid JSON: {exc}")
+        session = {"mode": args.session_mode}
+        if args.session_from_task:
+            session["from_task"] = args.session_from_task
+        if args.session_id:
+            session["session_id"] = args.session_id
+        execution = {"session": session}
+        if args.execution_profile:
+            execution["profile"] = args.execution_profile
+        if command is not None:
+            execution["command"] = command
+        if args.model:
+            execution["model"] = args.model
+        try:
+            validate_execution(execution)
+        except ValueError as exc:
+            parser.error(str(exc))
+    elif args.model or args.session_mode != "new" or args.session_from_task or args.session_id:
+        parser.error("model/session options require --execution-profile or --command-json")
 
     consul = ConsulClient(addr=args.consul)
     base = f"workflows/{args.req_id}"
@@ -174,6 +219,8 @@ def main():
     }
     if args.service_name:
         task_definition["service_name"] = args.service_name
+    if execution:
+        task_definition["execution"] = execution
     authoritative_dag[args.task_name] = task_definition
     if not consul.kv_put(
         dependencies_key,
@@ -189,6 +236,10 @@ def main():
         consul.kv_put(f"{t_base}/description", args.description)
     if args.service_name:
         consul.kv_put(f"{t_base}/service_name", args.service_name)
+    if execution:
+        consul.kv_put(
+            f"{t_base}/execution", json.dumps(execution, ensure_ascii=False)
+        )
     if upstream:
         consul.kv_put(f"{t_base}/depends_on", ",".join(upstream))
     consul.kv_put(f"{t_base}/created_at", _now_iso())

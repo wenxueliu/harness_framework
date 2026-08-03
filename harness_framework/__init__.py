@@ -7,6 +7,7 @@ from .evaluator import EvaluationDecision, decide_evaluator_action
 from .versioning import ResourceVersion, VersionConflict, VersionedResourceStore
 from .changesets import ChangeSet, ChangeSetConflict, ChangeSetStore
 from .incremental import affected_downstream_closure, invalidate_impacted_tasks
+from .requirement_changes import RequirementChangeService
 from .context_store import CONTEXT_NAMESPACES, ContextStore
 from .budgets import BudgetLedger, ResourceBudget
 from .side_effects import IdempotencyConflict, SideEffectLedger
@@ -24,6 +25,7 @@ __all__ = [
     "ResourceVersion", "VersionConflict", "VersionedResourceStore",
     "ChangeSet", "ChangeSetConflict", "ChangeSetStore",
     "affected_downstream_closure", "invalidate_impacted_tasks",
+    "RequirementChangeService",
     "CONTEXT_NAMESPACES", "ContextStore",
     "BudgetLedger", "ResourceBudget",
     "IdempotencyConflict", "SideEffectLedger",

@@ -24,6 +24,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | `docs/configuration.md` | 配置参考（CLI 参数 + 环境变量） |
 | `docs/agent-guide.md` | Agent 接入指南（三种模式） |
 | `docs/usage-guide.md` | 常见操作命令参考 |
+| `docs/change-requirement.md` | 开发中修改需求并局部重跑 |
+| `docs/task-model-execution.md` | 按任务选择模型与原生会话 |
 | `docs/storage-modes.md` | 三种存储后端深度对比 |
 | `docs/faq.md` | 常见设计决策问答 |
 
@@ -47,6 +49,8 @@ harness_framework/
 ├── webapi.py          # HTTP API 为业务看板提供聚合查询与控制信号写入
 ├── message_bus.py     # 任务间消息通信（发送、轮询、完成）
 ├── run_manager.py     # 任务生命周期编排（认领 → 执行 → 日志 → 完成/失败）
+├── requirement_changes.py # 同 workflow 发布需求新版本并局部重跑
+├── model_execution.py # 任务级模型命令和原生会话策略解析
 ├── consul_client.py   # Consul HTTP 客户端（仅标准库，无外部依赖）
 ├── kv_store_protocol.py  # KVStore Protocol — 存储层抽象接口
 ├── local_store.py        # LocalStore — 内存存储 + 内嵌 Consul HTTP 服务器
@@ -116,12 +120,15 @@ workflows/<req_id>/
 ├── control                 # 控制信号：PAUSE | RESUME | ABORT
 ├── dependencies            # JSON，任务依赖拓扑
 ├── created_at
+├── requirement / requirement_version
+├── requirement_changes/<change_id>/record
 ├── tasks/<task_name>/
 │   ├── status              # PENDING | BLOCKED | IN_PROGRESS | DONE | FAILED | ABORTED | AWAITING_REVIEW
 │   ├── type                # design | review | backend | test | deploy
 │   ├── service_name        # 关联的服务名（可选）
 │   ├── description
 │   ├── assigned_agent
+│   ├── harness_session_id / native_session_id
 │   ├── started_at / activated_at / retry_count / error_message
 │   └── last_recovery_reason / last_recovery_at
 └── context/...             # 任意上下文键值

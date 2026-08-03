@@ -20,6 +20,7 @@ worker.py — Agent Worker 持久化主循环
 """
 
 import argparse
+import hashlib
 import json
 import os
 import signal
@@ -49,6 +50,9 @@ from _consul import (  # noqa: E402
 from harness_framework.contracts import ReviewPolicy, ReviewResult  # noqa: E402
 from harness_framework.recovery import rewind_to_task  # noqa: E402
 from harness_framework.run_manager import RunManager  # noqa: E402
+from harness_framework.model_execution import (  # noqa: E402
+    ResolvedExecution, load_execution_profiles, resolve_execution,
+)
 
 
 class _WorkerKVAdapter:
@@ -467,6 +471,129 @@ def _run_json_command(command: list[str], payload: dict, timeout: int) -> dict:
     return result
 
 
+def _native_session_lock_key(provider: str, session_id: str) -> str:
+    digest = hashlib.sha256(f"{provider}:{session_id}".encode()).hexdigest()
+    return f"session-locks/native/{digest}"
+
+
+def _acquire_native_session_lock(
+    resolved: ResolvedExecution, owner: str, timeout: int,
+) -> str:
+    if not resolved.native_session_id:
+        return ""
+    key = _native_session_lock_key(resolved.provider, resolved.native_session_id)
+    current, index = kv_get(key)
+    now = time.time()
+    if current:
+        try:
+            record = json.loads(current)
+        except json.JSONDecodeError:
+            record = {}
+        if record.get("owner") != owner and float(record.get("expires_at", 0)) > now:
+            raise RuntimeError(
+                f"native session is already in use: {resolved.native_session_id}"
+            )
+    value = json.dumps({
+        "owner": owner,
+        "provider": resolved.provider,
+        "session_id": resolved.native_session_id,
+        "expires_at": now + timeout + 60,
+    })
+    if not kv_put(key, value, cas=index):
+        raise RuntimeError(
+            f"failed to acquire native session lock: {resolved.native_session_id}"
+        )
+    return key
+
+
+def _release_native_session_lock(key: str, owner: str) -> None:
+    if not key:
+        return
+    current, _ = kv_get(key)
+    try:
+        record = json.loads(current) if current else {}
+    except json.JSONDecodeError:
+        record = {}
+    if record.get("owner") == owner:
+        kv_delete(key)
+
+
+def _resolve_task_execution(
+    req_id: str, task_name: str, task_meta: dict, config: dict,
+) -> ResolvedExecution | None:
+    raw = _json_meta(task_meta, "execution", None)
+    if not raw:
+        depends_on = task_meta.get("depends_on", "")
+        if isinstance(depends_on, str):
+            upstream_tasks = [
+                item.strip() for item in depends_on.split(",") if item.strip()
+            ]
+        elif isinstance(depends_on, list):
+            upstream_tasks = [
+                item.get("task", "") if isinstance(item, dict) else str(item)
+                for item in depends_on
+            ]
+            upstream_tasks = [item for item in upstream_tasks if item]
+        else:
+            upstream_tasks = []
+
+        candidates = []
+        for source_task in upstream_tasks:
+            native_session_id, _ = kv_get(
+                f"workflows/{req_id}/tasks/{source_task}/native_session_id"
+            )
+            if native_session_id:
+                candidates.append((source_task, native_session_id))
+        if len(candidates) > 1:
+            names = ", ".join(source for source, _sid in candidates)
+            raise ValueError(
+                "task has multiple resumable upstream sessions; configure "
+                f"execution.session.from_task explicitly: {names}"
+            )
+        if len(candidates) == 1:
+            source_task, native_session_id = candidates[0]
+            inherited, _ = kv_get(
+                f"workflows/{req_id}/tasks/{source_task}/execution_effective"
+            )
+            if not inherited:
+                inherited, _ = kv_get(
+                    f"workflows/{req_id}/tasks/{source_task}/execution"
+                )
+            if not inherited:
+                raise ValueError(
+                    f"upstream task has a native session but no execution "
+                    f"configuration: {source_task}"
+                )
+            try:
+                raw = json.loads(inherited) if isinstance(inherited, str) else inherited
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    f"upstream task has invalid execution configuration: {source_task}"
+                ) from exc
+            raw = json.loads(json.dumps(raw))
+            raw["session"] = {
+                "mode": "continue", "from_task": source_task,
+            }
+    if not raw:
+        return None
+
+    def lookup(source_task: str) -> str | None:
+        value, _ = kv_get(
+            f"workflows/{req_id}/tasks/{source_task}/native_session_id"
+        )
+        return value
+
+    resolved = resolve_execution(
+        raw, config.get("execution_profiles", {}), lookup,
+        allowed_executables=config.get("allowed_executables", set()),
+    )
+    kv_put(
+        f"workflows/{req_id}/tasks/{task_name}/execution_effective",
+        json.dumps(raw, ensure_ascii=False),
+    )
+    return resolved
+
+
 def _record_review_round(req_id: str, task_name: str, round_no: int,
                          review_input: dict, review_result: dict,
                          attempt_id: str) -> None:
@@ -523,13 +650,28 @@ def execute_task(req_id: str, task_name: str, task_meta: dict,
     返回 {"status": "DONE" | "FAILED", ...}
     """
     agent_id = config["agent_id"]
-    executor = config.get("executor")
+    try:
+        resolved_execution = _resolve_task_execution(
+            req_id, task_name, task_meta, config
+        )
+    except (ValueError, OSError) as exc:
+        return {"status": "FAILED", "error": str(exc)}
+    executor = (
+        resolved_execution.command if resolved_execution else config.get("executor")
+    )
     reviewer = config.get("reviewer")
 
     # 记录 session 开始
     run_id = get_current_run(req_id) or ensure_run(req_id)
     session_id = f"{agent_id}-{int(time.time())}"
     record_session_start(req_id, run_id, task_name, session_id, agent_id)
+    kv_put(f"workflows/{req_id}/tasks/{task_name}/harness_session_id", session_id)
+    if resolved_execution:
+        execution_base = f"workflows/{req_id}/tasks/{task_name}/execution_resolved"
+        kv_put(f"{execution_base}/provider", resolved_execution.provider)
+        kv_put(f"{execution_base}/model", resolved_execution.model)
+        kv_put(f"{execution_base}/session_mode", resolved_execution.session_mode)
+        kv_put(f"{execution_base}/profile", resolved_execution.profile)
     error_count = 0
 
     log_step(req_id, task_name, agent_id, "EXEC_START",
@@ -544,7 +686,13 @@ def execute_task(req_id: str, task_name: str, task_meta: dict,
                            status="completed", summary=f"占位模式完成 {task_name}")
         return {"status": "DONE", "mode": "placeholder", "message": "无 executor，跳过实际执行"}
 
+    session_lock = ""
+    lock_owner = f"{agent_id}:{config.get('attempt_id', session_id)}"
     try:
+        if resolved_execution:
+            session_lock = _acquire_native_session_lock(
+                resolved_execution, lock_owner, config.get("task_timeout", 7200)
+            )
         policy_raw = _json_meta(task_meta, "review_policy", None)
         policy = ReviewPolicy.from_dict(policy_raw) if policy_raw else None
         if policy and not reviewer:
@@ -560,6 +708,7 @@ def execute_task(req_id: str, task_name: str, task_meta: dict,
         feedback = json.loads(raw_feedback) if raw_feedback else None
         max_rounds = policy.max_rounds if policy else 1
         last_result = {}
+        native_session_id = resolved_execution.native_session_id if resolved_execution else ""
 
         for round_no in range(1, max_rounds + 1):
             task_input = {
@@ -576,6 +725,12 @@ def execute_task(req_id: str, task_name: str, task_meta: dict,
                     "service_name": config.get("service_name", ""),
                     "repo_path": config.get("repo_path", ""),
                     "worktree_base": config.get("worktree_base", ".worktree"),
+                    "execution": ({
+                        "provider": resolved_execution.provider,
+                        "model": resolved_execution.model,
+                        "session_mode": resolved_execution.session_mode,
+                        "native_session_id": resolved_execution.native_session_id,
+                    } if resolved_execution else None),
                 },
             }
             last_result = _run_json_command(
@@ -583,6 +738,17 @@ def execute_task(req_id: str, task_name: str, task_meta: dict,
             )
             if last_result.get("status") != "DONE":
                 return last_result
+            if resolved_execution:
+                native_session_id = (
+                    last_result.get("native_session_id")
+                    or last_result.get("session_id")
+                    or resolved_execution.native_session_id
+                )
+                if native_session_id:
+                    kv_put(
+                        f"workflows/{req_id}/tasks/{task_name}/native_session_id",
+                        native_session_id,
+                    )
             if not policy:
                 break
 
@@ -665,6 +831,23 @@ def execute_task(req_id: str, task_name: str, task_meta: dict,
                     "review": review_result,
                 }
             feedback = review_result
+            if resolved_execution and native_session_id and not session_lock:
+                resume_execution = json.loads(json.dumps(
+                    _json_meta(task_meta, "execution", {})
+                ))
+                resume_execution["session"] = {
+                    "mode": "resume", "session_id": native_session_id,
+                }
+                resolved_execution = resolve_execution(
+                    resume_execution, config.get("execution_profiles", {}),
+                    lambda _task: None,
+                    allowed_executables=config.get("allowed_executables", set()),
+                )
+                executor = resolved_execution.command
+                session_lock = _acquire_native_session_lock(
+                    resolved_execution, lock_owner,
+                    config.get("task_timeout", 7200),
+                )
         else:
             return {
                 "status": "FAILED",
@@ -695,6 +878,8 @@ def execute_task(req_id: str, task_name: str, task_meta: dict,
         record_session_end(req_id, run_id, task_name, event_count=2, error_count=1,
                            status="error", summary=str(e))
         return {"status": "FAILED", "error": str(e)}
+    finally:
+        _release_native_session_lock(session_lock, lock_owner)
 
 
 # ── 主循环 ──────────────────────────────────────────────────────────────────
@@ -965,6 +1150,14 @@ def main():
                         help="单任务最大执行时间（秒），默认 7200 (2h)")
     parser.add_argument("--executor", default="",
                         help="任务执行脚本/程序路径。接收 JSON stdin，输出 JSON stdout")
+    parser.add_argument(
+        "--execution-profiles", default=env("EXECUTION_PROFILES_FILE", ""),
+        help="JSON execution profile file used by task-scoped execution",
+    )
+    parser.add_argument(
+        "--allowed-executables", default=env("ALLOWED_MODEL_EXECUTABLES", ""),
+        help="Comma-separated executables allowed for direct task commands",
+    )
     parser.add_argument("--reviewer", default="",
                         help="独立评审脚本/程序。接收 Review Package JSON，输出 ReviewResult JSON")
     parser.add_argument("--review-timeout", type=int, default=1800,
@@ -982,6 +1175,17 @@ def main():
     service_name = args.service or env("SERVICE_NAME", "")
     repo_path = args.repo_path or env("REPO_PATH", os.getcwd())
     capabilities = [c.strip() for c in args.capabilities.split(",") if c.strip()]
+    try:
+        execution_profiles = load_execution_profiles(args.execution_profiles)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        parser.error(f"cannot load execution profiles: {exc}")
+    allowed_executables = {
+        item.strip() for item in args.allowed_executables.split(",") if item.strip()
+    }
+    allowed_executables.update(
+        os.path.basename(profile["command"][0])
+        for profile in execution_profiles.values()
+    )
 
     if not service_name:
         print("[worker] 警告: 未指定 service_name，将接受任何服务的任务", file=sys.stderr)
@@ -999,6 +1203,8 @@ def main():
         "poll_interval": args.poll_interval,
         "task_timeout": args.task_timeout,
         "executor": args.executor.split() if args.executor else None,
+        "execution_profiles": execution_profiles,
+        "allowed_executables": allowed_executables,
         "reviewer": args.reviewer.split() if args.reviewer else None,
         "review_timeout": args.review_timeout,
         "worktree_base": args.worktree_base,
