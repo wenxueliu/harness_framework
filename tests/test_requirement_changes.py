@@ -118,3 +118,25 @@ def test_change_record_is_kept_under_same_workflow():
     assert record["to_revision"] == 2
     assert record["changed_tasks"] == ["api"]
     assert record["affected_tasks"] == ["api", "deploy", "test"]
+
+
+def test_assessed_change_derives_roots_and_persists_evidence():
+    store, _ = _running_workflow()
+    result = RequirementChangeService(store).apply_assessed(
+        "req-1", content="new requirement", reason="scope changed",
+        still_valid=["design", "docs"], invalidated=["api", "deploy", "test"],
+        evidence="api contract changed", actor="human",
+    )
+    assert result["changed_tasks"] == ["api"]
+    assert result["impact_assessment"]["still_valid"] == ["design", "docs"]
+    assert store.kv_get("workflows/req-1/tasks/design/validity")[0] == "VALID"
+
+
+def test_assessed_change_rejects_incomplete_invalidation_closure():
+    store, _ = _running_workflow()
+    with pytest.raises(ValueError, match="downstream closure"):
+        RequirementChangeService(store).apply_assessed(
+            "req-1", content="new requirement", reason="scope changed",
+            still_valid=["design", "docs", "test", "deploy"], invalidated=["api"],
+            evidence="api changed", actor="human",
+        )

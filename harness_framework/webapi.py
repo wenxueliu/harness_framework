@@ -74,6 +74,8 @@ class APIHandler(BaseHTTPRequestHandler):
                 if "/proposals" in path:
                     req_id = parts[-2]
                     return self._get_proposals(req_id)
+                if len(parts) == 8 and parts[4] == "task" and parts[6] == "adaptive":
+                    return self._adaptive_get(parts[3], parts[5], parts[7], u)
                 # /api/workflow/<req_id>/runs/<run_id>/sessions/export
                 if len(parts) >= 7 and parts[3] == "runs" and parts[5] == "sessions" and parts[-1] == "export":
                     return self._export_run_sessions(parts[2], parts[4])
@@ -114,6 +116,10 @@ class APIHandler(BaseHTTPRequestHandler):
             raw = self.rfile.read(length) if length else b""
             body = json.loads(raw) if raw else {}
 
+            if (path.startswith("/api/workflow/")
+                    and path.endswith("/requirement-change/assessed")):
+                req_id = path.split("/")[-3]
+                return self._assessed_requirement_change(req_id, body)
             if path.startswith("/api/workflow/") and path.endswith("/control"):
                 req_id = path.split("/")[-2]
                 return self._control(req_id, body)
@@ -130,6 +136,9 @@ class APIHandler(BaseHTTPRequestHandler):
                 return self._review_decision(
                     parts[3], parts[5], parts[6], body
                 )
+            if (len(parts) == 8 and parts[1:3] == ["api", "workflow"]
+                    and parts[4] == "task" and parts[6] == "adaptive"):
+                return self._adaptive_post(parts[3], parts[5], parts[7], body)
             self._send_json(404, {"error": "not found"})
         except Exception as e:
             log.exception("POST %s failed", self.path)
@@ -361,7 +370,7 @@ class APIHandler(BaseHTTPRequestHandler):
             tasks_meta = self._load_tasks_for_abort(req_id)
             for name, meta in tasks_meta.items():
                 if meta.get("status") in ("", "PENDING", "IN_PROGRESS", "BLOCKED",
-                                           "AWAITING_REVIEW"):
+                                           "AWAITING_REVIEW", "WAITING_FOR_HUMAN"):
                     prev = meta.get("status", "")
                     self.run_manager.record_transition(
                         req_id, run_id, name,
@@ -376,7 +385,104 @@ class APIHandler(BaseHTTPRequestHandler):
         else:
             self.consul.kv_put(f"workflows/{req_id}/control", action)
 
+        from .adaptive_control import AdaptiveControlService
+        AdaptiveControlService(self.consul, self.run_manager).record_event(
+            req_id, body.get("task_name", "") or "__workflow__", "CONTROL_APPLIED",
+            body.get("actor", "webapi") or "webapi",
+            {"action": action, "reason": body.get("reason", ""),
+             "scope": f"task:{body.get('task_name')}" if body.get("task_name") else "workflow"},
+        )
         self._send_json(200, {"ok": True, "action": action, "req_id": req_id})
+
+    def _assessed_requirement_change(self, req_id: str, body: dict):
+        from .requirement_changes import RequirementChangeService
+        try:
+            result = RequirementChangeService(self.consul).apply_assessed(
+                req_id, content=body.get("content", ""),
+                reason=body.get("reason", ""),
+                still_valid=body.get("still_valid", []),
+                invalidated=body.get("invalidated", []),
+                evidence=body.get("evidence", ""),
+                actor=body.get("actor", ""),
+            )
+        except (ValueError, RuntimeError, json.JSONDecodeError) as exc:
+            return self._send_json(400, {"error": str(exc)})
+        return self._send_json(200, result)
+
+    def _adaptive_get(self, req_id: str, task: str, action: str, parsed_url):
+        from .adaptive_control import AdaptiveControlService
+        service = AdaptiveControlService(self.consul, self.run_manager)
+        if action == "next":
+            query = parse_qs(parsed_url.query)
+            actor = query.get("actor", [""])[0]
+            action_type = query.get("type", ["EXECUTE"])[0]
+            attempt_id = query.get("attempt_id", [""])[0]
+            if not actor:
+                return self._send_json(400, {"error": "actor is required"})
+            return self._send_json(200, service.next_action(
+                req_id, task, actor=actor, action_type=action_type,
+                attempt_id=attempt_id,
+            ))
+        if action == "feedback":
+            return self._send_json(200, {
+                "feedback": service.list_feedback(req_id, task),
+            })
+        if action == "boundary":
+            return self._send_json(200, service.boundary(req_id, task))
+        return self._send_json(404, {"error": "unknown adaptive action"})
+
+    def _adaptive_post(self, req_id: str, task: str, action: str, body: dict):
+        from .adaptive_control import AdaptiveControlError, AdaptiveControlService
+        service = AdaptiveControlService(self.consul, self.run_manager)
+        try:
+            if action == "check":
+                result = service.submit_check(
+                    req_id, task, action_id=body.get("action_id", ""),
+                    state_version=body.get("state_version", -1),
+                    verdict=body.get("verdict", ""), verifier=body.get("verifier", ""),
+                    actor=body.get("actor", ""), evidence=body.get("evidence", {}),
+                    command=body.get("command"), artifact_refs=body.get("artifact_refs"),
+                    workspace_revision=body.get("workspace_revision", ""),
+                )
+            elif action == "route":
+                result = service.submit_route(
+                    req_id, task, target_task=body.get("target_task", ""),
+                    reason=body.get("reason", ""), evidence=body.get("evidence", ""),
+                    still_valid=body.get("still_valid", []),
+                    invalidated=body.get("invalidated", []), actor=body.get("actor", ""),
+                    failure_fingerprint=body.get("failure_fingerprint", ""),
+                )
+            elif action == "feedback":
+                result = service.deliver_feedback(
+                    req_id, task, message=body.get("message", ""),
+                    actor=body.get("actor", ""), kind=body.get("kind", "message"),
+                    source=body.get("source"),
+                )
+            elif action == "respond":
+                result = service.respond_feedback(
+                    req_id, task, feedback_id=body.get("feedback_id", ""),
+                    decision=body.get("decision", ""),
+                    understanding=body.get("understanding", ""),
+                    reason=body.get("reason", ""), impact=body.get("impact", {}),
+                    actor=body.get("actor", ""), question=body.get("question"),
+                )
+            elif action == "answer":
+                result = service.answer_question(
+                    req_id, task, answer=body.get("answer", ""),
+                    actor=body.get("actor", ""),
+                )
+            elif action == "control":
+                result = service.apply_control(
+                    req_id, task=task, action=body.get("action", ""),
+                    actor=body.get("actor", ""), reason=body.get("reason", ""),
+                )
+            else:
+                return self._send_json(404, {"error": "unknown adaptive action"})
+        except AdaptiveControlError as exc:
+            return self._send_json(409, {
+                "error": exc.code, "message": str(exc), "details": exc.details,
+            })
+        return self._send_json(200, result)
 
     def _review_decision(self, req_id: str, task_name: str,
                          action: str, body: dict):
@@ -417,6 +523,7 @@ class APIHandler(BaseHTTPRequestHandler):
                 return self._send_json(409, {"error": "task changed concurrently"})
             self.consul.kv_put(f"{base}/review/human_decision", "APPROVE")
             self.consul.kv_put(f"{base}/approved_by", actor)
+            self.consul.kv_put(f"{base}/validity", "VALID")
             self.run_manager.record_transition(
                 req_id, run_id, task_name, "AWAITING_REVIEW", "DONE",
                 actor, "human approval",

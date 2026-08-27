@@ -94,6 +94,8 @@ def main():
 
     if not kv_put(f"{base}/status", final_status, cas=status_idx):
         die("task status changed concurrently; completion fenced", code=1)
+    if final_status == "DONE":
+        kv_put(f"{base}/validity", "VALID")
 
     emit_json({
         "ok": True,

@@ -15,6 +15,10 @@ from .recovery import (
     RecoveryDecision, RecoveryPolicy, rewind_to_task, select_recovery_path,
     task_ancestors, validate_recovery_target,
 )
+from .adaptive_control import (
+    ACTION_TYPES, FEEDBACK_DECISIONS, FEEDBACK_STATES, VALIDITY_STATES,
+    ActionReceipt, AdaptiveControlError, AdaptiveControlService, RoutingBudget,
+)
 
 __all__ = [
     "AgentContract", "ArtifactManifest", "CompletionContract", "VerifierEvidence",
@@ -31,4 +35,6 @@ __all__ = [
     "IdempotencyConflict", "SideEffectLedger",
     "RecoveryDecision", "RecoveryPolicy", "select_recovery_path",
     "task_ancestors", "validate_recovery_target", "rewind_to_task",
+    "ACTION_TYPES", "FEEDBACK_DECISIONS", "FEEDBACK_STATES", "VALIDITY_STATES",
+    "ActionReceipt", "AdaptiveControlError", "AdaptiveControlService", "RoutingBudget",
 ]

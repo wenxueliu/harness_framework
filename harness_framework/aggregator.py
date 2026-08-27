@@ -273,6 +273,8 @@ class Aggregator:
                 run_id = self.run_manager.get_or_create_run(req_id, "aggregator")
                 self.consul.kv_put(
                     f"workflows/{req_id}/tasks/{task_name}/status", "DONE")
+                self.consul.kv_put(
+                    f"workflows/{req_id}/tasks/{task_name}/validity", "VALID")
                 log.info("aggregate节点 %s/%s 完成，激活下游", req_id, task_name)
                 self.run_manager.record_transition(
                     req_id, run_id, task_name,
@@ -338,6 +340,7 @@ class Aggregator:
 
         if satisfied:
             self.consul.kv_put(f"{base}/status", "DONE")
+            self.consul.kv_put(f"{base}/validity", "VALID")
             self.run_manager.record_transition(
                 req_id, run_id, task_name, "IN_PROGRESS", "DONE", "aggregator",
                 f"join policy satisfied ({strategy}: {success_count}/{total})",
@@ -376,7 +379,7 @@ class Aggregator:
         run_id = self.run_manager.get_or_create_run(req_id, "aggregator")
         for name, meta in tasks_meta.items():
             if meta.get("status") in ("", "PENDING", "IN_PROGRESS", "BLOCKED",
-                                      "AWAITING_REVIEW"):
+                                      "AWAITING_REVIEW", "WAITING_FOR_HUMAN"):
                 prev = meta.get("status", "")
                 self.consul.kv_put(f"workflows/{req_id}/tasks/{name}/status",
                                    "ABORTED")

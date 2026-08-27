@@ -277,6 +277,8 @@ def complete_task(req_id: str, task_name: str, agent_id: str,
     )
     if not kv_put(f"{base}/status", final_status, cas=status_idx):
         return False
+    if final_status == "DONE":
+        kv_put(f"{base}/validity", "VALID")
     kv_delete(f"{base}/recovery_feedback/current")
     kv_put(f"{base}/completed_by", agent_id)
     kv_put(f"{base}/completed_at", ts)

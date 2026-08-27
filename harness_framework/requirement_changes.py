@@ -135,6 +135,69 @@ class RequirementChangeService:
             if current_lock == lock_id:
                 self.store.kv_delete(lock_key)
 
+    def apply_assessed(
+        self, req_id: str, *, content: str, reason: str,
+        still_valid: list[str], invalidated: list[str], evidence: str,
+        actor: str,
+    ) -> dict[str, Any]:
+        """Apply a requirement revision after an evidence-backed impact assessment.
+
+        The caller identifies all invalidated tasks.  Harness derives the minimal
+        changed roots and proves that their DAG closure exactly matches the
+        declaration before publishing a new requirement revision.
+        """
+        evidence = _required(evidence, "evidence")
+        dag = self._load_dag(req_id)
+        known = set(dag)
+        valid_set = _task_set(still_valid, "still_valid")
+        invalid_set = _task_set(invalidated, "invalidated")
+        if not invalid_set:
+            raise ValueError("invalidated must not be empty")
+        if not valid_set <= known or not invalid_set <= known:
+            raise ValueError("impact assessment contains unknown tasks")
+        if valid_set & invalid_set:
+            raise ValueError("still_valid and invalidated must be disjoint")
+
+        roots = {
+            task for task in invalid_set
+            if not any(
+                _dependency_name(dep) in invalid_set
+                for dep in dag[task].get("depends_on", [])
+            )
+        }
+        closure = affected_downstream_closure(dag, roots)
+        if closure != invalid_set:
+            raise ValueError(
+                "invalidated must equal the downstream closure of its minimal roots"
+            )
+        result = self.apply(
+            req_id, content=content, reason=reason,
+            changed_tasks=sorted(roots), actor=actor,
+        )
+        assessment = {
+            "evidence": evidence,
+            "still_valid": sorted(valid_set),
+            "invalidated": sorted(invalid_set),
+            "changed_roots": sorted(roots),
+            "assessed_by": actor,
+            "assessed_at": _now_iso(),
+        }
+        self.store.kv_put(
+            f"workflows/{req_id}/requirement_changes/{result['change_id']}/impact_assessment",
+            _json(assessment),
+        )
+        for task in valid_set:
+            self.store.kv_put(f"workflows/{req_id}/tasks/{task}/validity", "VALID")
+        from .adaptive_control import AdaptiveControlService
+        AdaptiveControlService(self.store, self.runs).record_event(
+            req_id, "__workflow__", "GOAL_REVISED", actor,
+            {"change_id": result["change_id"], "reason": reason,
+             "impact_assessment": assessment},
+            run_id=result.get("new_run_id", ""),
+        )
+        result["impact_assessment"] = assessment
+        return result
+
     def _load_dag(self, req_id: str) -> dict[str, dict[str, Any]]:
         dag, _version = self.versions.get_current(req_id, "dag")
         if dag is None:
@@ -154,6 +217,18 @@ def _required(value: str, name: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{name} is required")
     return value
+
+
+def _task_set(value: list[str], name: str) -> set[str]:
+    if not isinstance(value, list) or not all(
+        isinstance(task, str) and task.strip() for task in value
+    ):
+        raise ValueError(f"{name} must contain non-empty strings")
+    return set(value)
+
+
+def _dependency_name(value: Any) -> str:
+    return str(value.get("task", "")) if isinstance(value, dict) else str(value)
 
 
 def _json(value: Any) -> str:

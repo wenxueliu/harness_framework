@@ -163,6 +163,96 @@ def call_do_method(handler, method: str, path: str, body: bytes = b"", headers: 
 
 
 class TestWebAPI:
+    def test_assessed_requirement_change_http_endpoint(self):
+        from harness_framework.versioning import VersionedResourceStore
+        store = {
+            "workflows/req-001/dependencies": json.dumps({
+                "design": {"depends_on": []},
+                "backend": {"depends_on": ["design"]},
+            }),
+            "workflows/req-001/tasks/design/status": "DONE",
+            "workflows/req-001/tasks/backend/status": "DONE",
+        }
+        handler, consul, _, _ = make_handler(store)
+        versions = VersionedResourceStore(consul)
+        versions.publish("req-001", "requirement", {"content": "v1"}, actor="setup")
+        versions.publish("req-001", "dag", {
+            "design": {"depends_on": []}, "backend": {"depends_on": ["design"]},
+        }, actor="setup")
+        response = call_do_method(
+            handler, "POST", "/api/workflow/req-001/requirement-change/assessed",
+            json.dumps({
+                "content": "v2", "reason": "backend change",
+                "still_valid": ["design"], "invalidated": ["backend"],
+                "evidence": "contract changed", "actor": "alice",
+            }).encode(),
+        )
+        assert response["code"] == 200
+        assert response["body"]["impact_assessment"]["changed_roots"] == ["backend"]
+
+    def test_adaptive_http_feedback_boundary_and_response(self):
+        store = {
+            "workflows/req-001/dependencies": json.dumps({
+                "backend": {"depends_on": []},
+            }),
+            "workflows/req-001/tasks/backend/status": "IN_PROGRESS",
+        }
+        handler, consul, _, _ = make_handler(store)
+        delivered = call_do_method(
+            handler, "POST",
+            "/api/workflow/req-001/task/backend/adaptive/feedback",
+            json.dumps({"message": "check compatibility", "actor": "alice"}).encode(),
+        )
+        assert delivered["code"] == 200
+        feedback_id = delivered["body"]["feedback_id"]
+
+        next_result = call_do_method(
+            handler, "GET",
+            "/api/workflow/req-001/task/backend/adaptive/next?actor=agent-1",
+        )
+        assert next_result["body"]["type"] == "INTERPRET_FEEDBACK"
+        assert next_result["body"]["feedback"]["status"] == "OBSERVED"
+
+        response = call_do_method(
+            handler, "POST",
+            "/api/workflow/req-001/task/backend/adaptive/respond",
+            json.dumps({
+                "feedback_id": feedback_id, "decision": "CONTINUE",
+                "understanding": "review compatibility", "reason": "clear",
+                "impact": {}, "actor": "agent-1",
+            }).encode(),
+        )
+        assert response["code"] == 200
+        assert response["body"]["status"] == "APPLIED"
+
+        action = call_do_method(
+            handler, "GET",
+            "/api/workflow/req-001/task/backend/adaptive/next?actor=agent-1",
+        )
+        assert action["code"] == 200
+        assert action["body"]["action_type"] == "EXECUTE"
+        assert "workflows/req-001/tasks/backend/actions/current" in consul._store
+
+    def test_adaptive_http_rejects_check_while_paused(self):
+        store = {
+            "workflows/req-001/dependencies": json.dumps({
+                "backend": {"depends_on": []},
+            }),
+            "workflows/req-001/tasks/backend/status": "IN_PROGRESS",
+            "workflows/req-001/tasks/backend/control": "PAUSE",
+        }
+        handler, _, _, _ = make_handler(store)
+        response = call_do_method(
+            handler, "POST",
+            "/api/workflow/req-001/task/backend/adaptive/check",
+            json.dumps({
+                "action_id": "old", "state_version": 1, "verdict": "PASS",
+                "verifier": "agent", "actor": "agent-1", "evidence": {},
+            }).encode(),
+        )
+        assert response["code"] == 409
+        assert response["body"]["error"] == "E_BOUNDARY_BLOCKED"
+
     def test_human_approve_completes_awaiting_task(self):
         store = {
             "workflows/req-001/tasks/backend/status": "AWAITING_REVIEW",

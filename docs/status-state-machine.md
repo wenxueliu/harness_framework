@@ -36,6 +36,9 @@ DRAFT ──→ CONFIRMED ──→ IN_PROGRESS ──→ DONE
           ┌──────────────────────────────────────────┐
           ↓                                          │
 BLOCKED ──→ PENDING ──→ IN_PROGRESS ──→ DONE        │
+                            │  ↑              ↓       │
+                            ↓  │       WAITING_FOR_HUMAN
+                    WAITING_FOR_HUMAN                 │
                                               ↓       │
                                         FAILED ──────┘
                                               ↓
@@ -52,6 +55,7 @@ BLOCKED ──→ PENDING ──→ IN_PROGRESS ──→ DONE        │
 | `DONE` | 任务完成 | Agent |
 | `FAILED` | 任务失败 | Agent 或 Watchdog |
 | `AWAITING_REVIEW` | 等待人工 Code Review | Agent（`complete_task.py --await-review`） |
+| `WAITING_FOR_HUMAN` | 执行缺少关键人工选择或自动路由预算耗尽 | Adaptive Control |
 | `SKIPPED_UPSTREAM_FAILED` | 阻塞依赖已失败，任务不会执行 | Aggregator |
 
 ### 状态转换规则
@@ -67,7 +71,16 @@ BLOCKED ──→ PENDING ──→ IN_PROGRESS ──→ DONE        │
 - `PENDING` → `IN_PROGRESS`：Agent CAS 抢占任务
 - `IN_PROGRESS` → `DONE`：Agent 完成任务
 - `IN_PROGRESS` → `FAILED`：Agent 报告失败
-- `DONE` → `AWAITING_REVIEW`：Agent 请求人工 Review
+- `IN_PROGRESS` → `AWAITING_REVIEW`：Agent 请求人工 Review
+- `IN_PROGRESS` → `WAITING_FOR_HUMAN`：打开人工问题或自动路由预算耗尽
+- `WAITING_FOR_HUMAN` → 原状态：问题回答并进入反馈处理
+
+### 结论有效性
+
+任务执行状态之外还有独立的 `validity`：`UNKNOWN`、`VALID`、`STALE`、
+`INVALIDATED`。`DONE` 表示任务执行结束，`VALID` 表示其结论仍适用于当前资源
+版本。需求变更或恢复路由会把受影响 DAG 闭包标记为 `INVALIDATED` 并重新调度。
+详见 [adaptive-control.md](adaptive-control.md)。
 
 **Watchdog 恢复**：
 - `IN_PROGRESS` → `PENDING`：Agent 死亡、软 lease 超时或硬超时（≤5 次重试）
@@ -137,6 +150,7 @@ workflows/<req_id>/
 ├── dependencies        # 任务 DAG
 └── tasks/<task_name>/
     ├── status          # 任务状态
+    ├── validity        # UNKNOWN | VALID | STALE | INVALIDATED
     ├── type            # design | review | backend | test | deploy | parallel | aggregate
     ├── assigned_agent  # 抢占的 Agent
     ├── started_at     # 开始时间

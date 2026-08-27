@@ -91,6 +91,7 @@ workflows/<req_id>/
 | 完成 | `complete_task.sh <req_id> <task_name>` | 任务成功完成（支持 --session-id） |
 | 失败 | `fail_task.sh <req_id> <task_name> --error "..."` | 不可恢复错误（支持 --session-id） |
 | ABORT 检查 | `check_control.sh <req_id>` | LLM 调用前后 / verify 每轮 / feedback 唤醒时必检，收到 ABORT 立即退出 |
+| 自适应边界 | `adaptive_boundary.py pre-tool` | 检查 ABORT、PAUSE、人工问题、反馈和待路由；退出码 6=阻断，7=ABORT |
 | 写反馈 | `feedback_write.sh <req_id> <service> --error "..."` | 测试 Agent 专用 |
 | 听反馈 | `feedback_listen.sh <req_id> <service>` | 服务 Agent 专用：监听修复请求 |
 | 解反馈 | `feedback_resolve.sh <req_id> <service> --summary "..."` | 服务 Agent 专用：完成修复 |

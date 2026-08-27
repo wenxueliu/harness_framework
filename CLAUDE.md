@@ -25,6 +25,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | `docs/agent-guide.md` | Agent 接入指南（三种模式） |
 | `docs/usage-guide.md` | 常见操作命令参考 |
 | `docs/change-requirement.md` | 开发中修改需求并局部重跑 |
+| `docs/adaptive-control.md` | 证据驱动路由、原子动作、人工反馈与等待状态 |
 | `docs/task-model-execution.md` | 按任务选择模型与原生会话 |
 | `docs/storage-modes.md` | 三种存储后端深度对比 |
 | `docs/faq.md` | 常见设计决策问答 |
@@ -123,7 +124,8 @@ workflows/<req_id>/
 ├── requirement / requirement_version
 ├── requirement_changes/<change_id>/record
 ├── tasks/<task_name>/
-│   ├── status              # PENDING | BLOCKED | IN_PROGRESS | DONE | FAILED | ABORTED | AWAITING_REVIEW
+│   ├── status              # PENDING | BLOCKED | IN_PROGRESS | WAITING_FOR_HUMAN | DONE | FAILED | ABORTED | AWAITING_REVIEW
+│   ├── validity            # UNKNOWN | VALID | STALE | INVALIDATED
 │   ├── type                # design | review | backend | test | deploy
 │   ├── service_name        # 关联的服务名（可选）
 │   ├── description

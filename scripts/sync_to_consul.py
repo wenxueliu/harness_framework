@@ -242,6 +242,7 @@ def write_workflow(
 
         t_base = f"workflows/{req_id}/tasks/{name}"
         consul.kv_put(f"{t_base}/status", initial_status)
+        consul.kv_put(f"{t_base}/validity", "UNKNOWN")
         consul.kv_put(f"{t_base}/type", node_type)
 
         if info.get("service_name"):

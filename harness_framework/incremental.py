@@ -62,6 +62,7 @@ def invalidate_impacted_tasks(
                 store.kv_put(f"{archive}/attempt/{field}", value)
                 store.kv_delete(f"{base}/{field}")
         store.kv_put(f"{base}/invalidated_by", change_id)
+        store.kv_put(f"{base}/validity", "INVALIDATED")
         deps = [_dependency_name(dep) for dep in dependencies[task].get("depends_on", [])]
         ready = all(dep not in impacted and statuses.get(dep) == "DONE" for dep in deps)
         store.kv_put(f"{base}/status", "PENDING" if ready else "BLOCKED")
