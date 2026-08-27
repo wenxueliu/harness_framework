@@ -8,7 +8,8 @@
 
 ```bash
 export CONSUL_ADDR=127.0.0.1:8500
-export AGENT_ID=my-agent
+export AGENT_ID=backend-agent-01
+export AGENT_NAME=backend-agent
 export SERVICE_NAME=user-service
 export REPO_PATH=/path/to/your/service
 
@@ -89,6 +90,7 @@ curl -s -X PUT "http://$CONSUL_ADDR/v1/kv/workflows/$REQ_ID/status?cas=$INDEX" -
 ```bash
 python scripts/add_task.py req-001 fix-login \
   --type backend --service-name users \
+  --agent-name backend-agent \
   --depends-on implement-login \
   --execution-profile codex-high \
   --session-mode continue --session-from-task implement-login

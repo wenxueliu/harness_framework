@@ -3,11 +3,12 @@
 add_task.py — 向已有 workflow 增量添加单个任务
 
 用法：
-  add_task.py <req_id> <task_name> --description "任务描述" --type backend --depends-on design,review
+  add_task.py <req_id> <task_name> --description "任务描述" --type backend \
+    --agent-name backend-agent --depends-on design,review
 
 示例：
-  add_task.py req-001 api-gateway --description "实现 API 网关" --type backend --depends-on backend
-  add_task.py req-001 e2e-test --description "端到端测试" --type test --depends-on deploy
+  add_task.py req-001 api-gateway --description "实现 API 网关" --type backend --agent-name backend-agent --depends-on backend
+  add_task.py req-001 e2e-test --description "端到端测试" --type test --agent-name test-agent --depends-on deploy
 
 约束（两个方向都要检查）：
   1. 新任务的 depends_on 不能指向 FAILED/ABORTED 的任务（那些任务永远不会完成）
@@ -109,6 +110,8 @@ def main():
     parser.add_argument("--description", default="", help="Task description (what to do)")
     parser.add_argument("--type", default="generic", help="Task type: design, review, backend, test, deploy, generic")
     parser.add_argument("--depends-on", default="", help="Comma-separated list of upstream task names")
+    parser.add_argument("--agent-name", required=True,
+                        help="Logical Agent Name allowed to execute this task")
     parser.add_argument("--service-name", default="", help="Associated service name")
     parser.add_argument("--execution-profile", default="", help="Named worker execution profile")
     parser.add_argument("--model", default="", help="Model override for this task")
@@ -216,6 +219,7 @@ def main():
         "type": args.type,
         "depends_on": upstream,
         "description": args.description,
+        "agent_name": args.agent_name,
     }
     if args.service_name:
         task_definition["service_name"] = args.service_name
@@ -232,6 +236,7 @@ def main():
 
     consul.kv_put(f"{t_base}/status", initial_status)
     consul.kv_put(f"{t_base}/type", args.type)
+    consul.kv_put(f"{t_base}/agent_name", args.agent_name)
     if args.description:
         consul.kv_put(f"{t_base}/description", args.description)
     if args.service_name:

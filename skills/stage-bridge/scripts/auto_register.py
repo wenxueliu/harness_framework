@@ -4,7 +4,8 @@ auto_register.py — Agent 自动注册到 Consul（包含心跳循环）
 
 用法：
   # 一键启动后台运行（推荐）
-  AGENT_ID="my-agent" python3 auto_register.py --capabilities "backend,translate" --daemon
+  AGENT_ID="backend-01" AGENT_NAME="backend-agent" \
+    python3 auto_register.py --capabilities "backend,translate" --daemon
 
   # 查看状态
   AGENT_ID="my-agent" python3 auto_register.py --status
@@ -17,6 +18,7 @@ auto_register.py — Agent 自动注册到 Consul（包含心跳循环）
 
 环境变量：
   AGENT_ID       全局唯一 Agent ID（必填）
+  AGENT_NAME     稳定的逻辑 Agent 名称（任务匹配键）
   CONSUL_ADDR    Consul 地址，默认 127.0.0.1:8500
 
 退出码：0 成功 / 1 运行中退出 / 2 系统错误
@@ -106,13 +108,15 @@ class AgentSession:
         self.consecutive_errors = 0
         self.max_consecutive_errors = 5
 
-    def register(self, capabilities: list, service_name: str, repo_path: str,
+    def register(self, capabilities: list, agent_name: str,
+                 service_name: str, repo_path: str,
                  max_concurrent: int = 1, version: str = "1.0.0",
                  environment: str = "local") -> bool:
         """注册 Agent 到 Consul"""
         tags = [f"capability={c}" for c in capabilities]
         tags.append(f"env={environment}")
         tags.append(f"version={version}")
+        tags.append(f"agent_name={agent_name}")
         if service_name:
             tags.append(f"service={service_name}")
 
@@ -122,6 +126,7 @@ class AgentSession:
             "Tags": tags,
             "Meta": {
                 "agent_id": self.agent_id,
+                "agent_name": agent_name,
                 "capabilities": ",".join(capabilities),
                 "max_concurrent": str(max_concurrent),
                 "current_load": "0",
@@ -140,6 +145,7 @@ class AgentSession:
         success, msg = service_register_safe(payload)
         if success:
             kv_put(f"agents/{self.agent_id}/load", "0")
+            kv_put(f"agents/{self.agent_id}/name", agent_name)
             kv_put(f"agents/{self.agent_id}/registered_at", now_iso())
             if service_name:
                 kv_put(f"agents/{self.agent_id}/service", service_name)
@@ -206,7 +212,8 @@ def become_daemon(agent_id: str) -> None:
     os.close(devnull)
 
 
-def daemon_loop(agent_id: str, capabilities: list, service_name: str, repo_path: str,
+def daemon_loop(agent_id: str, capabilities: list, agent_name: str,
+                service_name: str, repo_path: str,
                 max_concurrent: int, version: str, environment: str,
                 heartbeat_interval: int) -> None:
     """守护进程主循环"""
@@ -227,6 +234,7 @@ def daemon_loop(agent_id: str, capabilities: list, service_name: str, repo_path:
     log(agent_id, f"注册 Agent: {agent_id}")
     success = session.register(
         capabilities=capabilities,
+        agent_name=agent_name,
         service_name=service_name,
         repo_path=repo_path,
         max_concurrent=max_concurrent,
@@ -382,6 +390,7 @@ def cmd_start(args, agent_id: str, consul_addr: str) -> None:
     # 解析参数
     capabilities = [c.strip() for c in args.capabilities.split(",") if c.strip()]
     service_name = args.service or env("SERVICE_NAME", "")
+    agent_name = args.name
     repo_path = args.repo_path or env("REPO_PATH", "")
 
     # 创建会话并运行
@@ -397,6 +406,7 @@ def cmd_start(args, agent_id: str, consul_addr: str) -> None:
     # 注册
     success = session.register(
         capabilities=capabilities,
+        agent_name=agent_name,
         service_name=service_name,
         repo_path=repo_path,
         max_concurrent=args.max_concurrent,
@@ -456,11 +466,13 @@ def cmd_foreground(args, agent_id: str, consul_addr: str) -> None:
 
     capabilities = [c.strip() for c in args.capabilities.split(",") if c.strip()]
     service_name = args.service or env("SERVICE_NAME", "")
+    agent_name = args.name
     repo_path = args.repo_path or env("REPO_PATH", "")
 
     print(f"[auto_register] 注册 Agent: {agent_id}", file=sys.stderr)
     success = session.register(
         capabilities=capabilities,
+        agent_name=agent_name,
         service_name=service_name,
         repo_path=repo_path,
         max_concurrent=args.max_concurrent,
@@ -477,6 +489,7 @@ def cmd_foreground(args, agent_id: str, consul_addr: str) -> None:
     emit_json({
         "ok": True,
         "agent_id": agent_id,
+        "agent_name": agent_name,
         "capabilities": capabilities,
         "service": service_name,
         "heartbeat_interval": args.heartbeat_interval,
@@ -508,6 +521,8 @@ def cmd_foreground(args, agent_id: str, consul_addr: str) -> None:
 
 def main():
     parser = argparse.ArgumentParser(description="Agent 自动注册到 Consul")
+    parser.add_argument("--name", default="",
+                        help="逻辑 Agent 名称（默认从 AGENT_NAME 读取）")
     parser.add_argument("--capabilities",
                         help="逗号分隔，如 backend,translate（启动时必填）")
     parser.add_argument("--service", default="",
@@ -547,6 +562,10 @@ def main():
     if not args.capabilities:
         print("[auto_register:error] --capabilities 参数必填，或使用 --status / --stop", file=sys.stderr)
         sys.exit(2)
+
+    args.name = (args.name or env("AGENT_NAME", "")).strip()
+    if not args.name:
+        parser.error("--name or AGENT_NAME is required")
 
     if args.foreground:
         cmd_foreground(args, agent_id, consul_addr)

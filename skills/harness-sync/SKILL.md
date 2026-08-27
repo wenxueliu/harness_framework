@@ -35,10 +35,10 @@ Sync workflow tasks to Consul KV for the Harness Framework.
    - "请提供 req_id（需求唯一标识符，如 `req-001` 或 `REQ-20260502-001`）："
 3. **如果 `title` 缺失** → 提问用户：
    - "请提供需求标题（如 `用户登录功能`）："
-4. 对于 `dependencies.json` 中的每个任务，确认 `service_name` 和 `description` 是否已填写
-5. **如果任务的 `service_name` 为空** → 提问用户确认，不得自动生成
+4. 对于 `dependencies.json` 中的每个任务，确认 `agent_name` 和 `description` 是否已填写
+5. **如果任务的 `agent_name` 为空** → 提问用户确认，不得自动生成
 
-> **禁止行为**：不得自动生成 `req_id`、`title`、`service_name`。每个值都必须由用户显式提供。
+> **禁止行为**：不得自动生成 `req_id`、`title`、`agent_name`。每个值都必须由用户显式提供。`service_name` 仅是可选业务上下文。
 
 ## Consul 地址
 
@@ -48,31 +48,35 @@ Sync workflow tasks to Consul KV for the Harness Framework.
 
 ### 一、准备 dependencies.json
 
-> **注意：** `service_name` 和 `description` 是每个任务的**必填字段**。如果缺失，必须向用户确认。
+> **注意：** `agent_name` 和 `description` 是每个任务的**必填字段**。如果缺失，必须向用户确认。
 
 ```json
 {
   "design-api": {
     "type": "design",
     "depends_on": [],
+    "agent_name": "design-agent",
     "service_name": "platform",
     "description": "为登录功能设计 API 契约"
   },
   "review-design": {
     "type": "review",
     "depends_on": ["design-api"],
+    "agent_name": "review-agent",
     "service_name": "platform",
     "description": "评审 API 设计"
   },
   "build-user-service": {
     "type": "backend",
     "depends_on": ["review-design"],
+    "agent_name": "backend-agent",
     "service_name": "user-service",
     "description": "实现 user-service 的登录接口"
   },
   "test-e2e": {
     "type": "test",
     "depends_on": ["build-user-service"],
+    "agent_name": "test-agent",
     "service_name": "platform",
     "description": "端到端登录流程测试"
   }
@@ -104,6 +108,7 @@ for task, info in deps.items():
     cmds = [
         f'curl -s -X PUT {consul}/v1/kv/{base}/status -d {status}',
         f'curl -s -X PUT {consul}/v1/kv/{base}/type -d {info.get(\"type\",\"generic\")}',
+        f'curl -s -X PUT {consul}/v1/kv/{base}/agent_name -d {info.get(\"agent_name\",\"\")}',
         f'curl -s -X PUT {consul}/v1/kv/{base}/service_name -d {info.get(\"service_name\",\"\")}',
         f'curl -s -X PUT {consul}/v1/kv/{base}/description -d {info.get(\"description\",\"\")}',
         f'curl -s -X PUT {consul}/v1/kv/{base}/created_at -d $(date -u +%Y-%m-%dT%H:%M:%SZ)',
@@ -162,7 +167,8 @@ workflows/<req_id>/
 └── tasks/<task_name>/
     ├── status              # BLOCKED | PENDING | IN_PROGRESS | DONE | FAILED
     ├── type                # design | review | backend | test | deploy
-    ├── service_name        # 关联服务（必填）
+    ├── agent_name          # 逻辑执行者名称（必填）
+    ├── service_name        # 可选业务或仓库归属
     ├── description         # 任务描述（必填）
     └── created_at          # 创建时间
 ```
@@ -183,10 +189,11 @@ workflows/<req_id>/
 - `task_name` - 任务名称（唯一标识），如 `design-api`
 - `type` - 任务类型：`design` | `review` | `backend` | `test` | `deploy`
 - `depends_on` - 依赖任务列表（数组），如 `["design-api"]`
-- `service_name` - **关联服务名（必填）**，如 `user-service`
+- `agent_name` - **逻辑执行者名称（必填）**，如 `backend-agent`
+- `service_name` - 可选业务或仓库归属，如 `user-service`
 - `description` - **任务描述（必填）**，如 `为登录功能设计 API 契约`
 
-> **关键约束**：`service_name` 和 `description` 不得为空，不得自动生成。如果用户未提供，必须追问。
+> **关键约束**：`agent_name` 和 `description` 不得为空，不得自动生成。如果用户未提供，必须追问。
 
 ### 步骤 3：生成并同步
 
@@ -204,8 +211,8 @@ Assistant:
   Let me create the dependencies.json:
 
   {
-    "design-api": {"type": "design", "depends_on": [], "service_name": "platform", "description": "..."},
-    "build-backend": {"type": "backend", "depends_on": ["design-api"], "service_name": "user-service", "description": "..."},
+    "design-api": {"type": "design", "depends_on": [], "agent_name": "design-agent", "description": "..."},
+    "build-backend": {"type": "backend", "depends_on": ["design-api"], "agent_name": "backend-agent", "service_name": "user-service", "description": "..."},
     ...
   }
 

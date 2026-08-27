@@ -21,6 +21,7 @@ claim_next_task.py — 自动查找并抢占下一个可用任务
   2 系统错误
 """
 import argparse
+import json
 import os
 import sys
 import time
@@ -30,6 +31,7 @@ from _consul import (  # noqa: E402
     env, kv_get, kv_put, emit_json, die, now_iso, load_declared_context,
     load_latest_checkpoint,
 )
+from _matching import task_matches_agent, task_target_name  # noqa: E402
 
 
 def req_priority(req_id: str) -> int:
@@ -75,6 +77,7 @@ def find_pending_tasks() -> list[dict]:
                 "task_name": task_name,
                 "status": status,
                 "type": meta.get("type", "generic"),
+                "agent_name": task_target_name(meta),
                 "service_name": meta.get("service_name", ""),
                 "description": meta.get("description", ""),
                 "assigned_agent_hint": meta.get("assigned_agent_hint", ""),
@@ -83,7 +86,8 @@ def find_pending_tasks() -> list[dict]:
     return pending_tasks
 
 
-def claim_task(req_id: str, task_name: str, agent_id: str) -> tuple[bool, dict]:
+def claim_task(req_id: str, task_name: str, agent_id: str,
+               agent_name: str) -> tuple[bool, dict]:
     """
     尝试抢占指定任务。
     返回 (success, result_dict)
@@ -97,6 +101,15 @@ def claim_task(req_id: str, task_name: str, agent_id: str) -> tuple[bool, dict]:
 
     if status != "PENDING":
         return False, {"error": f"任务状态为 {status}，非 PENDING"}
+
+    task_agent, _ = kv_get(f"{base}/agent_name")
+    target_meta = {"agent_name": task_agent}
+    target = task_target_name(target_meta)
+    if not task_matches_agent(target_meta, agent_name):
+        return False, {
+            "error": f"任务目标 Agent 为 {target or '<unset>'}，"
+                     f"当前注册名称为 {agent_name}",
+        }
 
     # 2. 检查 hint（若有指定 Agent，先核对）
     hint, _ = kv_get(f"{base}/assigned_agent_hint")
@@ -147,12 +160,12 @@ def filter_and_rank_tasks(
     tasks: list[dict],
     agent_id: str,
     capabilities: list[str],
-    service_name: str,
+    agent_name: str,
 ) -> list[dict]:
     """
     过滤并排序任务。
     优先规则：
-    1. 优先匹配 service_name（如果已绑定服务）
+    1. 严格过滤 agent_name 不匹配的任务
     2. 按 depends_on 数量排序（依赖少的先执行）
     3. 按 type 匹配 capabilities
     """
@@ -170,23 +183,19 @@ def filter_and_rank_tasks(
                 except json.JSONDecodeError:
                     pass
 
-    import json
-
     ranked = []
     for task in tasks:
         req_id = task["req_id"]
         task_name = task["task_name"]
-        task_service = task.get("service_name", "")
         task_type = task.get("type", "generic")
+
+        if not task_matches_agent(task, agent_name):
+            continue
 
         score = 0
 
         # 需求优先级（权重最大）
         score += task.get("req_priority", 0) * 100
-
-        # 匹配 service_name（高优先级）
-        if service_name and task_service == service_name:
-            score += 100
 
         # 匹配 capabilities
         type_capabilities = {
@@ -247,12 +256,16 @@ def main():
     args = p.parse_args()
 
     agent_id = env("AGENT_ID", required=True)
-    service_name = env("SERVICE_NAME", "")
+    registered_name, _ = kv_get(f"agents/{agent_id}/name")
+    agent_name = (registered_name or "").strip()
+    if not agent_name:
+        die("Agent 未注册名称；请先注册 agent_name", code=2)
     capabilities = [c.strip() for c in args.capabilities.split(",") if c.strip()]
     if not capabilities:
-        capabilities = [env("CAPABILITIES", "")]  # 兼容旧配置
-
-    import json
+        capabilities = [
+            value.strip() for value in env("CAPABILITIES", "").split(",")
+            if value.strip()
+        ]
 
     while True:
         # 查找所有 PENDING 任务
@@ -275,7 +288,7 @@ def main():
                 die("当前无 PENDING 任务", code=1)
 
         # 过滤并排序
-        filtered = filter_and_rank_tasks(pending, agent_id, capabilities, service_name)
+        filtered = filter_and_rank_tasks(pending, agent_id, capabilities, agent_name)
 
         if not filtered:
             if args.loop:
@@ -284,11 +297,13 @@ def main():
                     continue
                 else:
                     break
-            die("无可匹配的任务（capabilities 或 service_name 不匹配）", code=1)
+            die(f"无分配给 Agent {agent_name} 的任务", code=1)
 
         # 尝试抢占第一个任务
         task = filtered[0]
-        success, result = claim_task(task["req_id"], task["task_name"], agent_id)
+        success, result = claim_task(
+            task["req_id"], task["task_name"], agent_id, agent_name,
+        )
 
         if success:
             result["_hint"] = "任务抢占成功。请执行业务逻辑，完成后再次调用 claim_next_task.py 抢占下一个任务。"

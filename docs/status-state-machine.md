@@ -152,7 +152,8 @@ workflows/<req_id>/
     ├── status          # 任务状态
     ├── validity        # UNKNOWN | VALID | STALE | INVALIDATED
     ├── type            # design | review | backend | test | deploy | parallel | aggregate
-    ├── assigned_agent  # 抢占的 Agent
+    ├── agent_name      # 允许认领任务的逻辑 Agent Name
+    ├── assigned_agent  # 实际抢占实例的 Agent ID
     ├── started_at     # 开始时间
     ├── activated_at    # 激活时间
     ├── retry_count     # 重试次数

@@ -19,7 +19,8 @@ Harness Framework Aggregator 消费的任务依赖图格式。
 |------|------|------|------|
 | `type` | ✅ | string | `design` / `review` / `backend` / `test` / `deploy` / `parallel` / `aggregate` |
 | `depends_on` | ✅ | array[string] | 上游任务名列表。`parallel` 和 `aggregate` 也必须声明（即使为空数组） |
-| `service_name` | task 节点必填 | string | 关联服务名。Agent 通过 `--service` 匹配认领 |
+| `agent_name` | task 节点必填 | string | 逻辑执行者名称。只有注册同名 Agent 才能认领 |
+| `service_name` | 可选 | string | 业务或仓库归属，仅作为上下文，不参与调度匹配 |
 | `description` | 推荐 | string | 任务描述 |
 | `capability` | 推荐 | string | `design` / `dev` / `test` / `review` / `deploy`，Agent 能力匹配 |
 | `blocking` | 可选 | bool | 默认 `true`。`false` 表示非阻塞依赖（CONTRACT 类型） |
@@ -36,6 +37,7 @@ Harness Framework Aggregator 消费的任务依赖图格式。
   "hw-001": {
     "type": "backend",
     "depends_on": ["design-api"],
+    "agent_name": "backend-agent",
     "service_name": "user-service",
     "description": "实现用户注册 API",
     "capability": "dev",
@@ -88,5 +90,5 @@ Harness Framework Aggregator 消费的任务依赖图格式。
 - `depends_on` 中引用的任务名必须存在于 deps 的 key 中
 - `children` 中引用的任务名必须存在于 deps 的 key 中
 - `parallel` 节点必须有 `children` 数组
-- `task` 节点必须有 `service_name`
+- `task` 节点必须有 `agent_name`
 - 不能有指向自身的依赖

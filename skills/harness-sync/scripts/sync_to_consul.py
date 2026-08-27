@@ -96,6 +96,12 @@ def main():
         consul.kv_put(f"{t_base}/status", initial_status)
         consul.kv_put(f"{t_base}/type", info.get("type", "generic"))
 
+        agent_name = info.get("agent_name")
+        if info.get("type") not in ("parallel", "aggregate") and not agent_name:
+            parser.error(f"task '{task_name}' is missing agent_name")
+        if agent_name:
+            consul.kv_put(f"{t_base}/agent_name", agent_name)
+
         if info.get("service_name"):
             consul.kv_put(f"{t_base}/service_name", info["service_name"])
         if info.get("description"):

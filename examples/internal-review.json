@@ -1,12 +1,14 @@
 {
   "design-login": {
     "type": "design",
+    "agent_name": "design-agent",
     "service_name": "design-service",
     "depends_on": [],
     "description": "设计用户登录接口"
   },
   "implement-login": {
     "type": "backend",
+    "agent_name": "backend-agent",
     "service_name": "user-service",
     "depends_on": ["design-login"],
     "description": "实现用户登录功能",

@@ -2,12 +2,14 @@
   "design": {
     "type": "design",
     "depends_on": [],
+    "agent_name": "design-agent",
     "service_name": "myservice",
     "description": "设计 API：定义 /api/users 端点的请求/响应格式"
   },
   "backend": {
     "type": "backend",
     "depends_on": ["design"],
+    "agent_name": "backend-agent",
     "service_name": "myservice",
     "description": "实现 /api/users 端点",
     "context_inputs": ["artifacts/api-design", "facts/coding-standards"],
@@ -49,12 +51,14 @@
   "test": {
     "type": "test",
     "depends_on": ["backend"],
+    "agent_name": "test-agent",
     "service_name": "myservice",
     "description": "对 /api/users 做集成测试"
   },
   "deploy": {
     "type": "deploy",
     "depends_on": ["test"],
+    "agent_name": "deploy-agent",
     "service_name": "myservice",
     "description": "发布 users 服务",
     "side_effecting": true,
@@ -64,6 +68,7 @@
   "rollback": {
     "type": "deploy",
     "depends_on": [],
+    "agent_name": "deploy-agent",
     "service_name": "myservice",
     "description": "补偿失败的 users 服务发布",
     "activation": "compensation_only"

@@ -333,6 +333,7 @@ class APIHandler(BaseHTTPRequestHandler):
             healthy = all(c.get("Status") == "passing" for c in checks)
             agents.append({
                 "agent_id": s.get("ID"),
+                "agent_name": s.get("Meta", {}).get("agent_name", ""),
                 "tags": s.get("Tags", []),
                 "meta": s.get("Meta", {}),
                 "healthy": healthy,

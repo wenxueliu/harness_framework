@@ -41,7 +41,7 @@ allowed-tools:
   "agent_services": {
     "agent-001": {
       "ID": "agent-001",
-      "Meta": { "capabilities": "backend", "service_name": "user-service" }
+      "Meta": { "agent_name": "backend-agent", "capabilities": "backend", "service_name": "user-service" }
     }
   },
   "heartbeats": {
@@ -130,9 +130,10 @@ JSON payload 格式（兼容 Consul 服务注册）：
 {
   "ID": "agent-001",
   "Name": "agent-worker",
-  "Tags": ["capability=backend", "service=user-service"],
+  "Tags": ["agent_name=backend-agent", "capability=backend"],
   "Meta": {
     "agent_id": "agent-001",
+    "agent_name": "backend-agent",
     "capabilities": "backend",
     "service_name": "user-service",
     "repo_path": "/home/dev/user-service",
@@ -148,7 +149,7 @@ JSON payload 格式（兼容 Consul 服务注册）：
 
 示例：
 ```bash
-python scripts/file_kv.py register '{"ID":"agent-001","Name":"agent-worker","Tags":["capability=backend","service=user-service"],"Meta":{"agent_id":"agent-001","capabilities":"backend","service_name":"user-service"}}'
+python scripts/file_kv.py register '{"ID":"agent-001","Name":"agent-worker","Tags":["agent_name=backend-agent","capability=backend"],"Meta":{"agent_id":"agent-001","agent_name":"backend-agent","capabilities":"backend","service_name":"user-service"}}'
 ```
 
 ### deregister — Agent 注销
@@ -205,11 +206,12 @@ python scripts/file_kv.py status-leader [--data-file <path>]
 
 ```bash
 export AGENT_ID=agent-$(hostname)-$$
+export AGENT_NAME=backend-agent
 REPO_PATH=$(pwd)
 
 # 注册
 python scripts/file_kv.py register "$(cat <<JSON
-{"ID":"$AGENT_ID","Name":"agent-worker","Tags":["capability=backend","service=user-service"],"Meta":{"agent_id":"$AGENT_ID","capabilities":"backend","service_name":"user-service","repo_path":"$REPO_PATH","current_load":"0"}}
+{"ID":"$AGENT_ID","Name":"agent-worker","Tags":["agent_name=$AGENT_NAME","capability=backend"],"Meta":{"agent_id":"$AGENT_ID","agent_name":"$AGENT_NAME","capabilities":"backend","service_name":"user-service","repo_path":"$REPO_PATH","current_load":"0"}}
 JSON
 )"
 
@@ -220,8 +222,13 @@ while true; do python scripts/file_kv.py heartbeat "$AGENT_ID"; sleep 10; done &
 ### 2. 抢占任务
 
 ```bash
-# 读取所有 PENDING 任务，按 service_name 匹配
+# 读取所有 PENDING 任务，只选择 agent_name 与 $AGENT_NAME 完全一致的任务
 python scripts/file_kv.py get workflows/ --recurse
+
+TARGET_AGENT=$(python scripts/file_kv.py get \
+  "workflows/$REQ_ID/tasks/$TASK_NAME/agent_name" | \
+  python3 -c "import sys,json,base64; print(base64.b64decode(json.load(sys.stdin)[0]['Value']).decode())")
+test "$TARGET_AGENT" = "$AGENT_NAME" || exit 1
 
 # CAS 抢占
 python scripts/file_kv.py put "workflows/$REQ_ID/tasks/$TASK_NAME/status" IN_PROGRESS \

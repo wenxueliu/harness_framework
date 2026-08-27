@@ -7,12 +7,14 @@
   "requirements": {
     "type": "design",
     "depends_on": [],
+    "agent_name": "requirements-agent",
     "service_name": "user-service",
     "description": "确认用户查询接口的响应契约"
   },
   "implementation": {
     "type": "backend",
     "depends_on": ["requirements"],
+    "agent_name": "backend-agent",
     "service_name": "user-service",
     "description": "实现用户查询接口及单元测试",
     "agent_contract": {
@@ -27,6 +29,7 @@
   "test": {
     "type": "test",
     "depends_on": ["implementation"],
+    "agent_name": "test-agent",
     "service_name": "user-service",
     "description": "验证接口契约；失败时根据证据路由回最早失效任务"
   }

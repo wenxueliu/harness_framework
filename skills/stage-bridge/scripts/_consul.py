@@ -7,7 +7,7 @@ _consul.py — stage-bridge 共享 Consul HTTP 客户端
   AGENT_ID       当前 Agent 的全局唯一 ID
   REQ_ID         当前需求 ID（命令调用时也可显式传参覆盖）
   TASK_NAME      当前任务名称
-  SERVICE_NAME   绑定的微服务名称（开发 Agent 必填）
+  SERVICE_NAME   可选业务服务名称（不参与任务匹配）
   REPO_PATH      微服务代码仓库本地路径
 """
 

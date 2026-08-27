@@ -13,18 +13,21 @@
   "design": {
     "type": "design",
     "depends_on": [],
+    "agent_name": "design-agent",
     "service_name": "myservice",
     "description": "设计 REST API 端点：GET /api/tasks、POST /api/tasks"
   },
   "backend": {
     "type": "backend",
     "depends_on": ["design"],
+    "agent_name": "backend-agent",
     "service_name": "myservice",
     "description": "实现 /api/tasks 端点的 CRUD 逻辑"
   },
   "test": {
     "type": "test",
     "depends_on": ["backend"],
+    "agent_name": "test-agent",
     "service_name": "myservice",
     "description": "对 /api/tasks 做集成测试：CRUD 四条路径 + 错误场景"
   }

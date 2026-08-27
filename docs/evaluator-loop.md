@@ -12,6 +12,7 @@ Harness deterministically returns `PASS`, `RETRY`, `SWITCH_FALLBACK`, or
 {
   "backend": {
     "type": "backend",
+    "agent_name": "backend-agent",
     "service_name": "users",
     "depends_on": [],
     "evaluator_policy": {

@@ -55,6 +55,8 @@
 
 | 字段 | 用途 | 关键约束 |
 |------|------|----------|
+| `agent_name` | 指定可执行任务的逻辑 Agent Name | 可执行任务必填；只允许注册同名 Agent 抢占 |
+| `service_name` | 标记业务或代码仓库归属 | 可选；不参与 Agent 匹配 |
 | `agent_contract` | 输入、输出、职责、排除项、权限、上下文预算 | 列表字段必须为非空字符串列表 |
 | `completion_contract` | required artifacts 与 verifier gates | 未满足时拒绝 `DONE` |
 | `review_policy` | 单任务内独立 Reviewer、最大修订轮数与人工确认 | 启用时 `completion_contract.required_gates` 必须包含 `review` |
@@ -73,12 +75,33 @@
 `INVALIDATED`。执行状态和结论有效性是两个不同维度，详见
 [自适应控制](adaptive-control.md)。
 
+### Agent 名称匹配
+
+`agent_name` 是调度键，`service_name` 不是。Agent 注册时同时提供：
+
+```bash
+export AGENT_ID=backend-agent-01   # 运行实例 ID：租约、心跳、审计
+export AGENT_NAME=backend-agent    # 逻辑名称：必须匹配任务 agent_name
+
+python skills/stage-bridge/scripts/register_agent.py \
+  --name "$AGENT_NAME" --capabilities backend
+```
+
+自动抢占、指定任务抢占和常驻 Worker 都在 CAS 前检查名称；名称不一致时不会
+写入 `IN_PROGRESS`。同一个 Agent Name 可以有多个实例 ID，最终仍由 CAS 决定
+哪一个实例获得任务。
+
+所有可执行任务必须显式写 `agent_name`，所有 Agent 必须通过 `--name` 或
+`AGENT_NAME` 显式注册逻辑名称。缺少名称时配置、注册或领取直接失败；
+`service_name` 永远不会被当作调度名称。
+
 示例：
 
 ```json
 {
   "deploy": {
     "type": "deploy",
+    "agent_name": "deploy-agent",
     "service_name": "users",
     "depends_on": ["test"],
     "context_inputs": ["artifacts/release", "facts/region"],
@@ -94,6 +117,7 @@
   },
   "rollback": {
     "type": "deploy",
+    "agent_name": "deploy-agent",
     "service_name": "users",
     "depends_on": [],
     "activation": "compensation_only"

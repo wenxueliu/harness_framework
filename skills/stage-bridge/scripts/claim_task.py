@@ -21,6 +21,7 @@ from _consul import (  # noqa: E402
     emit_json, die, now_iso, lease_deadline_iso,
     ensure_run, record_transition, load_latest_checkpoint,
 )
+from _matching import task_matches_agent, task_target_name  # noqa: E402
 
 
 def main():
@@ -30,6 +31,10 @@ def main():
     args = p.parse_args()
 
     agent_id = env("AGENT_ID", required=True)
+    registered_name, _ = kv_get(f"agents/{agent_id}/name")
+    agent_name = (registered_name or "").strip()
+    if not agent_name:
+        die("Agent 未注册名称；请先注册 agent_name", code=2)
     base = task_base(args.req_id, args.task_name)
 
     workflow_status, _ = kv_get(f"workflows/{args.req_id}/status")
@@ -46,6 +51,15 @@ def main():
         die(f"任务 {args.req_id}/{args.task_name} 不存在", code=1)
     if status != "PENDING":
         die(f"任务状态为 {status}，非 PENDING，无法抢占", code=1)
+
+    task_agent, _ = kv_get(f"{base}/agent_name")
+    target_meta = {"agent_name": task_agent}
+    if not task_matches_agent(target_meta, agent_name):
+        die(
+            f"任务目标 Agent 为 {task_target_name(target_meta) or '<unset>'}，"
+            f"当前注册名称为 {agent_name}",
+            code=1,
+        )
 
     # 2. 检查 hint（若有指定 Agent，先核对）
     hint, _ = kv_get(f"{base}/assigned_agent_hint")
@@ -110,6 +124,7 @@ def main():
     emit_json({
         "ok": True,
         "agent_id": agent_id,
+        "agent_name": agent_name,
         "req_id": args.req_id,
         "task_name": args.task_name,
         "attempt_id": attempt_id,

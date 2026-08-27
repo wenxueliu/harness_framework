@@ -6,7 +6,7 @@
 
 ## 多 Agent 平台协作协议
 
-本仓库（`${SERVICE_NAME}`）受 stage-bridge 多 Agent 开发平台调度。在响应平台分配的研发任务时，你必须严格遵循下面的协作协议；在用户直接交互的开发场景下（无 `REQ_ID` 环境变量），可忽略本协议。
+本 Agent 以逻辑名称 `${AGENT_NAME}` 接受 stage-bridge 多 Agent 开发平台调度；只可执行 `agent_name` 与其一致的任务。`${SERVICE_NAME}` 仅描述业务仓库。在用户直接交互的开发场景下（无 `REQ_ID` 环境变量），可忽略本协议。
 
 ### 启动协议
 
@@ -14,7 +14,8 @@
 
 ```bash
 python $STAGE_BRIDGE_DIR/scripts/register_agent.py \
-  --capabilities backend --service ${SERVICE_NAME} --repo-path "$(pwd)"
+  --name ${AGENT_NAME} --capabilities backend \
+  --service ${SERVICE_NAME} --repo-path "$(pwd)"
 
 nohup python $STAGE_BRIDGE_DIR/scripts/heartbeat.py --loop 10 > /tmp/hb.log 2>&1 &
 ```

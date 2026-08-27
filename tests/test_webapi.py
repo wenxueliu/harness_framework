@@ -494,7 +494,10 @@ class TestWebAPI:
                 "Service": {
                     "ID": "agent-001",
                     "Tags": ["backend"],
-                    "Meta": {"hostname": "dev-1"}
+                    "Meta": {
+                        "agent_name": "backend-agent",
+                        "hostname": "dev-1",
+                    }
                 },
                 "Checks": [{"Status": "passing"}]
             },
@@ -516,6 +519,7 @@ class TestWebAPI:
         healthy = next(a for a in agents if a["agent_id"] == "agent-001")
         unhealthy = next(a for a in agents if a["agent_id"] == "agent-002")
         assert healthy["healthy"] is True
+        assert healthy["agent_name"] == "backend-agent"
         assert unhealthy["healthy"] is False
 
     def test_not_found(self):

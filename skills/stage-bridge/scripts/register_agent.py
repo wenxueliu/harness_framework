@@ -3,11 +3,13 @@
 register_agent.py — Agent 手动注册到 Consul
 
 用法：
-  register_agent.py --capabilities backend,migration --service user-service \
+  register_agent.py --name backend-agent --capabilities backend,migration \
+    --service user-service \
     --max-concurrent 1 [--repo-path /path/to/repo]
 
 环境变量（必填）：
   AGENT_ID — 全局唯一 Agent ID
+  AGENT_NAME — 稳定的逻辑执行者名称（也可用 --name）
 
 退出码：0 成功 / 2 系统错误
 """
@@ -23,6 +25,8 @@ from _consul import (  # noqa: E402
 
 def main():
     p = argparse.ArgumentParser(description="向 Consul 注册当前 Agent")
+    p.add_argument("--name", default="",
+                   help="逻辑 Agent 名称（任务通过 agent_name 与其匹配）")
     p.add_argument("--capabilities", required=True,
                    help="逗号分隔，如 backend,migration")
     p.add_argument("--service", default="",
@@ -38,11 +42,16 @@ def main():
     agent_id = env("AGENT_ID", required=True)
     capabilities = [c.strip() for c in args.capabilities.split(",") if c.strip()]
     service_name = args.service or env("SERVICE_NAME", "")
+    agent_name = args.name or env("AGENT_NAME", "")
+    if not agent_name.strip():
+        p.error("--name or AGENT_NAME is required")
+    agent_name = agent_name.strip()
     repo_path = args.repo_path or env("REPO_PATH", "")
 
     tags = [f"capability={c}" for c in capabilities]
     tags.append(f"env={args.environment}")
     tags.append(f"version={args.agent_version}")
+    tags.append(f"agent_name={agent_name}")
     if service_name:
         tags.append(f"service={service_name}")
 
@@ -52,6 +61,7 @@ def main():
         "Tags": tags,
         "Meta": {
             "agent_id": agent_id,
+            "agent_name": agent_name,
             "capabilities": ",".join(capabilities),
             "max_concurrent": str(args.max_concurrent),
             "current_load": "0",
@@ -71,6 +81,7 @@ def main():
 
     # 同步写入 KV，便于框架快速查询负载
     kv_put(f"agents/{agent_id}/load", "0")
+    kv_put(f"agents/{agent_id}/name", agent_name)
     kv_put(f"agents/{agent_id}/registered_at", now_iso())
     if service_name:
         kv_put(f"agents/{agent_id}/service", service_name)
@@ -78,6 +89,7 @@ def main():
     emit_json({
         "ok": True,
         "agent_id": agent_id,
+        "agent_name": agent_name,
         "capabilities": capabilities,
         "service": service_name,
         "tags": tags,

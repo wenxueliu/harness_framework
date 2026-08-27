@@ -24,16 +24,18 @@ Parse any document and generate a `dependencies.json` for Harness Framework.
    - "请提供要转换的文档路径（如 `spec.md`）："
 2. **确认 req_id**：如果后续要同步到 Consul，需要 `req_id`。如果用户未指定，提问：
    - "请提供 req_id（需求唯一标识符，如 `req-001`）："
-3. **生成后检查**：`dependencies.json` 生成后，检查每个任务的 `service_name` 和 `description`
-4. **如果任务的 `service_name` 为空或为推断值** → 向用户确认：
-   - "任务 `{task_name}` 的 service_name 当前为 `{value}`，是否正确？如需修改请提供正确的服务名。"
+3. **确认 Agent 映射**：按任务名或任务类型收集 Agent Name，作为 `--agent-map` 传入
+4. **如果任务的 `agent_name` 为空** → 向用户确认：
+   - "任务 `{task_name}` 应由哪个 Agent Name 执行（如 `backend-agent`）？"
 
-> **禁止行为**：不得自动生成 `service_name`。若无法从文档中提取，必须向用户确认。
+> **禁止行为**：不得自动生成 `agent_name`。若无法从文档中提取，必须向用户确认。`service_name` 仅是可选业务上下文。
 
 ## Usage
 
 ```bash
-python3 skills/doc-to-deps/scripts/doc_to_deps.py <input_file> [--output <output.json>]
+python3 skills/doc-to-deps/scripts/doc_to_deps.py <input_file> \
+  --agent-map '{"design":"design-agent","backend":"backend-agent","test":"test-agent"}' \
+  [--output <output.json>]
 ```
 
 ## Supported Formats
@@ -52,6 +54,7 @@ Generates a `dependencies.json` following Harness Framework schema:
   "task_name": {
     "type": "backend|design|review|test|deploy",
     "depends_on": [],
+    "agent_name": "backend-agent",
     "service_name": "service-name",
     "description": "Task description"
   }
@@ -75,8 +78,11 @@ Generates a `dependencies.json` following Harness Framework schema:
 
 ```bash
 # Convert README.md to dependencies
-python3 skills/doc-to-deps/scripts/doc_to_deps.py README.md --output deps.json
+python3 skills/doc-to-deps/scripts/doc_to_deps.py README.md \
+  --agent-map '{"design":"design-agent","backend":"backend-agent"}' \
+  --output deps.json
 
 # Interactive: read from stdin
-python3 skills/doc-to-deps/scripts/doc_to_deps.py --interactive
+python3 skills/doc-to-deps/scripts/doc_to_deps.py --interactive \
+  --agent-map '{"design":"design-agent","backend":"backend-agent"}'
 ```

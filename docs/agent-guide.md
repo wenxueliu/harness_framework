@@ -93,6 +93,7 @@ Skill 不会自动注入 Agent。由**操作者**（启动 Agent 的人或系统
 
 ```bash
 export AGENT_ID=my-agent
+export AGENT_NAME=backend-agent
 export DATA_FILE=~/.harness/file_store.json
 ```
 
@@ -104,11 +105,12 @@ export DATA_FILE=~/.harness/file_store.json
 你是 Harness Framework 的开发 Agent，已加载 **file-kv** skill。
 
 - Agent ID: `my-agent`
+- Agent Name: `backend-agent`
 - 数据文件: `~/.harness/file_store.json`
 
 ## 工作流程
 
-1. 扫描 workflows/ 下的 PENDING 任务，CAS 抢占一个匹配你的任务
+1. 扫描 workflows/ 下的 PENDING 任务，只 CAS 抢占 `agent_name=backend-agent` 的任务
 2. 读 context/ 获取上游产物，执行任务
 3. 将产出写入 context/，记录步骤日志
 4. 完成任务（status DONE）或标记失败（status FAILED + error_message）
@@ -126,7 +128,8 @@ export DATA_FILE=~/.harness/file_store.json
 
 ```bash
 export CONSUL_ADDR=127.0.0.1:8500
-export AGENT_ID=my-agent
+export AGENT_ID=backend-agent-01
+export AGENT_NAME=backend-agent
 export SERVICE_NAME=myservice
 export REPO_PATH=/path/to/your/repo
 ```
@@ -138,14 +141,15 @@ export REPO_PATH=/path/to/your/repo
 ```markdown
 你是 Harness Framework 的开发 Agent，已加载 **stage-bridge** skill。
 
-- Agent ID: `my-agent`
+- Agent ID: `backend-agent-01`
+- Agent Name: `backend-agent`
 - 服务名: `myservice`
 - Consul 地址: `127.0.0.1:8500`
 
 ## 工作流程
 
 1. 注册到 Consul，启动后台心跳
-2. 轮询 PENDING 任务，抢占一个 service_name 匹配你的任务
+2. 轮询 PENDING 任务，只抢占 `agent_name=backend-agent` 的任务
 3. 读 context/ 获取上游产物，执行任务，记录日志，写产物
 4. 完成任务或标记失败
 5. 完成后注销
@@ -171,8 +175,10 @@ export REPO_PATH=/path/to/your/repo
 # 1. 认领 PENDING 任务（CAS 原子抢占）
 python scripts/file_kv.py --data-file $DATA_FILE \
   get workflows/myapp-001/tasks/backend/status
+python scripts/file_kv.py --data-file $DATA_FILE \
+  get workflows/myapp-001/tasks/backend/agent_name
 
-# 如果状态是 PENDING，抢占
+# 只有状态为 PENDING 且 agent_name 等于 $AGENT_NAME 时才能抢占
 python scripts/file_kv.py --data-file $DATA_FILE \
   put workflows/myapp-001/tasks/backend/status IN_PROGRESS
 python scripts/file_kv.py --data-file $DATA_FILE \
@@ -192,8 +198,9 @@ python scripts/file_kv.py --data-file $DATA_FILE \
 脚本：`skills/stage-bridge/scripts/`
 
 ```bash
-# 注册
-python skills/stage-bridge/scripts/register_agent.py
+# 注册逻辑名称；Agent ID 仍用于实例、租约和审计
+python skills/stage-bridge/scripts/register_agent.py \
+  --name "$AGENT_NAME" --capabilities backend --service "$SERVICE_NAME"
 
 # 心跳（后台持续，每 10 秒一次）
 python skills/stage-bridge/scripts/auto_register.py --daemon &
@@ -243,7 +250,10 @@ curl -s -X PUT \
 
 ## Task Agent 的工作模式
 
-当一个 Agent 绑定到某个 `service_name` 后，它只认领匹配该 service_name 的任务。Agent 不关心 DAG 的全貌——它只需要知道"有没有我能做的 PENDING 任务"。
+任务用 `agent_name` 指定逻辑执行者，Agent 注册同名 `AGENT_NAME` 后才可认领。
+`AGENT_ID` 标识某个运行实例并持有租约；`service_name` 只描述任务影响的业务或
+代码仓库，不参与调度。Agent 不需要知道 DAG 全貌，只需查找分配给自身名称的
+`PENDING` 任务。
 
 ## 单任务内接入独立 Reviewer
 
@@ -253,6 +263,7 @@ Reviewer 判断问题源于上游时，可以从任务配置的 `allowed_recover
 
 ```bash
 python skills/stage-bridge/scripts/worker.py \
+  --name backend-agent \
   --service user-service \
   --executor "python /opt/agents/executor.py" \
   --reviewer "python /opt/agents/reviewer.py"

@@ -26,7 +26,8 @@ allowed-tools:
 | `task_name` | 新任务名称（唯一） | `e2e-test` |
 | `--description` | 任务描述 | `"端到端登录流程测试"` |
 | `--type` | 任务类型 | `backend`、`test`、`design`、`review`、`deploy` |
-| `--service-name` | 关联服务名 | `user-service` |
+| `--agent-name` | 执行该任务的逻辑 Agent 名称 | `backend-agent` |
+| `--service-name` | 可选业务归属 | `user-service` |
 
 ### 检查流程
 
@@ -38,10 +39,10 @@ allowed-tools:
    - "请提供任务描述："
 4. **如果用户未提供 `--type`** → 提问用户：
    - "请选择任务类型：design / review / backend / test / deploy"
-5. **如果用户未提供 `--service-name`** → 提问用户：
-   - "请提供此任务关联的服务名（如 `user-service`）："
+5. **如果用户未提供 `--agent-name`** → 提问用户：
+   - "请提供执行此任务的 Agent 名称（如 `backend-agent`）："
 
-> **禁止行为**：不得自动生成 `req_id`、`task_name`、`service_name`。每个值都必须由用户显式提供。
+> **禁止行为**：不得自动生成 `req_id`、`task_name`、`agent_name`。每个值都必须由用户显式提供。
 
 ## 何时使用
 
@@ -58,6 +59,7 @@ python scripts/add_task.py <req_id> <task_name> \
   --description "任务描述" \
   --type backend \
   --depends-on design,review \
+  --agent-name backend-agent \
   --service-name user-service
 ```
 
@@ -70,6 +72,7 @@ python scripts/add_task.py <req_id> <task_name> \
 | `--description` | 否 | 任务描述 |
 | `--type` | 否 | 任务类型：`design` `review` `backend` `test` `deploy` `generic`（默认 `generic`） |
 | `--depends-on` | 否 | 上游依赖，逗号分隔（如 `design,review`） |
+| `--agent-name` | 是 | 允许执行任务的逻辑 Agent 名称 |
 | `--service-name` | 否 | 关联服务名 |
 | `--consul` | 否 | Consul 地址（默认 `CONSUL_ADDR` 环境变量或 `127.0.0.1:8500`） |
 
@@ -118,6 +121,7 @@ python scripts/add_task.py req-001 e2e-test \
   --description "端到端登录流程测试" \
   --type test \
   --depends-on deploy \
+  --agent-name test-agent \
   --service-name platform
 ```
 
@@ -127,6 +131,7 @@ python scripts/add_task.py req-001 e2e-test \
 python scripts/add_task.py req-001 init-db \
   --description "初始化数据库表结构" \
   --type backend \
+  --agent-name backend-agent \
   --service-name user-service
 ```
 
@@ -137,6 +142,7 @@ python scripts/add_task.py req-001 review-design \
   --description "评审 API 设计方案" \
   --type review \
   --depends-on design-api \
+  --agent-name review-agent \
   --service-name platform
 ```
 
@@ -152,6 +158,7 @@ python scripts/add_task.py req-001 db-schema \
   --description "设计数据库 schema" \
   --type design \
   --depends-on design-api \
+  --agent-name design-agent \
   --service-name user-service
 
 # 写入产物说明
@@ -167,7 +174,7 @@ python skills/stage-bridge/scripts/write_artifact.py req-001 extra-tasks \
 python scripts/add_task.py req-001 deploy-canary \
   --description "金丝雀发布到预发环境" \
   --type deploy \
-  --depends-on build --service-name platform
+  --depends-on build --agent-name deploy-agent --service-name platform
 ```
 
 ## 集成流程

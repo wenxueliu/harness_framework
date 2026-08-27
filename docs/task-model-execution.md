@@ -13,6 +13,7 @@ Worker 可以在任务分派时选择执行 profile、模型和 provider 原生�
 {
   "implement-login": {
     "type": "backend",
+    "agent_name": "backend-agent",
     "service_name": "users",
     "depends_on": [],
     "execution": {
@@ -30,6 +31,7 @@ Worker 可以在任务分派时选择执行 profile、模型和 provider 原生�
 {
   "fix-login": {
     "type": "backend",
+    "agent_name": "backend-agent",
     "service_name": "users",
     "depends_on": ["implement-login"],
     "execution": {
@@ -57,6 +59,7 @@ Worker 可以在任务分派时选择执行 profile、模型和 provider 原生�
 
 ```bash
 python skills/stage-bridge/scripts/worker.py \
+  --name backend-agent \
   --service users \
   --execution-profiles /etc/harness/execution-profiles.json
 ```
@@ -106,6 +109,7 @@ Worker 同时保存：
 python scripts/add_task.py req-001 fix-login \
   --description "根据审查意见修复登录" \
   --type backend \
+  --agent-name backend-agent \
   --service-name users \
   --depends-on implement-login \
   --execution-profile codex-high \

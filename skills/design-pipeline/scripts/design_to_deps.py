@@ -130,8 +130,8 @@ def validate_deps(deps: dict) -> list[str]:
                     errors.append(f"{name}: child '{child}' 不在 deps 中")
 
         if node_type not in ("parallel", "aggregate"):
-            if not info.get("service_name"):
-                errors.append(f"{name}: 缺少 service_name")
+            if not info.get("agent_name"):
+                errors.append(f"{name}: 缺少 agent_name")
 
         for dep in info.get("depends_on", []):
             if isinstance(dep, str) and dep not in all_names:

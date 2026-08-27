@@ -30,10 +30,10 @@ description: |
    - "请提供 req-id（需求唯一标识符，如 `REQ-20260502-001`）："
 2. **如果用户未提供 `title`** → 提问用户：
    - "请提供需求标题（如 `用户认证功能`）："
-3. 生成 `dependencies.json` 后，检查每个任务的 `service_name` 和 `description` 是否已填写
-4. **如果任务的 `service_name` 为空或为默认值 `shared`** → 向用户确认正确的服务名
+3. 生成 `dependencies.json` 后，检查每个任务的 `agent_name` 和 `description` 是否已填写
+4. **如果任务的 `agent_name` 为空** → 向用户确认负责执行的逻辑 Agent 名称
 
-> **禁止行为**：不得自动生成 `req-id`、`title`、`service_name`。每个值都必须由用户显式提供或确认。
+> **禁止行为**：不得自动生成 `req-id`、`title`、`agent_name`。每个值都必须由用户显式提供或确认。
 
 ## 工作流：AI 辅助提取
 
@@ -56,8 +56,9 @@ Claude Code 读取设计文档后，直接生成符合 schema 的 `dependencies.
 - 从设计文档中识别任务的分解结构
 - 确定每个任务的类型（`backend`/`design`/`review`/`test`/`deploy`）
 - 确定任务间的依赖关系
-- 确定每个任务归属的服务（`service_name`）
-- **禁止自动生成 `service_name`**：如果无法确定服务归属，向用户确认
+- 确定每个任务的逻辑执行者（`agent_name`）
+- 可选记录业务归属（`service_name`），但它不参与调度
+- **禁止自动生成 `agent_name`**：如果无法确定执行者，向用户确认
 
 ### 步骤 2: 验证
 
@@ -84,6 +85,7 @@ python3 skills/design-pipeline/scripts/pipeline.py \
   "task-name": {
     "type": "backend|design|review|test|deploy|parallel|aggregate",
     "depends_on": ["upstream-task"],
+    "agent_name": "backend-agent",
     "service_name": "user-service",
     "description": "任务描述",
     "capability": "dev|design|test|review",
@@ -104,7 +106,7 @@ python3 skills/design-pipeline/scripts/pipeline.py \
 |------|-----------|--------|
 | `design` | `design` | 设计 Agent（设计仓 Claude） |
 | `review` | `review` | 审查 Agent |
-| `backend` | `dev` | 服务仓 Claude（按 service_name 匹配） |
+| `backend` | `dev` | 注册名称与任务 `agent_name` 相同的 Agent |
 | `test` | `test` | 测试 Agent |
 | `deploy` | `deploy` | 部署 Agent |
 | `parallel` | — | Aggregator 自动展开子任务 |

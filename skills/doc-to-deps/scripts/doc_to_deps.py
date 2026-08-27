@@ -109,9 +109,11 @@ def extract_tasks(content: str) -> list[dict]:
     return tasks
 
 
-def build_deps(tasks: list[dict], hint_deps: list[str] = None) -> dict:
+def build_deps(tasks: list[dict], hint_deps: list[str] = None,
+               agent_map: dict[str, str] | None = None) -> dict:
     result = {}
     prev_task_name = None
+    agent_map = agent_map or {}
 
     for task in tasks:
         is_heading = task.get("is_heading", False)
@@ -137,9 +139,18 @@ def build_deps(tasks: list[dict], hint_deps: list[str] = None) -> dict:
         if prev_task_name:
             depends_on.append(prev_task_name)
 
+        task_type = infer_type(task["text"]) if not is_heading else "design"
+        agent_name = agent_map.get(task_name) or agent_map.get(task_type, "")
+        if not agent_name:
+            raise ValueError(
+                f"agent map has no Agent Name for task '{task_name}' "
+                f"or type '{task_type}'"
+            )
+
         result[task_name] = {
-            "type": infer_type(task["text"]) if not is_heading else "design",
+            "type": task_type,
             "depends_on": depends_on,
+            "agent_name": agent_name,
             "service_name": service,
             "description": task["text"],
         }
@@ -154,6 +165,11 @@ def main():
     parser.add_argument("input", nargs="?", help="Input file path")
     parser.add_argument("-o", "--output", help="Output file path", default="dependencies.json")
     parser.add_argument("-i", "--interactive", action="store_true", help="Read from stdin")
+    parser.add_argument(
+        "--agent-map", required=True,
+        help=('JSON object mapping task names or types to Agent Names, e.g. '
+              '\'{"backend":"backend-agent","test":"test-agent"}\''),
+    )
     args = parser.parse_args()
 
     if args.interactive:
@@ -164,8 +180,20 @@ def main():
         print("Error: specify input file or use --interactive")
         sys.exit(1)
 
+    try:
+        agent_map = json.loads(args.agent_map)
+    except json.JSONDecodeError as exc:
+        parser.error(f"--agent-map must be valid JSON: {exc}")
+    if not isinstance(agent_map, dict) or not all(
+            isinstance(key, str) and isinstance(value, str) and value.strip()
+            for key, value in agent_map.items()):
+        parser.error("--agent-map must map strings to non-empty Agent Names")
+
     tasks = extract_tasks(content)
-    deps = build_deps(tasks)
+    try:
+        deps = build_deps(tasks, agent_map=agent_map)
+    except ValueError as exc:
+        parser.error(str(exc))
 
     output = json.dumps(deps, ensure_ascii=False, indent=2)
     Path(args.output).write_text(output, encoding="utf-8")

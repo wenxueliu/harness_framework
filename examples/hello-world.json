@@ -2,6 +2,7 @@
   "hello": {
     "type": "design",
     "depends_on": [],
+    "agent_name": "hello-agent",
     "service_name": "myservice",
     "description": "最简单的任务：打印 Hello World"
   }

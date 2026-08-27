@@ -19,12 +19,14 @@ sync_to_consul.py — 将 dependencies.json 写入 Consul KV，初始化 workflo
     "design": {
       "type": "design",
       "depends_on": [],
+      "agent_name": "design-agent",
       "service_name": "myservice",
       "description": "..."
     },
     "backend": {
       "type": "backend",
       "depends_on": ["design"],
+      "agent_name": "backend-agent",
       "service_name": "myservice",
       "description": "..."
     }
@@ -93,8 +95,15 @@ def validate_dependencies(data: dict) -> list[str]:
         if t == "parallel" and "children" not in info:
             errors.append(f"parallel node '{name}': missing 'children'")
 
-        if t not in ("parallel", "aggregate") and not info.get("service_name"):
-            errors.append(f"task '{name}': missing 'service_name'")
+        agent_name = info.get("agent_name")
+        service_name = info.get("service_name")
+        if agent_name is not None and (
+                not isinstance(agent_name, str) or not agent_name.strip()):
+            errors.append(f"task '{name}': agent_name must be a non-empty string")
+        if service_name is not None and not isinstance(service_name, str):
+            errors.append(f"task '{name}': service_name must be a string")
+        if t not in ("parallel", "aggregate") and not agent_name:
+            errors.append(f"task '{name}': missing 'agent_name'")
         try:
             AgentContract.from_dict(info.get("agent_contract"))
             completion = CompletionContract.from_dict(info.get("completion_contract"))
@@ -199,6 +208,8 @@ def write_workflow(
             "type": info.get("type", "task"),
             "depends_on": info.get("depends_on", []),
         }
+        if info.get("agent_name"):
+            deps_dict[name]["agent_name"] = info["agent_name"]
         if info.get("type") == "parallel":
             deps_dict[name]["children"] = info.get("children", [])
         if "blocking" in info:
@@ -244,6 +255,9 @@ def write_workflow(
         consul.kv_put(f"{t_base}/status", initial_status)
         consul.kv_put(f"{t_base}/validity", "UNKNOWN")
         consul.kv_put(f"{t_base}/type", node_type)
+
+        if info.get("agent_name"):
+            consul.kv_put(f"{t_base}/agent_name", info["agent_name"])
 
         if info.get("service_name"):
             consul.kv_put(f"{t_base}/service_name", info["service_name"])

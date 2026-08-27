@@ -23,7 +23,7 @@
 
 ### 1.1 平台定位
 
-本平台是一个**面向软件开发场景的多 Agent 协作框架**，目标是让若干编码智能体（Codex、OpenCode、Claude Code 等）在各自绑定的微服务代码仓库上协同完成一个需求的完整研发流程，涵盖需求设计、设计评审、代码开发、代码评审、重构、测试、部署等阶段。平台本身不替代编码智能体的"生成能力"，而是为它们提供**调度骨架、状态管理、协作契约与安全护栏**。
+本平台是一个**面向软件开发场景的多 Agent 协作框架**，目标是让若干具名编码智能体（Codex、OpenCode、Claude Code 等）按任务协同完成一个需求的完整研发流程，涵盖需求设计、设计评审、代码开发、代码评审、重构、测试、部署等阶段。微服务或代码仓只是任务的可选业务上下文，不定义 Agent 身份。平台本身不替代编码智能体的"生成能力"，而是为它们提供**调度骨架、状态管理、协作契约与安全护栏**。
 
 平台严格区分**框架层**与**执行层**。框架层由平台团队负责维护，提供通用的依赖推进、状态存储、监控、看板能力；执行层由业务团队自由组合，任何符合 stage-bridge Skill 契约的编码智能体都能接入。这种分层让"平台能力"与"开发实践"解耦，平台升级不影响执行层、执行层定制也不污染平台。
 
@@ -37,11 +37,11 @@
 
 平台的七条基本设计原则贯穿所有组件。**第一条是 Consul 作为唯一权威状态源**，所有 Agent 的协作都通过 Consul KV 完成，框架本身不保留任何进程内状态，这样 Agent 可以随意重启、迁移、并行扩容。**第二条是 CAS 原子操作保护竞态**，任务抢占、feedback 认领、预算扣减等涉及多实例竞争的写操作一律使用 Consul 的 Check-And-Set，杜绝任何形式的"读-改-写"非原子路径。**第三条是框架层不做 LLM 调用、不做 Agent 分配**，Aggregator、Watchdog 全部是无智能的规则引擎，LLM 调用与执行决策完全下沉到执行层，框架可以跑在极低配置的机器上，且行为完全可预测。
 
-**第四条是执行层主动认领任务**，每个 Agent 与服务是 1:1 强绑定，绑定关系在 `dependencies.json` 的 `service_name` 字段静态声明；Agent 启动后主动轮询自己服务名下的 `PENDING` 任务并 CAS 抢占，框架不写"分配提示"。**第五条是全链路 ABORT 检测**，每个 Agent 在 LLM 调用前后、verify 循环每轮、feedback-listen 每次唤醒时都必须显式调用 `check-control`，收到 ABORT 立即干净退出，杜绝"框架已停、Agent 还在跑"的脏状态。
+**第四条是执行层主动认领任务**，任务在 `dependencies.json` 中用 `agent_name` 静态指定逻辑执行者；Agent 注册同名身份后，主动轮询分配给自己的 `PENDING` 任务并 CAS 抢占。`service_name` 只描述业务归属，不参与调度。**第五条是全链路 ABORT 检测**，每个 Agent 在 LLM 调用前后、verify 循环每轮、feedback-listen 每次唤醒时都必须显式调用 `check-control`，收到 ABORT 立即干净退出，杜绝"框架已停、Agent 还在跑"的脏状态。
 
 ### 1.4 架构全景
 
-从物理视角看，平台在一台开发机上运行以下进程：一个 Consul dev mode 实例，一个框架主进程 daemon（内含 Aggregator、Watchdog、WebAPI模块），若干人工启动的 Agent 进程（每个绑定一个微服务代码仓），以及一个 React 业务看板。Agent 通过 HTTP 与 Consul 通信，看板通过 HTTP 与 Consul 及框架 WebAPI 通信，框架 daemon 通过 HTTP 与 Consul 通信。整个平台 MVP 阶段对外只暴露两个端口：Consul 的 8500 与框架 WebAPI 的 8600。
+从物理视角看，平台在一台开发机上运行以下进程：一个 Consul dev mode 实例，一个框架主进程 daemon（内含 Aggregator、Watchdog、WebAPI模块），若干以逻辑名称注册的 Agent 进程，以及一个 React 业务看板。Agent 通过 HTTP 与 Consul 通信，看板通过 HTTP 与 Consul 及框架 WebAPI 通信，框架 daemon 通过 HTTP 与 Consul 通信。整个平台 MVP 阶段对外只暴露两个端口：Consul 的 8500 与框架 WebAPI 的 8600。
 
 ---
 
@@ -51,7 +51,7 @@
 
 ### 2.1 Aggregator 模块（仅做依赖推进）
 
-Aggregator 是 DAG 依赖推进引擎，**职责被严格收敛到一件事**：扫描 DAG，发现某任务的所有上游依赖均已 `DONE` 时，将该任务的 `phase` 从 `WAITING` 推进到 `PENDING`。Aggregator **不做能力匹配，不写 `assigned_agent_hint`，不参与任何 Agent 选择**——任务的归属在 `dependencies.json` 的 `service_name` 字段就已经声明清楚，由对应服务的 Agent 主动来抢占。
+Aggregator 是 DAG 依赖推进引擎，**职责被严格收敛到一件事**：扫描 DAG，发现某任务的所有上游依赖均已 `DONE` 时，将该任务的 `phase` 从 `WAITING` 推进到 `PENDING`。Aggregator **不做能力匹配，不写 `assigned_agent_hint`，不参与任何 Agent 选择**——任务的逻辑执行者在 `dependencies.json` 的 `agent_name` 字段中声明，由注册同名的 Agent 主动抢占。
 
 Aggregator 还负责两类辅助推进。其一是 **feedback 闭环检测**：当 `test-e2e` 任务处于 `FAILED` 且所有 `feedback/<service>/status` 均为 `FIXED` 时，自动清除 feedback 记录并将 `test-e2e` 重置为 `PENDING` 以触发重测。其二是 **parallel/aggregate 节点推进**：parallel 节点上游全部完成时将其 children 全部置为 `PENDING`，aggregate 节点上游 parallel 全部 `DONE` 时将其自身置为 `DONE` 并推进下游，详见第八章。
 
@@ -84,9 +84,9 @@ stage-bridge Skill 是一组命令行脚本的集合，编码智能体（或 Age
 
 ### 3.2 Agent 与服务的绑定关系
 
-每个 Agent 在启动时通过 `register-agent --service user-service --capability dev` 向 Consul 声明自己绑定的微服务名称与能力标签。这是一个**人工启动、人工绑定**的过程：开发者明确知道"我在哪台机器上为哪个微服务启了一个开发 Agent"，框架不主动拉起 Agent。绑定关系是 1:1 的——同一时刻同一个服务原则上只有一个开发 Agent；如果出现多实例（例如冗余部署），CAS 抢占会保证同一任务只被执行一次。
+每个 Agent 在启动时通过 `register-agent --name backend-agent --capability dev` 向 Consul 声明稳定的逻辑名称与能力标签。这是一个**人工启动、人工命名**的过程；框架不主动拉起 Agent。同一个 Agent Name 可以有多个运行实例，每个实例使用独立 `agent_id`，CAS 保证同一任务只被执行一次。
 
-任务的归属在 `dependencies.json` 设计阶段就由设计 Agent 或人工填写明确，每个任务节点带有 `service_name` 字段。Agent 启动后，通过 stage-bridge 的 `claim-task --service user-service` 命令主动轮询自己服务名下的 `PENDING` 任务，发现就尝试 CAS 抢占，无任务时按指数退避继续轮询。
+任务的归属在 `dependencies.json` 设计阶段就由设计 Agent 或人工填写明确，每个可执行任务节点带有 `agent_name` 字段。Agent 启动后，stage-bridge 只返回与其注册 Agent Name 完全一致的 `PENDING` 任务，发现后尝试 CAS 抢占，无任务时按指数退避继续轮询。
 
 ### 3.3 stage-bridge 命令清单
 
@@ -94,10 +94,10 @@ stage-bridge 在 v3 基础上新增两条命令支持 P0 反应循环防护，�
 
 | 命令 | 用途 | 引入版本 |
 | :--- | :--- | :--- |
-| `register-agent` | Agent 启动时注册到 Consul，声明 service_name 与 capability | v1 |
+| `register-agent` | Agent 启动时注册到 Consul，声明 agent_name 与 capability | v1 |
 | `deregister-agent` | Agent 退出时主动注销 | v1 |
 | `heartbeat` | 维持 Consul TTL Check，防止被标记为僵尸 | v1 |
-| `claim-task` | 按 service_name 主动轮询并 CAS 抢占 PENDING 任务 | v1（v4.1 强化） |
+| `claim-task` | 按 agent_name 严格过滤并 CAS 抢占 PENDING 任务 | v1（v4.1 强化） |
 | `read-context` | 读取上游 Agent 写入的上下文（服务端点、API 契约等） | v1 |
 | `write-artifact` | 写入本任务产出到 KV（含写入指纹去重） | v1（v4 强化） |
 | `log-step` | 记录任务执行事件到 Session 事件流（含写入指纹去重） | v1（v4 强化） |
@@ -135,13 +135,13 @@ Consul KV 的顶层命名空间采用业务语义分区，每个需求 `req_id` 
 | :--- | :--- | :--- | :--- |
 | `workflows/<req_id>/meta` | 需求元数据（标题、提交人、创建时间） | CI 写、所有组件读 | v1 |
 | `workflows/<req_id>/dag` | 任务依赖图（含 task / parallel / aggregate 节点） | CI 写、Aggregator 读 | v1（v4.1 扩展） |
-| `workflows/<req_id>/tasks/<task>` | 单个任务的状态、负责 Agent、心跳、service_name | Agent 写、Aggregator 读 | v1 |
+| `workflows/<req_id>/tasks/<task>` | 单个任务状态、目标 Agent Name、实际 Agent ID、业务服务 | Agent 写、Aggregator 读 | v1 |
 | `workflows/<req_id>/context/services/<svc>` | 服务端点、版本、健康检查 URL | 后端 Agent 写、测试 Agent 读 | v1 |
 | `workflows/<req_id>/context/api/<svc>` | API 契约 URL 与版本 Hash | 设计 Agent 写、开发 Agent 读 | v1 |
 | `workflows/<req_id>/feedback/<svc>` | 测试失败归因反馈 | 测试 Agent 写、服务 Agent 读 | v1 |
 | `workflows/<req_id>/sessions/<task>/<sid>` | Session 事件流（含 verify 上报、ABORT 退出记录） | 任意 Agent 写、看板读 | v1 |
 | `workflows/<req_id>/control` | 控制信号（PAUSE/RESUME/ABORT/RETRY） | 看板写、Agent 读 | v1（v4.1 强化） |
-| `agents/<agent_id>` | Agent 注册信息（含 service_name、capability、负载） | Agent 自写、Aggregator 读 | v1 |
+| `agents/<agent_id>` | Agent 实例注册信息（含 agent_name、capability、负载） | Agent 自写、Aggregator 读 | v1 |
 
 ### 4.2 关键数据结构
 
@@ -151,6 +151,7 @@ Consul KV 的顶层命名空间采用业务语义分区，每个需求 `req_id` 
 {
   "phase": "WAITING|PENDING|IN_PROGRESS|DONE|FAILED|PAUSED|SKIPPED",
   "type": "task|parallel|aggregate",
+  "agent_name": "backend-agent",
   "service_name": "user-service",
   "capability": "dev",
   "depends_on": ["design"],
@@ -183,7 +184,7 @@ Consul KV 的顶层命名空间采用业务语义分区，每个需求 `req_id` 
 
 一个需求从提交到交付的完整路径如下。CI 在收到新需求后，调用 `sync_to_consul.py` 将 `dependencies.json` 解析并写入 `workflows/<req_id>/dag`，将所有叶子任务（无依赖的任务）的 `phase` 置为 `PENDING`，其余任务置为 `WAITING`。
 
-每个微服务对应的 Agent 早已由人工启动并通过 `register-agent` 在 Consul 中登记。Agent 在循环中**主动调用** `claim-task --service user-service`，stage-bridge 内部按以下步骤执行：列出 `workflows/*/tasks/*` 中 `service_name == user-service` 且 `phase == PENDING` 的任务、对每个候选任务尝试 CAS 抢占（将 `phase` 从 `PENDING` 改为 `IN_PROGRESS` 并写入 `assigned_agent`）、抢占成功则返回任务详情。Agent 拿到任务后，先调用 `check-control` 确认未被 ABORT，再调用 `read-context` 读取上游产出，将其注入编码智能体的 System Prompt。
+每个逻辑 Agent 早已由人工启动并通过 `register-agent` 在 Consul 中登记。Agent 在循环中主动调用 `claim-task`，stage-bridge 内部列出 `workflows/*/tasks/*` 中 `agent_name` 与自身注册名称相同且 `phase == PENDING` 的任务，再尝试 CAS 抢占（将 `phase` 从 `PENDING` 改为 `IN_PROGRESS` 并写入实际 `assigned_agent` ID）。Agent 拿到任务后，先调用 `check-control` 确认未被 ABORT，再调用 `read-context` 读取上游产出，将其注入编码智能体的 System Prompt。
 
 编码智能体生成代码后，开发 Agent 自行决定是否运行 `verify`（lint / type-check / unit test），结果通过 `log-step --type verify` 上报到 Session 事件流。每次重要的 LLM 推理前，必须调用 `check-control` 检查 ABORT。代码完成后，Agent 调用 `write-artifact` 写入产物（PR URL、服务端点等），调用 `complete-task` 将状态置为 `DONE`，Aggregator 检测到状态变更后推进下游任务。
 
@@ -315,32 +316,34 @@ Anthropic 文章将 Workflow 模式细分为五种：Prompt Chaining、Routing�
   "req_id": "req-042",
   "title": "新增用户登录流程",
   "guardrails": { "max_llm_calls": 800, "max_runtime_minutes": 90 },
-  "design": { "type": "design", "service_name": "_design", "capability": "design", "depends_on": [] },
-  "design-review": { "type": "review", "service_name": "_design", "capability": "review", "depends_on": ["design"] },
+  "design": { "type": "design", "agent_name": "design-agent", "capability": "design", "depends_on": [] },
+  "design-review": { "type": "review", "agent_name": "review-agent", "capability": "review", "depends_on": ["design"] },
 
   "parallel-dev": { "type": "parallel",
     "depends_on": ["design-review"],
     "children": ["dev-frontend", "dev-backend", "dev-mobile"]
   },
 
-  "dev-frontend": { "type": "backend", "service_name": "web-app",      "capability": "dev" },
-  "dev-backend":  { "type": "backend", "service_name": "user-service", "capability": "dev" },
-  "dev-mobile":   { "type": "backend", "service_name": "mobile-app",   "capability": "dev" },
+  "dev-frontend": { "type": "backend", "agent_name": "frontend-agent", "service_name": "web-app", "capability": "dev" },
+  "dev-backend":  { "type": "backend", "agent_name": "backend-agent", "service_name": "user-service", "capability": "dev" },
+  "dev-mobile":   { "type": "backend", "agent_name": "mobile-agent", "service_name": "mobile-app", "capability": "dev" },
 
   "merge": { "type": "aggregate", "depends_on": ["parallel-dev"] },
 
-  "test-e2e":    { "type": "test", "service_name": "_test",   "capability": "test",   "depends_on": ["merge"] },
-  "deploy-prod": { "type": "deploy", "service_name": "_deploy", "capability": "deploy", "depends_on": ["test-e2e"] }
+  "test-e2e":    { "type": "test", "agent_name": "test-agent", "capability": "test", "depends_on": ["merge"] },
+  "deploy-prod": { "type": "deploy", "agent_name": "deploy-agent", "capability": "deploy", "depends_on": ["test-e2e"] }
 }
 ```
 
-约定：跨服务通用的角色（设计、评审、测试、部署）使用 `_design`、`_test`、`_deploy` 这类前缀下划线的"虚拟服务名"，由对应的设计 Agent / 测试 Agent / 部署 Agent 在 `register-agent` 时声明绑定。这样做既保持了"任务必有 service_name"的统一约束，也清晰区分了"业务微服务"与"流程角色"。
+约定：设计、评审、开发、测试和部署使用明确的 `agent_name`，例如
+`design-agent`、`backend-agent` 和 `test-agent`。`service_name` 只在任务确实属于
+某个业务服务时填写，不能再用 `_test` 等“虚拟服务名”表达执行角色。
 
 ### 8.4 Aggregator 处理逻辑
 
 对 `task` 节点的处理与现有逻辑保持不变：上游全部 `DONE` 时置为 `PENDING`。对 `parallel` 节点，Aggregator 在其 `depends_on` 全部完成后，将其 `children` 全部置为 `PENDING`，并在 Parallel 节点上维护 `children_done_count` 字段；当 `children_done_count == len(children)` 时将 Parallel 节点自身置为 `DONE`。对 `aggregate` 节点，Aggregator 检测其 `depends_on` 的状态，全部 `DONE` 时直接将 Aggregate 节点置为 `DONE` 并推进其下游。
 
-值得强调的是：**Aggregator 全程不知道哪个 Agent 会执行 children 中的任务**——这完全由各自服务的 Agent 通过 `claim-task --service <self>` 主动认领，与第八章之前描述的认领机制完全一致。Parallel 节点的存在只是改变了"何时把 children 置为 PENDING"，并未引入任何 Agent 选择逻辑。
+值得强调的是：**Aggregator 全程不知道哪个 Agent 实例会执行 children 中的任务**——任务只声明逻辑 `agent_name`，由注册同名的实例主动认领。Parallel 节点只改变“何时把 children 置为 PENDING”，并未引入中心化 Agent 选择。
 
 ### 8.5 向后兼容保证
 

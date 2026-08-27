@@ -286,7 +286,10 @@ python -m harness_framework.daemon --local
       "ID": "agent-user-service-01",
       "Name": "agent-worker",
       "Tags": ["capability=backend"],
-      "Meta": {"service_name": "user-service"}
+      "Meta": {
+        "agent_name": "backend-agent",
+        "service_name": "user-service"
+      }
     }
   }
 }

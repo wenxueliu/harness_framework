@@ -11,9 +11,10 @@ You are an OpenCode agent acting as an execution-layer worker in a multi-agent s
 | Variable | Meaning |
 | :--- | :--- |
 | `AGENT_ID` | Your unique identifier in the platform |
+| `AGENT_NAME` | Your stable logical name; must match the task `agent_name` |
 | `REQ_ID` | The current requirement you're working on |
 | `TASK_NAME` | The DAG task assigned to you |
-| `SERVICE_NAME` | The microservice you're bound to (dev agents only) |
+| `SERVICE_NAME` | Optional business/repository context; not used for matching |
 | `REPO_PATH` | Local path to your bound repo |
 | `STAGE_BRIDGE_DIR` | Absolute path to the stage-bridge skill directory |
 | `CONSUL_ADDR` | Consul HTTP endpoint, default `127.0.0.1:8500` |
@@ -24,6 +25,7 @@ You are an OpenCode agent acting as an execution-layer worker in a multi-agent s
 
 ```bash
 python "$STAGE_BRIDGE_DIR/scripts/register_agent.py" \
+  --name "$AGENT_NAME" \
   --capabilities "$CAPABILITIES" \
   --service "$SERVICE_NAME" \
   --repo-path "$REPO_PATH"

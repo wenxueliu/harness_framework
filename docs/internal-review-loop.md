@@ -20,6 +20,7 @@ IN_PROGRESS
 {
   "implement-login": {
     "type": "backend",
+    "agent_name": "backend-agent",
     "service_name": "user-service",
     "depends_on": [],
     "description": "实现用户登录功能",
@@ -57,6 +58,7 @@ Executor 和 Reviewer 都采用 JSON stdin/stdout 协议：
 
 ```bash
 python skills/stage-bridge/scripts/worker.py \
+  --name backend-agent \
   --service user-service \
   --capabilities dev \
   --repo-path /code/user-service \
@@ -83,6 +85,7 @@ python skills/stage-bridge/scripts/worker.py \
   "review_feedback": null,
   "config": {
     "agent_id": "executor-1",
+    "agent_name": "backend-agent",
     "service_name": "user-service",
     "repo_path": "/code/user-service",
     "worktree_base": ".worktree"

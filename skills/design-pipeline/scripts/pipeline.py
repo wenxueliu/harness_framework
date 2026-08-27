@@ -117,6 +117,8 @@ def sync_to_consul(req_id: str, deps: dict, title: str,
 
         if info.get("service_name"):
             consul._put(f"{t_base}/service_name", info["service_name"])
+        if info.get("agent_name"):
+            consul._put(f"{t_base}/agent_name", info["agent_name"])
         if info.get("description"):
             consul._put(f"{t_base}/description", info["description"])
         if info.get("capability"):
@@ -178,8 +180,8 @@ def validate_deps(deps: dict) -> list[str]:
                     errors.append(f"{name}: child '{child}' 不在 deps 中")
 
         if node_type not in ("parallel", "aggregate"):
-            if not info.get("service_name"):
-                errors.append(f"{name}: 缺少 service_name")
+            if not info.get("agent_name"):
+                errors.append(f"{name}: 缺少 agent_name")
 
         for dep in info.get("depends_on", []):
             if isinstance(dep, str) and dep not in all_names:

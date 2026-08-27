@@ -127,9 +127,10 @@ workflows/<req_id>/
 │   ├── status              # PENDING | BLOCKED | IN_PROGRESS | WAITING_FOR_HUMAN | DONE | FAILED | ABORTED | AWAITING_REVIEW
 │   ├── validity            # UNKNOWN | VALID | STALE | INVALIDATED
 │   ├── type                # design | review | backend | test | deploy
+│   ├── agent_name          # 目标逻辑 Agent Name（任务匹配键）
 │   ├── service_name        # 关联的服务名（可选）
 │   ├── description
-│   ├── assigned_agent
+│   ├── assigned_agent       # 实际抢占实例的 Agent ID
 │   ├── harness_session_id / native_session_id
 │   ├── started_at / activated_at / retry_count / error_message
 │   └── last_recovery_reason / last_recovery_at

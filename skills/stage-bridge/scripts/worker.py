@@ -2,7 +2,7 @@
 """
 worker.py — Agent Worker 持久化主循环
 
-每个微服务代码仓常驻运行一个实例。循环: 注册 → 心跳 → 抢任务 → 执行 → 完成 → 继续。
+每个逻辑 Agent 常驻运行一个实例。循环: 注册 → 心跳 → 抢任务 → 执行 → 完成 → 继续。
 
 约束:
   - 同一需求下同时只做一个任务（不同需求的任务可穿插）
@@ -14,6 +14,7 @@ worker.py — Agent Worker 持久化主循环
 
 环境变量:
   AGENT_ID        全局唯一 Agent ID（必填）
+  AGENT_NAME      稳定的逻辑 Agent 名称（用于任务匹配）
   CONSUL_ADDR     Consul 地址（默认 127.0.0.1:8500）
   SERVICE_NAME    绑定的服务名
   REPO_PATH       代码仓库路径
@@ -47,6 +48,7 @@ from _consul import (  # noqa: E402
     load_latest_checkpoint,
     build_failure_envelope,
 )
+from _matching import task_matches_agent, task_target_name  # noqa: E402
 from harness_framework.contracts import ReviewPolicy, ReviewResult  # noqa: E402
 from harness_framework.recovery import rewind_to_task  # noqa: E402
 from harness_framework.run_manager import RunManager  # noqa: E402
@@ -185,7 +187,8 @@ def load_context(req_id: str, task_name: str) -> dict:
     return load_declared_context(req_id, task_name)
 
 
-def claim_task(req_id: str, task_name: str, agent_id: str) -> tuple[bool, dict]:
+def claim_task(req_id: str, task_name: str, agent_id: str,
+               agent_name: str) -> tuple[bool, dict]:
     """
     CAS 原子抢占任务。返回 (success, result_dict)。
     """
@@ -197,6 +200,14 @@ def claim_task(req_id: str, task_name: str, agent_id: str) -> tuple[bool, dict]:
         return False, {"error": f"任务 {req_id}/{task_name} 不存在"}
     if status != "PENDING":
         return False, {"error": f"任务状态为 {status}，非 PENDING"}
+
+    target_meta = load_task_meta(req_id, task_name)
+    if not task_matches_agent(target_meta, agent_name):
+        return False, {
+            "error": f"任务目标 Agent 为 "
+                     f"{task_target_name(target_meta) or '<unset>'}，"
+                     f"当前注册名称为 {agent_name}",
+        }
 
     # 2. CAS 抢占
     ok = kv_put(f"{base}/status", "IN_PROGRESS", cas=modify_index)
@@ -359,12 +370,12 @@ def check_control(req_id: str) -> Optional[str]:
 # ── 任务过滤 ────────────────────────────────────────────────────────────────
 
 def rank_tasks(tasks: list[dict], agent_id: str,
-               service_name: str, capabilities: list[str],
+               agent_name: str, capabilities: list[str],
                skip_req_id: Optional[str] = None) -> list[dict]:
     """
     过滤 + 排序任务。优先:
     1. 需求优先级（高 → 低）
-    2. 匹配 service_name
+    2. 严格匹配 agent_name
     3. 匹配 capability
     4. 排除 skip_req_id（当前正在做的需求）
 
@@ -402,22 +413,16 @@ def rank_tasks(tasks: list[dict], agent_id: str,
             continue
 
         meta = load_task_meta(req_id, task_name)
-        task_service = meta.get("service_name", "")
         task_type = meta.get("type", "backend")
         task_cap = meta.get("capability", "")
+
+        if not task_matches_agent(meta, agent_name):
+            continue
 
         score = 0
 
         # 需求优先级（权重最大）
         score += req_priority(req_id) * 1000
-
-        # 匹配 service_name（最优先）
-        if service_name and task_service == service_name:
-            score += 500
-        elif service_name and task_service == "_test":
-            score += 200  # 测试任务也可接受
-        elif service_name and task_service != service_name:
-            score -= 100  # 不太匹配的服务
 
         # 匹配 capability
         if task_cap and task_cap in capabilities:
@@ -724,6 +729,7 @@ def execute_task(req_id: str, task_name: str, task_meta: dict,
                 "review_feedback": feedback,
                 "config": {
                     "agent_id": agent_id,
+                    "agent_name": config.get("agent_name", ""),
                     "service_name": config.get("service_name", ""),
                     "repo_path": config.get("repo_path", ""),
                     "worktree_base": config.get("worktree_base", ".worktree"),
@@ -892,6 +898,7 @@ class Worker:
     def __init__(self, config: dict):
         self.config = config
         self.agent_id = config["agent_id"]
+        self.agent_name = config["agent_name"]
         self.service_name = config.get("service_name", "")
         self.capabilities = config.get("capabilities", [])
         self.poll_interval = config.get("poll_interval", 5)
@@ -903,11 +910,13 @@ class Worker:
     def register(self) -> bool:
         """注册 Agent 到 Consul。"""
         agent_id = self.agent_id
+        agent_name = self.agent_name
         capabilities = self.capabilities
         service_name = self.service_name
         repo_path = self.config.get("repo_path", "")
 
         tags = [f"capability={c}" for c in capabilities]
+        tags.append(f"agent_name={agent_name}")
         if service_name:
             tags.append(f"service={service_name}")
 
@@ -917,6 +926,7 @@ class Worker:
             "Tags": tags,
             "Meta": {
                 "agent_id": agent_id,
+                "agent_name": agent_name,
                 "capabilities": ",".join(capabilities),
                 "max_concurrent": "1",
                 "current_load": "0",
@@ -939,11 +949,13 @@ class Worker:
 
         # 同步写入 KV
         kv_put(f"agents/{agent_id}/load", "0")
+        kv_put(f"agents/{agent_id}/name", agent_name)
         kv_put(f"agents/{agent_id}/registered_at", now_iso())
         if service_name:
             kv_put(f"agents/{agent_id}/service", service_name)
 
-        print(f"[worker] 注册成功: {agent_id} (service={service_name}, "
+        print(f"[worker] 注册成功: {agent_id} (name={agent_name}, "
+              f"service={service_name}, "
               f"capabilities={capabilities})")
         return True
 
@@ -1012,7 +1024,7 @@ class Worker:
         # 2. 过滤 + 排序
         ranked = rank_tasks(
             pending, self.agent_id,
-            self.service_name, self.capabilities,
+            self.agent_name, self.capabilities,
             skip_req_id=self._current_req_id,
         )
 
@@ -1024,7 +1036,9 @@ class Worker:
         req_id = task["req_id"]
         task_name = task["task_name"]
 
-        success, result = claim_task(req_id, task_name, self.agent_id)
+        success, result = claim_task(
+            req_id, task_name, self.agent_id, self.agent_name,
+        )
         if not success:
             # 抢占失败（CAS 冲突），下次重试
             return
@@ -1047,7 +1061,8 @@ class Worker:
         )
 
         print(f"[worker] 开始执行: {req_id}/{task_name} "
-              f"(type={meta.get('type')}, service={meta.get('service_name')})")
+              f"(type={meta.get('type')}, agent={self.agent_name}, "
+              f"service={meta.get('service_name')})")
 
         # 检查 ABORT
         ctl = check_control(req_id)
@@ -1140,8 +1155,10 @@ def main():
     parser = argparse.ArgumentParser(
         description="Agent Worker — 持久化任务执行循环"
     )
+    parser.add_argument("--name", default="",
+                        help="逻辑 Agent 名称（默认从 AGENT_NAME 读取）")
     parser.add_argument("--service", default="",
-                        help="绑定的微服务名（必填，或通过 SERVICE_NAME 环境变量）")
+                        help="关联服务名（仅业务上下文，不参与任务匹配）")
     parser.add_argument("--capabilities", default="dev",
                         help="逗号分隔的能力标签 (dev/test/design/review/deploy)")
     parser.add_argument("--repo-path", default="",
@@ -1175,6 +1192,9 @@ def main():
     # 配置
     agent_id = args.agent_id or env("AGENT_ID", required=True)
     service_name = args.service or env("SERVICE_NAME", "")
+    agent_name = (args.name or env("AGENT_NAME", "")).strip()
+    if not agent_name:
+        parser.error("--name or AGENT_NAME is required")
     repo_path = args.repo_path or env("REPO_PATH", os.getcwd())
     capabilities = [c.strip() for c in args.capabilities.split(",") if c.strip()]
     try:
@@ -1189,9 +1209,6 @@ def main():
         for profile in execution_profiles.values()
     )
 
-    if not service_name:
-        print("[worker] 警告: 未指定 service_name，将接受任何服务的任务", file=sys.stderr)
-
     # 健康检查 Consul
     ok, msg = consul_health_check()
     if not ok:
@@ -1199,6 +1216,7 @@ def main():
 
     config = {
         "agent_id": agent_id,
+        "agent_name": agent_name,
         "service_name": service_name,
         "capabilities": capabilities,
         "repo_path": repo_path,

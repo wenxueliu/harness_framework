@@ -35,7 +35,7 @@ from scripts.sync_to_consul import (
 def test_validate_rejects_invalid_agent_contract():
     data = {
         "task": {
-            "type": "backend", "depends_on": [], "service_name": "x",
+            "type": "backend", "depends_on": [], "agent_name": "test-agent", "service_name": "x",
             "agent_contract": {"inputs": "not-a-list", "context_budget": -1},
         }
     }
@@ -48,7 +48,7 @@ def test_validate_rejects_invalid_agent_contract():
 def test_validate_rejects_invalid_context_inputs():
     data = {
         "task": {
-            "type": "backend", "depends_on": [], "service_name": "x",
+            "type": "backend", "depends_on": [], "agent_name": "test-agent", "service_name": "x",
             "context_inputs": "facts/all",
         }
     }
@@ -58,7 +58,7 @@ def test_validate_rejects_invalid_context_inputs():
 def test_side_effecting_task_requires_idempotency_and_compensation():
     data = {
         "deploy": {
-            "type": "deploy", "depends_on": [], "service_name": "x",
+            "type": "deploy", "depends_on": [], "agent_name": "test-agent", "service_name": "x",
             "side_effecting": True,
         }
     }
@@ -70,12 +70,12 @@ def test_side_effecting_task_requires_idempotency_and_compensation():
 def test_valid_compensation_task_is_not_normally_activated():
     data = {
         "deploy": {
-            "type": "deploy", "depends_on": [], "service_name": "x",
+            "type": "deploy", "depends_on": [], "agent_name": "test-agent", "service_name": "x",
             "side_effecting": True, "idempotency_scope": "release",
             "compensation_task": "rollback",
         },
         "rollback": {
-            "type": "deploy", "depends_on": [], "service_name": "x",
+            "type": "deploy", "depends_on": [], "agent_name": "test-agent", "service_name": "x",
             "activation": "compensation_only",
         },
     }
@@ -88,7 +88,7 @@ def test_write_workflow_persists_agent_contract():
     consul.kv_put = Mock(return_value=True)
     data = {
         "task": {
-            "type": "backend", "depends_on": [], "service_name": "x",
+            "type": "backend", "depends_on": [], "agent_name": "test-agent", "service_name": "x",
             "agent_contract": {
                 "inputs": ["spec"], "outputs": ["code"],
                 "responsibilities": ["tests"], "exclusions": ["deploy"],
@@ -105,6 +105,44 @@ def test_write_workflow_persists_agent_contract():
     assert json.loads(calls[0][0][1])["context_budget"] == 4096
 
 
+def test_write_workflow_persists_agent_name_separately_from_service():
+    consul = MagicMock()
+    consul.kv_get = Mock(return_value=(None, 0))
+    consul.kv_put = Mock(return_value=True)
+    data = {
+        "task": {
+            "type": "backend", "depends_on": [],
+            "agent_name": "backend-agent", "service_name": "users",
+        }
+    }
+    assert validate_dependencies(data) == []
+    write_workflow(consul, "req-001", data)
+    values = {
+        call.args[0]: call.args[1] for call in consul.kv_put.call_args_list
+    }
+    assert values["workflows/req-001/tasks/task/agent_name"] == "backend-agent"
+    assert values["workflows/req-001/tasks/task/service_name"] == "users"
+
+
+def test_agent_name_is_sufficient_without_service_name():
+    data = {
+        "task": {
+            "type": "backend", "depends_on": [],
+            "agent_name": "backend-agent",
+        }
+    }
+    assert validate_dependencies(data) == []
+
+
+def test_service_name_cannot_replace_required_agent_name():
+    data = {
+        "task": {
+            "type": "backend", "depends_on": [], "service_name": "users",
+        }
+    }
+    assert "task 'task': missing 'agent_name'" in validate_dependencies(data)
+
+
 def test_write_workflow_persists_task_execution():
     consul = MagicMock()
     consul.kv_get = Mock(return_value=(None, 0))
@@ -115,9 +153,9 @@ def test_write_workflow_persists_task_execution():
         "session": {"mode": "continue", "from_task": "design"},
     }
     data = {
-        "design": {"type": "design", "depends_on": [], "service_name": "x"},
+        "design": {"type": "design", "depends_on": [], "agent_name": "test-agent", "service_name": "x"},
         "task": {
-            "type": "backend", "depends_on": ["design"], "service_name": "x",
+            "type": "backend", "depends_on": ["design"], "agent_name": "test-agent", "service_name": "x",
             "execution": execution,
         },
     }
@@ -132,7 +170,7 @@ def test_write_workflow_persists_task_execution():
 def test_validate_rejects_unknown_continue_source_task():
     data = {
         "task": {
-            "type": "backend", "depends_on": [], "service_name": "x",
+            "type": "backend", "depends_on": [], "agent_name": "test-agent", "service_name": "x",
             "execution": {
                 "profile": "codex",
                 "session": {"mode": "continue", "from_task": "missing"},
@@ -153,7 +191,7 @@ def test_write_workflow_publishes_four_independent_initial_versions():
         "workflow_spec": {"mode": "strict"},
         "plan": {"waves": [["task"]]},
         "task": {
-            "type": "backend", "depends_on": [], "service_name": "x",
+            "type": "backend", "depends_on": [], "agent_name": "test-agent", "service_name": "x",
         },
     }
 
@@ -175,7 +213,10 @@ class TestValidateDependencies:
         """最小合法格式。"""
         data = {
             "req_id": "req-001",
-            "design": {"type": "design", "depends_on": [], "service_name": "myservice"},
+            "design": {
+                "type": "design", "depends_on": [],
+                "agent_name": "design-agent", "service_name": "myservice",
+            },
         }
         assert validate_dependencies(data) == []
 
@@ -188,7 +229,8 @@ class TestValidateDependencies:
                 "children": ["hw-001"],
             },
             "hw-001": {
-                "type": "backend", "service_name": "user-service",
+                "type": "backend", "agent_name": "backend-agent",
+                "service_name": "user-service",
                 "depends_on": [],
             },
             "wave-1-merge": {
@@ -216,7 +258,7 @@ class TestValidateDependencies:
         """非法任务类型。"""
         data = {
             "req_id": "req-001",
-            "bad": {"type": "invalid_type", "depends_on": [], "service_name": "x"},
+            "bad": {"type": "invalid_type", "depends_on": [], "agent_name": "test-agent", "service_name": "x"},
         }
         errors = validate_dependencies(data)
         assert any("invalid type" in e for e in errors)
@@ -230,14 +272,14 @@ class TestValidateDependencies:
         errors = validate_dependencies(data)
         assert any("missing 'children'" in e for e in errors)
 
-    def test_missing_service_name(self):
-        """普通任务缺少 service_name。"""
+    def test_missing_agent_name(self):
+        """普通任务必须指定逻辑 Agent；service_name 不再是调度字段。"""
         data = {
             "req_id": "req-001",
             "backend": {"type": "backend", "depends_on": []},
         }
         errors = validate_dependencies(data)
-        assert any("missing 'service_name'" in e for e in errors)
+        assert any("missing 'agent_name'" in e for e in errors)
 
     def test_depends_on_unknown_task(self):
         """depends_on 引用了不存在的任务。"""
@@ -246,7 +288,7 @@ class TestValidateDependencies:
             "backend": {
                 "type": "backend",
                 "depends_on": ["nonexistent"],
-                "service_name": "x",
+                "agent_name": "test-agent", "service_name": "x",
             },
         }
         errors = validate_dependencies(data)
@@ -257,7 +299,7 @@ class TestValidateDependencies:
         data = {
             "req_id": "req-001",
             "guardrails": {"some": "config"},
-            "design": {"type": "design", "depends_on": [], "service_name": "x"},
+            "design": {"type": "design", "depends_on": [], "agent_name": "test-agent", "service_name": "x"},
         }
         errors = validate_dependencies(data)
         assert errors == []
@@ -272,8 +314,8 @@ class TestWriteWorkflow:
 
         data = {
             "req_id": "req-001",
-            "design": {"type": "design", "depends_on": [], "service_name": "x"},
-            "backend": {"type": "backend", "depends_on": ["design"], "service_name": "x"},
+            "design": {"type": "design", "depends_on": [], "agent_name": "test-agent", "service_name": "x"},
+            "backend": {"type": "backend", "depends_on": ["design"], "agent_name": "test-agent", "service_name": "x"},
         }
         result = write_workflow(consul, "req-001", data)
 
@@ -304,11 +346,11 @@ class TestWriteWorkflow:
 
         data = {
             "req_id": "req-001",
-            "design": {"type": "design", "depends_on": [], "service_name": "x"},
+            "design": {"type": "design", "depends_on": [], "agent_name": "test-agent", "service_name": "x"},
             "backend": {
                 "type": "backend",
                 "depends_on": ["design"],
-                "service_name": "x",
+                "agent_name": "test-agent", "service_name": "x",
                 "blocking": False,
             },
         }
@@ -335,7 +377,7 @@ class TestWriteWorkflow:
                 "type": "parallel", "depends_on": [],
                 "children": ["hw-001"],
             },
-            "hw-001": {"type": "backend", "depends_on": [], "service_name": "x"},
+            "hw-001": {"type": "backend", "depends_on": [], "agent_name": "test-agent", "service_name": "x"},
             "wave-1-merge": {
                 "type": "aggregate",
                 "depends_on": ["wave-1"],
@@ -371,7 +413,7 @@ class TestWriteWorkflow:
             "req_id": "req-001",
             "hw-001": {
                 "type": "backend", "depends_on": [],
-                "service_name": "x",
+                "agent_name": "test-agent", "service_name": "x",
                 "metadata": metadata,
             },
         }
@@ -391,7 +433,7 @@ class TestWriteWorkflow:
         consul.kv_get = Mock(return_value=(None, 0))
         data = {
             "task": {
-                "type": "backend", "depends_on": [], "service_name": "x",
+                "type": "backend", "depends_on": [], "agent_name": "test-agent", "service_name": "x",
                 "review_policy": {
                     "max_rounds": 2,
                     "dimensions": ["correctness"],
@@ -414,7 +456,7 @@ class TestWriteWorkflow:
     def test_review_policy_requires_review_completion_gate(self):
         data = {
             "task": {
-                "type": "backend", "depends_on": [], "service_name": "x",
+                "type": "backend", "depends_on": [], "agent_name": "test-agent", "service_name": "x",
                 "review_policy": {"max_rounds": 2},
                 "completion_contract": {"required_gates": []},
             },
@@ -450,8 +492,8 @@ class TestWriteWorkflow:
 
         data = {
             "req_id": "req-001",
-            "design": {"type": "design", "depends_on": [], "service_name": "x"},
-            "backend": {"type": "backend", "depends_on": ["design"], "service_name": "x"},
+            "design": {"type": "design", "depends_on": [], "agent_name": "test-agent", "service_name": "x"},
+            "backend": {"type": "backend", "depends_on": ["design"], "agent_name": "test-agent", "service_name": "x"},
         }
         write_workflow(consul, "req-001", data)
 
@@ -473,7 +515,7 @@ class TestWriteWorkflow:
 
         data = {
             "req_id": "req-001",
-            "design": {"type": "design", "depends_on": [], "service_name": "x"},
+            "design": {"type": "design", "depends_on": [], "agent_name": "test-agent", "service_name": "x"},
         }
         write_workflow(consul, "req-001", data)
 
@@ -492,7 +534,7 @@ class TestWriteWorkflow:
 
         data = {
             "req_id": "req-001",
-            "design": {"type": "design", "depends_on": [], "service_name": "x"},
+            "design": {"type": "design", "depends_on": [], "agent_name": "test-agent", "service_name": "x"},
         }
         write_workflow(consul, "req-001", data, publish=True)
 

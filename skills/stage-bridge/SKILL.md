@@ -20,7 +20,7 @@ description: 多 Agent 开发平台的 Consul 状态桥接 Skill。当编码智�
 | 变量 | 用途 | 使用场景 |
 |------|------|---------|
 | `AGENT_ID` | 全局唯一 Agent 标识符 | 所有操作都必需 |
-| `SERVICE_NAME` | 关联的微服务名 | 开发 Agent 注册时必填 |
+| `AGENT_NAME` | 稳定的逻辑执行者名称；任务匹配键 | 注册和抢占任务时必填 |
 | `REPO_PATH` | 代码仓库本地路径 | 开发 Agent 注册时必填 |
 
 ### 检查流程
@@ -28,8 +28,8 @@ description: 多 Agent 开发平台的 Consul 状态桥接 Skill。当编码智�
 1. 检查环境变量和 `.env` 文件中是否已有这些值
 2. **如果 `AGENT_ID` 缺失** → 提问用户：
    - "请提供 AGENT_ID（全局唯一的 Agent 标识符，如 `worker-user-service-01`）："
-3. **如果 `SERVICE_NAME` 缺失且操作为注册/开发** → 提问用户：
-   - "请提供 SERVICE_NAME（绑定的微服务名称，如 `user-service`）："
+3. **如果 `AGENT_NAME` 缺失且操作为注册/抢占** → 提问用户：
+   - "请提供 AGENT_NAME（与任务 agent_name 一致，如 `backend-agent`）："
 4. **如果 `REPO_PATH` 缺失且操作为注册/开发** → 提问用户：
    - "请提供 REPO_PATH（代码仓库本地路径，如 `/path/to/user-service`）："
 5. 用户提供后，将这些值写入 `.env` 文件或通过命令行参数传递
@@ -40,6 +40,7 @@ description: 多 Agent 开发平台的 Consul 状态桥接 Skill。当编码智�
 |------|------|--------|
 | `CONSUL_ADDR` | Consul 地址 | `127.0.0.1:8500`（自动写入 `.env`，无需用户确认） |
 | `CONSUL_TOKEN` | ACL Token | 空（dev mode 不需要） |
+| `SERVICE_NAME` | 可选业务或仓库归属，不参与任务匹配 | 空 |
 | `REQ_ID` | 当前需求 ID | 任务操作时必须提供 |
 | `TASK_NAME` | 当前任务名 | 任务操作时必须提供 |
 
@@ -99,7 +100,7 @@ workflows/<req_id>/
 | 提出新任务 | 见 Proposal 一节 | Agent 发现遗漏任务时提出提案 |
 | 确认提案 | 见 Proposal 一节（人工） | 接受或拒绝新任务提案 |
 
-必传环境变量：`AGENT_ID`（全局唯一）；任务相关命令额外需要 `REQ_ID`、`TASK_NAME`。
+必传环境变量：`AGENT_ID`（实例唯一）和 `AGENT_NAME`（任务匹配键）；任务相关命令额外需要 `REQ_ID`、`TASK_NAME`。
 
 ## .env 配置文件
 
@@ -119,11 +120,11 @@ workflows/<req_id>/
 1. **检查并创建 `.env`**：若 `.env` 不存在，从 `.env.example` 复制模板
 2. **CONSUL_ADDR**：若未设置，使用默认值 `127.0.0.1:8500`（唯一允许自动设置的变量）
 3. **AGENT_ID**：**必须向用户提问** — "请提供 AGENT_ID（全局唯一的 Agent 标识符）："
-4. **SERVICE_NAME**：**必须向用户提问** — "请提供 SERVICE_NAME（此 Agent 绑定的微服务名称）："
+4. **AGENT_NAME**：**必须向用户提问** — "请提供 AGENT_NAME（此 Agent 的逻辑执行者名称）："
 5. **REPO_PATH**：**必须向用户提问** — "请提供 REPO_PATH（代码仓库的本地路径）："
 6. 将用户提供的值写入 `.env` 文件
 
-> **禁止行为**：不得为 `AGENT_ID`、`SERVICE_NAME`、`REPO_PATH` 自动生成值或使用占位符。每个值都必须由用户显式提供或确认。
+> **禁止行为**：不得为 `AGENT_ID`、`AGENT_NAME`、`REPO_PATH` 自动生成值或使用占位符。每个值都必须由用户显式提供或确认。
 
 `.env` 文件示例：
 ```bash
@@ -132,6 +133,7 @@ CONSUL_ADDR=127.0.0.1:8500
 
 # Agent 配置（必须由用户显式设置，不可自动生成）
 AGENT_ID=my-agent
+AGENT_NAME=backend-agent
 SERVICE_NAME=user-service
 REPO_PATH=/path/to/your/service
 
@@ -158,9 +160,10 @@ curl -s -X PUT "http://$CONSUL_ADDR/v1/agent/service/register" \
   -d "{
     \"ID\": \"$AGENT_ID\",
     \"Name\": \"agent-worker\",
-    \"Tags\": [\"capability=backend\", \"env=local\"],
+    \"Tags\": [\"agent_name=$AGENT_NAME\", \"capability=backend\", \"env=local\"],
     \"Meta\": {
       \"agent_id\": \"$AGENT_ID\",
+      \"agent_name\": \"$AGENT_NAME\",
       \"service_name\": \"$SERVICE_NAME\",
       \"repo_path\": \"$REPO_PATH\"
     },
@@ -174,6 +177,7 @@ curl -s -X PUT "http://$CONSUL_ADDR/v1/agent/service/register" \
 
 # 同时写入 KV
 curl -s -X PUT "http://$CONSUL_ADDR/v1/kv/agents/$AGENT_ID/load" -d "0"
+curl -s -X PUT "http://$CONSUL_ADDR/v1/kv/agents/$AGENT_ID/name" -d "$AGENT_NAME"
 curl -s -X PUT "http://$CONSUL_ADDR/v1/kv/agents/$AGENT_ID/registered_at" -d "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 ```
 
@@ -197,9 +201,14 @@ curl -s -X DELETE "http://$CONSUL_ADDR/v1/kv/agents/$AGENT_ID?recurse=true"
 
 ### 抢占指定任务（CAS）
 
+指定抢占前必须确认任务的 `agent_name` 与当前注册的 `AGENT_NAME` 完全一致。
+`service_name` 只提供业务上下文，不能用于放宽或绕过名称匹配。
+
 ```bash
 # 1. 读取当前状态和 ModifyIndex
 STATUS=$(curl -s "http://$CONSUL_ADDR/v1/kv/workflows/$REQ_ID/tasks/$TASK_NAME/status?raw")
+TARGET_AGENT=$(curl -s "http://$CONSUL_ADDR/v1/kv/workflows/$REQ_ID/tasks/$TASK_NAME/agent_name?raw")
+test "$TARGET_AGENT" = "$AGENT_NAME" || exit 1
 INDEX=$(curl -s "http://$CONSUL_ADDR/v1/kv/workflows/$REQ_ID/tasks/$TASK_NAME/status" | python3 -c "import sys,json; print(json.load(sys.stdin)[0]['ModifyIndex'])")
 
 # 2. CAS 写入 IN_PROGRESS（若返回 true 则抢占成功）
@@ -368,6 +377,7 @@ import sys, json
 deps = json.load(sys.stdin)
 deps['perf-opt'] = {
     'type': 'backend',
+    'agent_name': 'backend-agent',
     'depends_on': ['build-user-service'],
     'proposed_by': '$TASK_NAME',
     'reason': '测试发现性能瓶颈，需要优化',
@@ -525,6 +535,7 @@ curl -s -X PUT "http://$CONSUL_ADDR/v1/kv/workflows/$REQ_ID/feedback/user-servic
 ```bash
 # 持久化循环模式（推荐）
 AGENT_ID=worker-user-service-01 python3 skills/stage-bridge/scripts/worker.py \
+  --name backend-agent \
   --service user-service \
   --capabilities dev \
   --repo-path /path/to/user-service \
@@ -532,6 +543,7 @@ AGENT_ID=worker-user-service-01 python3 skills/stage-bridge/scripts/worker.py \
 
 # 单次模式（抢一个任务执行后退出）
 AGENT_ID=worker-user-service-01 python3 skills/stage-bridge/scripts/worker.py \
+  --name backend-agent \
   --service user-service \
   --capabilities dev \
   --repo-path . \
@@ -541,7 +553,7 @@ AGENT_ID=worker-user-service-01 python3 skills/stage-bridge/scripts/worker.py \
 ### Worker 约束
 
 - **同一需求串行化**: 正在执行 req-A 的任务时，不会抢 req-A 的其他任务（允许穿插其他需求的任务）
-- **服务匹配**: 优先抢 `service_name` 匹配的任务
+- **名称匹配**: 只抢 `agent_name` 与注册 `AGENT_NAME` 完全一致的任务
 - **能力匹配**: 优先抢 `capability` 匹配的任务类型
 - **ABORT 检测**: 执行前检查控制信号，收到 ABORT 则标记失败
 - **心跳维持**: 后台线程每 10 秒上报 TTL
@@ -557,6 +569,7 @@ Worker 通过 stdin 向 `--executor` 传入 JSON，期望 stdout 返回 JSON:
   "task_name": "task-slug",
   "task_meta": {
     "type": "backend",
+    "agent_name": "backend-agent",
     "service_name": "user-service",
     "description": "实现用户注册API",
     "capability": "dev",
@@ -570,6 +583,7 @@ Worker 通过 stdin 向 `--executor` 传入 JSON，期望 stdout 返回 JSON:
   },
   "config": {
     "agent_id": "worker-01",
+    "agent_name": "backend-agent",
     "service_name": "user-service",
     "repo_path": "/path/to/repo",
     "worktree_base": ".worktree"
