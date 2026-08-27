@@ -60,6 +60,7 @@ python -m harness_framework.daemon                  # Consul 模式（生产）
 | 按任务选择模型并创建或延续原生会话 | [task-model-execution.md](docs/task-model-execution.md) |
 | 在开发过程中修改需求并局部重跑 | [change-requirement.md](docs/change-requirement.md) |
 | 使用证据驱动路由、原子动作与人工反馈 | [adaptive-control.md](docs/adaptive-control.md) |
+| 查看可直接初始化的工作流样例 | [examples/README.md](examples/README.md) |
 | 管理需求变更 | [changesets.md](docs/changesets.md) / [resource-versioning.md](docs/resource-versioning.md) |
 | 处理失败与恢复 | [failure-envelope.md](docs/failure-envelope.md) |
 | 保护外部副作用 | [side-effects.md](docs/side-effects.md) |

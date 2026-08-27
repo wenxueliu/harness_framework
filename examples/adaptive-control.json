@@ -1,0 +1,33 @@
+{
+  "req_id": "adaptive-demo",
+  "title": "自适应控制演示",
+  "requirement": {
+    "summary": "实现并验证一个支持证据驱动恢复的用户查询接口"
+  },
+  "requirements": {
+    "type": "design",
+    "depends_on": [],
+    "service_name": "user-service",
+    "description": "确认用户查询接口的响应契约"
+  },
+  "implementation": {
+    "type": "backend",
+    "depends_on": ["requirements"],
+    "service_name": "user-service",
+    "description": "实现用户查询接口及单元测试",
+    "agent_contract": {
+      "inputs": ["用户查询接口需求"],
+      "outputs": ["接口实现", "单元测试"],
+      "responsibilities": ["保持响应契约兼容"],
+      "exclusions": ["生产部署"],
+      "permissions": ["repository:write", "test:run"],
+      "context_budget": 12000
+    }
+  },
+  "test": {
+    "type": "test",
+    "depends_on": ["implementation"],
+    "service_name": "user-service",
+    "description": "验证接口契约；失败时根据证据路由回最早失效任务"
+  }
+}

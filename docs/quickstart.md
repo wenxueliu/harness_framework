@@ -54,3 +54,5 @@ Agent 认领执行                →  IN_PROGRESS → DONE
 | 理解 DAG、状态机、Agent 协作原理 | [核心概念 →](concepts.md) |
 | 把 Agent 接入框架执行任务 | [Agent 接入指南 →](agent-guide.md) |
 | 查看所有配置项和 CLI 参数 | [配置参考 →](configuration.md) |
+| 尝试证据驱动检查和失败恢复 | [自适应控制示例 →](adaptive-control.md#可运行示例失败后回到实现任务) |
+| 浏览其他工作流样例 | [示例目录 →](../examples/README.md) |

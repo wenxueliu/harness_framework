@@ -114,6 +114,56 @@ python scripts/change_requirement.py req-001 \
 表示只修改文字，不重置任务。完整说明见
 [开发中修改需求](change-requirement.md)。
 
+## 自适应检查与恢复
+
+Agent 应在一次原子工作完成后提交新鲜证据，再由 Harness 决定是完成当前任务
+还是回到最早失效任务。下面先获取一个带 `action_id` 和 `state_version` 的动作：
+
+```bash
+curl -s \
+  "http://127.0.0.1:8080/api/workflow/req-001/task/test/adaptive/next?actor=test-agent&attempt_id=attempt-1&type=VERIFY"
+```
+
+执行动作后，将返回值中的标识和检查结果提交到 `/check`。失败检查会建立一个
+待处理路由边界；随后通过 `/route` 声明仍有效任务和完整失效闭包：
+
+```bash
+curl -s -X POST \
+  http://127.0.0.1:8080/api/workflow/req-001/task/test/adaptive/check \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "action_id": "act-...",
+    "state_version": 1,
+    "verdict": "FAIL",
+    "verifier": "pytest",
+    "actor": "test-agent",
+    "evidence": {"case": "contract-12", "expected": 200, "actual": 500},
+    "command": {
+      "argv": ["python", "-m", "pytest", "tests/test_users.py"],
+      "cwd": ".",
+      "exit_code": 1,
+      "output_digest": "sha256:..."
+    }
+  }'
+
+curl -s -X POST \
+  http://127.0.0.1:8080/api/workflow/req-001/task/test/adaptive/route \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "target_task": "implementation",
+    "reason": "契约用例证明实现不符合需求",
+    "evidence": "contract-12 expected 200, observed 500",
+    "still_valid": ["requirements"],
+    "invalidated": ["implementation", "test"],
+    "failure_fingerprint": "users-contract-12",
+    "actor": "test-agent"
+  }'
+```
+
+`invalidated` 必须恰好等于 `target_task` 的 DAG 下游闭包，否则 API 返回
+`E_INVALID_CLOSURE`。可运行的完整流程与人工反馈 API 见
+[自适应控制](adaptive-control.md)。
+
 ## 人工干预
 
 ```bash
@@ -165,4 +215,5 @@ curl -X POST "http://127.0.0.1:8080/api/workflow/req-001/control" \
 | Agent 接入指南 | [agent-guide.md →](agent-guide.md) |
 | 查配置项 | [configuration.md →](configuration.md) |
 | 了解消息通信 | [message-bus.md →](message-bus.md) |
+| 使用原子动作、证据检查和恢复路由 | [adaptive-control.md →](adaptive-control.md) |
 | 查看常见问题 | [faq.md →](faq.md) |

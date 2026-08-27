@@ -68,6 +68,11 @@
 | `activation` | `normal` 或 `compensation_only` | 补偿任务不会被 Aggregator 正常激活 |
 | `execution` | 按任务选择模型命令和原生会话策略 | 使用 profile；支持 `new`、`continue`、`resume` |
 
+每个任务初始化时还会写入独立的 `validity=UNKNOWN`。正常完成或通过检查后
+变为 `VALID`；需求变更或自适应恢复会把受影响的 DAG 下游闭包标记为
+`INVALIDATED`。执行状态和结论有效性是两个不同维度，详见
+[自适应控制](adaptive-control.md)。
+
 示例：
 
 ```json
@@ -97,6 +102,28 @@
 ```
 
 完整配置实例见 [simple-pipeline.json](../examples/simple-pipeline.json)。
+
+### 自适应路由预算
+
+路由预算是运行期状态，不写在任务定义里。可在工作流启动后通过 Consul 兼容
+KV API 覆盖默认值：
+
+```bash
+curl -s -X PUT \
+  http://127.0.0.1:8500/v1/kv/workflows/adaptive-demo/routing/budget \
+  -d '{
+    "policy": {
+      "max_total_routes": 4,
+      "max_same_edge_routes": 2,
+      "max_same_failure_fingerprint": 2
+    },
+    "state": {"total": 0, "edges": {}, "fingerprints": {}}
+  }'
+```
+
+未配置时依次使用默认上限 `8`、`2`、`2`。任一预算耗尽后，当前任务进入
+`WAITING_FOR_HUMAN`，避免无限恢复循环。完整样例见
+[adaptive-control.json](../examples/adaptive-control.json)。
 
 ### Worker 模型执行参数
 
@@ -135,3 +162,4 @@ python -m harness_framework.daemon --task-timeout 3600 --max-retry 5
 | 了解存储后端差异 | [storage-modes.md →](storage-modes.md) |
 | Agent 接入指南 | [agent-guide.md →](agent-guide.md) |
 | 常见操作命令 | [usage-guide.md →](usage-guide.md) |
+| 配置证据检查、路由预算和人工反馈 | [adaptive-control.md →](adaptive-control.md) |
