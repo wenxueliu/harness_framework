@@ -14,6 +14,11 @@ TYPE_KEYWORDS = {
     "deploy": ["deploy", "release", "ship", "publish", "staging", "production"],
 }
 
+DEFAULT_ACP_MAP = {
+    "design": "claude", "review": "claude", "backend": "codex",
+    "test": "codex", "deploy": "codex",
+}
+
 
 def slugify(name: str) -> str:
     s = re.sub(r"[^\w\s-]", "", name.lower())
@@ -110,10 +115,12 @@ def extract_tasks(content: str) -> list[dict]:
 
 
 def build_deps(tasks: list[dict], hint_deps: list[str] = None,
-               agent_map: dict[str, str] | None = None) -> dict:
+               agent_map: dict[str, str] | None = None,
+               acp_map: dict[str, str] | None = None) -> dict:
     result = {}
     prev_task_name = None
     agent_map = agent_map or {}
+    acp_map = {**DEFAULT_ACP_MAP, **(acp_map or {})}
 
     for task in tasks:
         is_heading = task.get("is_heading", False)
@@ -141,19 +148,19 @@ def build_deps(tasks: list[dict], hint_deps: list[str] = None,
 
         task_type = infer_type(task["text"]) if not is_heading else "design"
         agent_name = agent_map.get(task_name) or agent_map.get(task_type, "")
-        if not agent_name:
-            raise ValueError(
-                f"agent map has no Agent Name for task '{task_name}' "
-                f"or type '{task_type}'"
-            )
+        provider = acp_map.get(task_name) or acp_map.get(task_type, "codex")
+        if provider not in {"claude", "codex"}:
+            raise ValueError(f"ACP map for '{task_name}' must be claude or codex")
 
         result[task_name] = {
             "type": task_type,
             "depends_on": depends_on,
-            "agent_name": agent_name,
+            "acp": {"agent": provider},
             "service_name": service,
             "description": task["text"],
         }
+        if agent_name:
+            result[task_name]["agent_name"] = agent_name
 
         prev_task_name = task_name
 
@@ -166,9 +173,13 @@ def main():
     parser.add_argument("-o", "--output", help="Output file path", default="dependencies.json")
     parser.add_argument("-i", "--interactive", action="store_true", help="Read from stdin")
     parser.add_argument(
-        "--agent-map", required=True,
+        "--agent-map", default="{}",
         help=('JSON object mapping task names or types to Agent Names, e.g. '
-              '\'{"backend":"backend-agent","test":"test-agent"}\''),
+              '\'{"backend":"backend-agent"}\' (legacy Worker only)'),
+    )
+    parser.add_argument(
+        "--acp-map", default="{}",
+        help='JSON object overriding task/type ACP routing, e.g. \'{"backend":"claude"}\'',
     )
     args = parser.parse_args()
 
@@ -188,10 +199,18 @@ def main():
             isinstance(key, str) and isinstance(value, str) and value.strip()
             for key, value in agent_map.items()):
         parser.error("--agent-map must map strings to non-empty Agent Names")
+    try:
+        acp_map = json.loads(args.acp_map)
+    except json.JSONDecodeError as exc:
+        parser.error(f"--acp-map must be valid JSON: {exc}")
+    if not isinstance(acp_map, dict) or not all(
+            isinstance(key, str) and value in {"claude", "codex"}
+            for key, value in acp_map.items()):
+        parser.error("--acp-map must map strings to claude or codex")
 
     tasks = extract_tasks(content)
     try:
-        deps = build_deps(tasks, agent_map=agent_map)
+        deps = build_deps(tasks, agent_map=agent_map, acp_map=acp_map)
     except ValueError as exc:
         parser.error(str(exc))
 

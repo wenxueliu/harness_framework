@@ -2,7 +2,7 @@
 
 **多 Agent 编排引擎** — 声明式定义工作流，自动推进依赖，故障自愈，可视化追踪。
 
-Agent 认领任务 → 框架推进流程 → 你通过看板掌控全局。
+任务就绪 → 框架通过 ACP 创建 Claude/Codex Agent → 你通过看板掌控全局。
 
 ## 一句话试试
 
@@ -47,6 +47,7 @@ python -m harness_framework.daemon                  # Consul 模式（生产）
 | 了解架构设计 | [architecture.md](docs/architecture.md) |
 | 查配置项 | [configuration.md](docs/configuration.md) |
 | 接入自己的 Agent | [agent-guide.md](docs/agent-guide.md) |
+| 使用 Claude/Codex ACP 自动执行任务 | [acp-execution.md](docs/acp-execution.md) |
 | 常见操作参考 | [usage-guide.md](docs/usage-guide.md) |
 | 了解存储后端差异 | [storage-modes.md](docs/storage-modes.md) |
 | 了解消息通信 | [message-bus.md](docs/message-bus.md) |
@@ -70,7 +71,7 @@ python -m harness_framework.daemon                  # Consul 模式（生产）
 ## 安装
 
 ```bash
-# 框架核心零外部依赖（仅 Python 3.9+）
+# 框架核心仅使用 Python 标准库；ACP adapter 需要 Node.js 22+
 git clone <this-repo>
 cd harness_framework
 

@@ -2,7 +2,9 @@
 
 > **初次接触？** 先看 [quickstart.md](quickstart.md) 和 [concepts.md](concepts.md)。本文是 Agent 接入的完整指南。
 
-这篇文章告诉你如何把自己的 AI Agent 接入 Harness Framework。
+默认无需常驻接入 Agent：框架会通过 ACP 按任务创建 Claude/Codex。先阅读
+[ACP Agent 执行](acp-execution.md)。本文以下内容仅适用于使用
+`--no-acp-dispatcher` 的旧注册/抢占兼容模式。
 
 ## 前置：安装 Skill
 

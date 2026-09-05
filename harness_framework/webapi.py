@@ -158,7 +158,7 @@ class APIHandler(BaseHTTPRequestHandler):
             w = wfs.setdefault(req_id, {"req_id": req_id, "tasks": {}, "control": ""})
             if len(parts) >= 5 and parts[2] == "tasks":
                 t = w["tasks"].setdefault(parts[3], {})
-                t[parts[4]] = it.get("_decoded", "")
+                t["/".join(parts[4:])] = it.get("_decoded", "")
             elif len(parts) == 3 and parts[2] == "control":
                 w["control"] = it.get("_decoded", "")
             elif len(parts) == 3 and parts[2] == "title":
@@ -211,7 +211,7 @@ class APIHandler(BaseHTTPRequestHandler):
             rel = it["Key"][len(prefix):] if it["Key"].startswith(prefix) else it["Key"]
             parts = rel.split("/")
             if len(parts) >= 3 and parts[0] == "tasks":
-                tasks.setdefault(parts[1], {})[parts[2]] = it.get("_decoded", "")
+                tasks.setdefault(parts[1], {})["/".join(parts[2:])] = it.get("_decoded", "")
             elif len(parts) >= 2 and parts[0] == "context":
                 context["/".join(parts[1:])] = it.get("_decoded", "")
             elif rel == "control":
@@ -337,6 +337,27 @@ class APIHandler(BaseHTTPRequestHandler):
                 "tags": s.get("Tags", []),
                 "meta": s.get("Meta", {}),
                 "healthy": healthy,
+            })
+        # ACP agents are task-scoped child processes, not registered services.
+        # Project their active task records into the same dashboard response.
+        items, _ = self.consul.kv_get("workflows/", recurse=True)
+        active: dict[tuple[str, str], dict] = {}
+        for item in items or []:
+            parts = item["Key"].split("/")
+            if len(parts) < 5 or parts[2] != "tasks":
+                continue
+            key = (parts[1], parts[3])
+            active.setdefault(key, {})["/".join(parts[4:])] = item.get("_decoded", "")
+        for (req_id, task_name), meta in active.items():
+            if meta.get("status") != "IN_PROGRESS" or meta.get("execution_transport") != "acp":
+                continue
+            agents.append({
+                "agent_id": meta.get("assigned_agent", ""),
+                "agent_name": meta.get("acp/provider", ""),
+                "tags": ["acp", "task-scoped"],
+                "meta": {"req_id": req_id, "task_name": task_name,
+                         "session_id": meta.get("acp/session_id", "")},
+                "healthy": True,
             })
         self._send_json(200, {"agents": agents})
 

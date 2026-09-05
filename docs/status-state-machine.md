@@ -25,7 +25,7 @@ DRAFT ──→ CONFIRMED ──→ IN_PROGRESS ──→ DONE
 - `DRAFT` → `CONFIRMED`：人工发布需求（设置 `published=true`）
 - `CONFIRMED` → `Proposal`：Agent 提出新任务（见 [proposal-protocol.md](./proposal-protocol.md)）
 - `Proposal` → `CONFIRMED`：人工确认或拒绝提案
-- `CONFIRMED` → `IN_PROGRESS`：第一个任务被 Agent 抢占
+- `CONFIRMED` → `IN_PROGRESS`：第一个任务被 ACPDispatcher 分派
 - `IN_PROGRESS` → `DONE`：所有任务 DONE
 
 ## 任务状态
@@ -50,10 +50,10 @@ BLOCKED ──→ PENDING ──→ IN_PROGRESS ──→ DONE        │
 | 状态 | 含义 | 写入方 |
 |------|------|--------|
 | `BLOCKED` | 有依赖未完成 | Aggregator（初始化时） |
-| `PENDING` | 依赖满足，等待 Agent 抢占 | Aggregator |
-| `IN_PROGRESS` | Agent 正在执行 | Agent（claim 后） |
-| `DONE` | 任务完成 | Agent |
-| `FAILED` | 任务失败 | Agent 或 Watchdog |
+| `PENDING` | 依赖满足，等待 ACP 分派 | Aggregator |
+| `IN_PROGRESS` | ACP Agent 正在执行 | ACPDispatcher（CAS claim 后） |
+| `DONE` | 任务完成 | ACPDispatcher |
+| `FAILED` | 任务失败 | ACPDispatcher 或 Watchdog |
 | `AWAITING_REVIEW` | 等待人工 Code Review | Agent（`complete_task.py --await-review`） |
 | `WAITING_FOR_HUMAN` | 执行缺少关键人工选择或自动路由预算耗尽 | Adaptive Control |
 | `SKIPPED_UPSTREAM_FAILED` | 阻塞依赖已失败，任务不会执行 | Aggregator |

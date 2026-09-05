@@ -8,8 +8,8 @@
 ┌──────────────────────────────────────────────┐
 │              框架主进程 (daemon.py)            │
 │  ┌──────────┐  ┌──────────┐  ┌──────────┐   │
-│  │Aggregator│  │ Watchdog │  │  WebAPI  │   │
-│  │ DAG 推进 │  │ 故障恢复 │  │ HTTP API │   │
+│  │Aggregator│  │ACP Dispatch│ │ Watchdog/WebAPI│
+│  │ DAG 推进 │  │创建 Agent │  │恢复与控制     │
 │  └────┬─────┘  └────┬─────┘  └────┬─────┘   │
 │       └──────────────┼─────────────┘         │
 │                      │                        │
@@ -36,7 +36,7 @@
 ┌──────────┐              ┌───────────┐
 │ BLOCKED  │──────────────│  PENDING  │ ← Aggregator 激活（依赖全部 DONE）
 └──────────┘              └─────┬─────┘
-                                │ Agent 认领
+                                │ ACPDispatcher 原子接管并创建 Agent
                                 ▼
                          ┌─────────────┐
                          │ IN_PROGRESS │
@@ -50,14 +50,14 @@
 ```
 
 **BLOCKED**：初始状态，有未完成的上游依赖。
-**PENDING**：所有依赖已满足，等待 Agent 认领。
+**PENDING**：所有依赖已满足，等待 ACPDispatcher 分派。
 **IN_PROGRESS**：Agent 正在执行。
 **DONE**：成功完成。
 **FAILED**：失败（可能是执行错误，也可能超时/Agent 崩溃超过重试上限）。
 
 > 完整定义见 [status-state-machine.md](status-state-machine.md)。
 
-## 三大组件
+## 核心组件
 
 ### Aggregator — DAG 推进引擎
 
@@ -106,37 +106,34 @@ Watchdog 监控所有 IN_PROGRESS 的任务：
 
 ## Agent 如何协作
 
-### 不推不拉——Agent 主动认领
+### 默认模式——框架通过 ACP 主动创建 Agent
 
-框架**不分配任务给 Agent**。Agent 自己轮询 PENDING 任务，通过 CAS（Check-And-Set）原子操作抢占：
+框架主动扫描 `PENDING` 任务，通过 CAS（Check-And-Set）原子接管，然后创建任务级 ACP Agent：
 
 ```
-Agent 轮询 → 发现 PENDING 任务 → CAS 抢占 → 成功则开始执行
-                                        → 失败则继续找下一个
+发现 PENDING → CAS 接管 → 选择 Claude/Codex → 创建 ACP session → 执行 prompt
 ```
 
-CAS 保证同一时刻只有一个 Agent 能抢到任务，无需分布式锁。
+CAS 保证同一时刻只有一个 Dispatcher 实例能启动该任务。旧的注册/抢占 Worker 仅作为
+迁移兼容模式，通过 `--no-acp-dispatcher` 显式启用。
 
 ### Agent 与框架完全异步
 
-Agent 只读写共享状态（KV 存储），不向框架发 RPC：
+框架和 Agent 通过 ACP stdio JSON-RPC 直接通信；框架同时把状态与事件持久化到 KV：
 
 ```
-Agent                  KV 存储                框架
-  │                      │                     │
-  ├── 写 IN_PROGRESS ──→│                     │
-  │                      │←── 轮询读取 ────────┤
-  ├── 写 DONE ─────────→│                     │
-  │                      │←── 检测到 DONE ────┤ → 激活下游
+Agent  ←── ACP prompt/update/cancel ──→  ACPDispatcher
+                                           │
+                                           └── 状态、事件 ──→ KV
 ```
 
 ### 单机模式下的简化
 
 单机模式（`--local-file` 自动启用、`--standalone` 显式启用）下：
 
-- Agent 无需注册、无需心跳、无需注销
-- 使用默认 Agent ID `standalone-agent`（可通过 `--standalone-agent-id` 自定义）
-- Agent 直接认领任务、执行、标记完成
+- ACP Agent 无需注册、心跳或注销
+- Dispatcher 直接使用 FileStore 保存状态与 ACP session 事件
+- 旧 Worker 模式才使用 `standalone-agent`
 
 ## 工作流数据模型
 
@@ -194,3 +191,8 @@ workflows/<req_id>/
 | 了解动态任务提案 | [提案协议 →](proposal-protocol.md) |
 | 了解任务间消息通信 | [消息总线 →](message-bus.md) |
 | 配置任务内独立 Review 与人工确认 | [Executor–Reviewer 闭环 →](internal-review-loop.md) |
+### ACPDispatcher — 主动 Agent 调度
+
+ACPDispatcher 扫描 `PENDING` 任务，以 CAS 将任务置为 `IN_PROGRESS`，根据任务类型或
+`acp.agent` 创建 Claude/Codex ACP adapter，并通过 stdio JSON-RPC 执行
+`initialize → session/new|load → session/prompt`。详见 [ACP Agent 执行](acp-execution.md)。

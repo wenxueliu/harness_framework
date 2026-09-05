@@ -38,6 +38,19 @@
 | `--no-aggregator` | 禁用 Aggregator |
 | `--no-watchdog` | 禁用 Watchdog |
 | `--no-webapi` | 禁用 WebAPI |
+| `--no-acp-dispatcher` | 禁用默认 ACP 主动分派，使用旧 Worker 兼容模式 |
+
+### ACP 执行
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `--acp-workspace-root` | 当前目录 | Agent session 默认工作目录 |
+| `--acp-max-concurrency` | `4` | 并发 ACP Agent 上限 |
+| `--acp-task-timeout` | `7200` | 单次 ACP prompt 超时秒数 |
+| `--acp-permission-policy` | `allow_once` | 权限请求策略：`allow_once` / `deny` |
+| `--acp-claude-command` | Claude adapter 的 npx argv | JSON argv 数组 |
+| `--acp-codex-command` | Codex adapter 的 npx argv | JSON argv 数组 |
+| `--acp-routing` | 内置类型映射 | task type → `claude`/`codex` JSON 对象 |
 
 ## 环境变量
 
@@ -45,6 +58,11 @@
 |------|------|
 | `CONSUL_ADDR` | Consul 地址（被 `--consul` 覆盖） |
 | `CONSUL_TOKEN` | Consul ACL Token（被 `--token` 覆盖） |
+| `ACP_CLAUDE_COMMAND` / `ACP_CODEX_COMMAND` | adapter JSON argv |
+| `ACP_TASK_ROUTING` | task type 到 provider 的 JSON 映射 |
+| `ACP_WORKSPACE_ROOT` | 默认 Agent 工作目录 |
+| `ACP_MAX_CONCURRENCY` / `ACP_TASK_TIMEOUT` | 并发数与执行超时 |
+| `ACP_PERMISSION_POLICY` | `allow_once` 或 `deny` |
 
 **优先级**：命令行参数 > 环境变量
 
@@ -55,7 +73,8 @@
 
 | 字段 | 用途 | 关键约束 |
 |------|------|----------|
-| `agent_name` | 指定可执行任务的逻辑 Agent Name | 可执行任务必填；只允许注册同名 Agent 抢占 |
+| `acp` | 指定 `claude`/`codex`、cwd、权限和 session 策略 | 可选；缺省按任务类型路由 |
+| `agent_name` | 旧 Worker 的逻辑 Agent Name | 仅兼容模式使用，不再必填 |
 | `service_name` | 标记业务或代码仓库归属 | 可选；不参与 Agent 匹配 |
 | `agent_contract` | 输入、输出、职责、排除项、权限、上下文预算 | 列表字段必须为非空字符串列表 |
 | `completion_contract` | required artifacts 与 verifier gates | 未满足时拒绝 `DONE` |
@@ -75,7 +94,12 @@
 `INVALIDATED`。执行状态和结论有效性是两个不同维度，详见
 [自适应控制](adaptive-control.md)。
 
-### Agent 名称匹配
+### ACP Agent 路由
+
+默认 `design/review → claude`，其他可执行类型 → `codex`。任务用
+`"acp":{"agent":"claude"}` 覆盖；完整说明见 [ACP Agent 执行](acp-execution.md)。
+
+### 旧 Worker 名称匹配（兼容模式）
 
 `agent_name` 是调度键，`service_name` 不是。Agent 注册时同时提供：
 
@@ -91,7 +115,7 @@ python skills/stage-bridge/scripts/register_agent.py \
 写入 `IN_PROGRESS`。同一个 Agent Name 可以有多个实例 ID，最终仍由 CAS 决定
 哪一个实例获得任务。
 
-所有可执行任务必须显式写 `agent_name`，所有 Agent 必须通过 `--name` 或
+在旧兼容模式中，所有可执行任务必须显式写 `agent_name`，所有 Agent 必须通过 `--name` 或
 `AGENT_NAME` 显式注册逻辑名称。缺少名称时配置、注册或领取直接失败；
 `service_name` 永远不会被当作调度名称。
 

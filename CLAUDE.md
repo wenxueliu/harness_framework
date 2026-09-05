@@ -44,7 +44,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```
 harness_framework/
-├── daemon.py          # 主进程入口，启动 Aggregator + Watchdog + WebAPI 线程
+├── daemon.py          # 主进程入口，启动 ACPDispatcher + Aggregator + Watchdog + WebAPI
+├── acp_client.py      # ACP v1 stdio JSON-RPC 客户端
+├── acp_dispatcher.py  # DAG 就绪后创建 Claude/Codex Agent 并执行任务
 ├── aggregator.py      # 监听 DAG 状态变更，依赖满足时激活下游任务
 ├── watchdog.py        # 检测 IN_PROGRESS 任务的 Agent 存活和超时，自动恢复
 ├── webapi.py          # HTTP API 为业务看板提供聚合查询与控制信号写入
@@ -58,19 +60,22 @@ harness_framework/
 └── file_store.py         # FileStore — JSON 文件存储（纯本地，无 HTTP）
 ```
 
-**四大组件：**
+**五个核心组件：**
+- **ACPDispatcher**：默认执行入口；CAS 认领 `PENDING` 任务，按任务类型或 `acp.agent` 创建 Claude/Codex ACP 进程，驱动会话并回写结果。
 - **Aggregator**：仅处理 `published=true` 的 workflow，轮询任务状态，当依赖全部 DONE 时将下游任务设为 PENDING。**重测逻辑由 Test Agent 通过 Message Bus 自行管理**。
-- **Watchdog**：仅处理 `published=true` 的 workflow，轮询 Agent 健康状态检测是否存活，检测任务超时（默认 1h），超时或 Agent 死亡时将任务回滚为 PENDING（最多 5 次重试，超过则 FAILED）。
+- **Watchdog**：仅处理 `published=true` 的 workflow；ACP 任务依据租约和硬截止时间恢复，旧 Worker 兼容模式仍检查注册健康状态。
 - **WebAPI**：基于标准库 `http.server` 的 ThreadingHTTPServer，提供 `/api/workflows`、`/api/workflow/<req_id>`、`/api/agents` 等端点。
-- **RunManager**：任务生命周期管理器，通过 CAS 认领 PENDING 任务，记录步骤日志，处理完成/失败状态流转。Agent 通过 stage-bridge 脚本调用。
+- **RunManager**：记录运行、状态迁移和原生会话；由 ACPDispatcher 或旧 stage-bridge Worker 调用。
 
 **三种存储后端：**
 
-| 模式 | 启动参数 | 外部依赖 | Agent 通信方式 |
+| 模式 | 启动参数 | 外部依赖 | 状态存储 |
 |------|---------|---------|--------------|
 | Consul | (默认) | Consul 服务 | HTTP → Consul |
-| Local + HTTP | `--local` | 无 | HTTP → 内嵌 Consul API 服务器 |
-| 纯文件 | `--local-file` | 无 | `scripts/file_kv.py` CLI 直接读写 JSON 文件 |
+| Local + HTTP | `--local` | 无 | 内嵌 Consul API 服务器 |
+| 纯文件 | `--local-file` | 无 | JSON 文件 |
+
+三种存储后端均使用同一 ACP stdio 通信链路；`--no-acp-dispatcher` 才进入旧的注册/抢占兼容模式。
 
 ## 使用步骤
 
@@ -106,8 +111,8 @@ python scripts/file_kv.py --data-file ~/.harness/file_store.json get workflows/ 
 框架内部自动执行的核心逻辑：
 
 1. **任务激活**：Aggregator 检测所有依赖 DONE → 激活下游任务为 PENDING
-2. **任务执行**：Agent 领取 PENDING 任务 → 写入 IN_PROGRESS → 执行完成写入 DONE
-3. **故障恢复**：Watchdog 检测超时/Agent 死亡 → 回滚任务为 PENDING（≤5次重试）
+2. **任务执行**：ACPDispatcher CAS 认领 PENDING 任务 → 创建 Claude/Codex ACP Agent → 执行完成写入 DONE
+3. **故障恢复**：Watchdog 检测租约/硬截止时间 → 回滚任务为 PENDING（≤5次重试）
 4. **质量门禁**：test 失败 → 发送 FIX 消息到相关服务 → 轮询消息状态 → 所有修复完成后重测（≤3次重试）
 5. **流程终止**：所有任务 DONE → 流程结束；超过重试上限 → FAILED
 
@@ -195,7 +200,7 @@ python -m harness_framework.daemon --log-level DEBUG
 
 | Skill | 用途 | 适用模式 |
 |-------|------|---------|
-| `stage-bridge` | Agent 全生命周期管理（注册、心跳、抢占、完成、日志、上下文） | Consul / Local |
+| `stage-bridge` | 旧 Worker 生命周期兼容；ACP 任务的 artifact/evidence/log 辅助写入 | Consul / Local |
 | `task-executor` | 按任务类型（backend/test/design/review/deploy）执行 TDD 工作流 | Consul / Local |
 | `harness-sync` | 将 dependencies.json 同步到 Consul，初始化 workflow | Consul / Local |
 | `design-pipeline` | 设计文档 → dependencies.json 转换 + 同步 Consul | Consul / Local |

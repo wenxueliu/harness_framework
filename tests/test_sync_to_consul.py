@@ -134,13 +134,13 @@ def test_agent_name_is_sufficient_without_service_name():
     assert validate_dependencies(data) == []
 
 
-def test_service_name_cannot_replace_required_agent_name():
+def test_service_name_task_uses_acp_type_routing_without_agent_name():
     data = {
         "task": {
             "type": "backend", "depends_on": [], "service_name": "users",
         }
     }
-    assert "task 'task': missing 'agent_name'" in validate_dependencies(data)
+    assert validate_dependencies(data) == []
 
 
 def test_write_workflow_persists_task_execution():
@@ -165,6 +165,31 @@ def test_write_workflow_persists_task_execution():
         call.args[0]: call.args[1] for call in consul.kv_put.call_args_list
     }
     assert json.loads(values["workflows/req-001/tasks/task/execution"]) == execution
+
+
+def test_write_workflow_persists_acp_routing_and_session():
+    consul = MagicMock()
+    consul.kv_get = Mock(return_value=(None, 0))
+    consul.kv_put = Mock(return_value=True)
+    acp = {
+        "agent": "claude",
+        "session": {"mode": "continue", "from_task": "design"},
+    }
+    data = {
+        "design": {
+            "type": "design", "depends_on": [], "acp": {"agent": "claude"}
+        },
+        "review": {
+            "type": "review", "depends_on": ["design"], "acp": acp
+        },
+    }
+    assert validate_dependencies(data) == []
+    write_workflow(consul, "req-001", data)
+    values = {call.args[0]: call.args[1] for call in consul.kv_put.call_args_list}
+
+    assert json.loads(values["workflows/req-001/tasks/review/acp"]) == acp
+    dependencies = json.loads(values["workflows/req-001/dependencies"])
+    assert dependencies["review"]["acp"] == acp
 
 
 def test_validate_rejects_unknown_continue_source_task():
@@ -272,14 +297,24 @@ class TestValidateDependencies:
         errors = validate_dependencies(data)
         assert any("missing 'children'" in e for e in errors)
 
-    def test_missing_agent_name(self):
-        """普通任务必须指定逻辑 Agent；service_name 不再是调度字段。"""
+    def test_agent_name_is_optional_for_acp_dispatch(self):
+        """ACP dispatcher selects an agent from task type when none is explicit."""
         data = {
             "req_id": "req-001",
             "backend": {"type": "backend", "depends_on": []},
         }
         errors = validate_dependencies(data)
-        assert any("missing 'agent_name'" in e for e in errors)
+        assert errors == []
+
+    def test_invalid_acp_agent(self):
+        data = {
+            "backend": {
+                "type": "backend", "depends_on": [],
+                "acp": {"agent": "unknown"},
+            },
+        }
+        errors = validate_dependencies(data)
+        assert any("acp.agent must be claude or codex" in e for e in errors)
 
     def test_depends_on_unknown_task(self):
         """depends_on 引用了不存在的任务。"""

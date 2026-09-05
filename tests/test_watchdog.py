@@ -10,6 +10,7 @@ Watchdog 单元测试
 from __future__ import annotations
 
 import base64
+import datetime
 from unittest.mock import MagicMock, Mock
 
 import pytest
@@ -57,6 +58,25 @@ def _make_store(initial: dict) -> MagicMock:
 
 
 class TestWatchdog:
+    def test_acp_managed_task_does_not_require_service_registration(self):
+        future = (datetime.datetime.utcnow() + datetime.timedelta(minutes=5)).isoformat() + "Z"
+        store = {
+            "workflows/req-001/published": "true",
+            "workflows/req-001/tasks/backend/status": "IN_PROGRESS",
+            "workflows/req-001/tasks/backend/assigned_agent": "acp:codex:123",
+            "workflows/req-001/tasks/backend/execution_transport": "acp",
+            "workflows/req-001/tasks/backend/lease_expires_at": future,
+            "workflows/req-001/tasks/backend/hard_deadline_at": future,
+        }
+        consul = _make_store(store)
+        consul.list_services = Mock(return_value=[])
+        wd = Watchdog(consul, make_mock_run_manager())
+        wd._tick()
+        assert not any(
+            call.args[0].endswith("tasks/backend/status")
+            for call in consul.kv_put.call_args_list
+        )
+
     def test_recover_dead_agent(self):
         """Agent 不在 alive list → 任务回滚为 PENDING。"""
         store = {

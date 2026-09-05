@@ -295,14 +295,17 @@ skills = framework.get_skills(agent_type="test")
 # 返回 WorkflowSkills 实例，包含 check_workflow_status, propose_task 等
 ```
 
-## ACP 协议（未来扩展）
+## ACP 协议
 
-人工可以通过 ACP 协议决定是否中断运行中的 Agent：
+默认执行路径已经使用 ACP。动态任务被确认并在 DAG 中推进到 `PENDING` 后，
+ACPDispatcher 会按 `acp.agent` 或任务类型路由创建 Claude/Codex Agent。人工 ABORT
+会转换为 `session/cancel`：
 
 - **中断**：停止目标 Agent，状态回退，从 CONFIRMED 重新调度
 - **不中断**：等 Agent 执行完毕，自然衔接新任务
 
-当前简化实现，假设使用"不中断"模式。
+会话可配置为新建、按上游任务续接或按 session ID 恢复，详见
+[ACP 执行架构](acp-execution.md)。
 
 ## Consul KV 结构
 

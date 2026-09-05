@@ -1,7 +1,7 @@
 """
 harness-framework daemon — 框架主进程
 
-功能：在单个 Python 进程中并发运行 Aggregator、Watchdog、WebAPI 三大组件。
+功能：在单个 Python 进程中并发运行 ACPDispatcher、Aggregator、Watchdog、WebAPI。
 通过线程隔离，统一日志输出，单一信号即可优雅退出。
 
 启动方式：
@@ -9,23 +9,26 @@ harness-framework daemon — 框架主进程
   python -m harness_framework.daemon --port 8080 \
     --consul 127.0.0.1:8500 --task-timeout 3600
 
-退出：发送 SIGTERM 或 SIGINT (Ctrl+C)，三大组件协同退出。
+退出：发送 SIGTERM 或 SIGINT (Ctrl+C)，各组件协同退出。
 """
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import logging.handlers
 import os
 import signal
 import sys
 import threading
+from typing import Any
 
 from .consul_client import ConsulClient
 from .aggregator import Aggregator
 from .watchdog import Watchdog
 from .webapi import serve as webapi_serve
 from .run_manager import RunManager
+from .acp_dispatcher import ACPDispatcher
 
 
 def setup_logging(level: str, log_dir: str = "",
@@ -84,6 +87,31 @@ def main() -> None:
     p.add_argument("--no-aggregator", action="store_true")
     p.add_argument("--no-watchdog", action="store_true")
     p.add_argument("--no-webapi", action="store_true")
+    p.add_argument("--no-acp-dispatcher", action="store_true",
+                   help="禁用 ACP 主动任务分派（兼容旧注册/抢占 Worker）")
+    p.add_argument("--acp-claude-command",
+                   default=os.environ.get(
+                       "ACP_CLAUDE_COMMAND",
+                       '["npx", "-y", "@agentclientprotocol/claude-agent-acp"]'),
+                   help="Claude ACP adapter argv（JSON 数组）")
+    p.add_argument("--acp-codex-command",
+                   default=os.environ.get(
+                       "ACP_CODEX_COMMAND",
+                       '["npx", "-y", "@agentclientprotocol/codex-acp"]'),
+                   help="Codex ACP adapter argv（JSON 数组）")
+    p.add_argument("--acp-routing",
+                   default=os.environ.get("ACP_TASK_ROUTING", "{}"),
+                   help="task type 到 claude/codex 的覆盖映射（JSON 对象）")
+    p.add_argument("--acp-workspace-root",
+                   default=os.environ.get("ACP_WORKSPACE_ROOT", os.getcwd()),
+                   help="ACP Agent 默认工作目录")
+    p.add_argument("--acp-max-concurrency", type=int,
+                   default=int(os.environ.get("ACP_MAX_CONCURRENCY", "4")))
+    p.add_argument("--acp-task-timeout", type=int,
+                   default=int(os.environ.get("ACP_TASK_TIMEOUT", "7200")),
+                   help="单次 ACP prompt 最长执行时间（秒）")
+    p.add_argument("--acp-permission-policy", choices=("allow_once", "deny"),
+                   default=os.environ.get("ACP_PERMISSION_POLICY", "allow_once"))
     p.add_argument("--local", action="store_true",
                    help="使用本地内存存储替代 Consul（含嵌入式 HTTP 服务器）")
     p.add_argument("--local-port", type=int, default=8500,
@@ -161,6 +189,37 @@ def main() -> None:
         t.start()
         threads.append(t)
 
+    # ACP task dispatcher.  This is the primary execution path: PENDING tasks
+    # are claimed centrally and an ACP adapter is created for that step.
+    if not args.no_acp_dispatcher:
+        try:
+            commands = {
+                "claude": _json_argv(args.acp_claude_command, "--acp-claude-command"),
+                "codex": _json_argv(args.acp_codex_command, "--acp-codex-command"),
+            }
+            routing = json.loads(args.acp_routing)
+            if not isinstance(routing, dict) or not all(
+                isinstance(k, str) and v in {"claude", "codex"}
+                for k, v in routing.items()
+            ):
+                raise ValueError("--acp-routing must map task types to claude or codex")
+        except (json.JSONDecodeError, ValueError) as exc:
+            p.error(str(exc))
+        acp_dispatcher = ACPDispatcher(
+            consul, run_manager, commands=commands, routing=routing,
+            workspace_root=args.acp_workspace_root,
+            poll_interval=min(float(args.aggregator_interval), 1.0),
+            task_timeout=args.acp_task_timeout,
+            max_concurrency=args.acp_max_concurrency,
+            permission_policy=args.acp_permission_policy,
+        )
+        components.append(acp_dispatcher)
+        t = threading.Thread(
+            target=acp_dispatcher.run, name="acp-dispatcher", daemon=True
+        )
+        t.start()
+        threads.append(t)
+
     # Watchdog
     if not args.no_watchdog:
         wd = Watchdog(consul, run_manager=run_manager,
@@ -220,6 +279,18 @@ def main() -> None:
 def _now_iso() -> str:
     import datetime
     return datetime.datetime.utcnow().isoformat() + "Z"
+
+
+def _json_argv(raw: str, option: str) -> list[str]:
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{option} must be a JSON argv array") from exc
+    if not isinstance(value, list) or not value or not all(
+        isinstance(item, str) and item for item in value
+    ):
+        raise ValueError(f"{option} must be a non-empty JSON argv array")
+    return value
 
 
 if __name__ == "__main__":

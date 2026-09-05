@@ -4,7 +4,7 @@ add_task.py — 向已有 workflow 增量添加单个任务
 
 用法：
   add_task.py <req_id> <task_name> --description "任务描述" --type backend \
-    --agent-name backend-agent --depends-on design,review
+    --acp-agent codex --depends-on design,review
 
 示例：
   add_task.py req-001 api-gateway --description "实现 API 网关" --type backend --agent-name backend-agent --depends-on backend
@@ -110,8 +110,16 @@ def main():
     parser.add_argument("--description", default="", help="Task description (what to do)")
     parser.add_argument("--type", default="generic", help="Task type: design, review, backend, test, deploy, generic")
     parser.add_argument("--depends-on", default="", help="Comma-separated list of upstream task names")
-    parser.add_argument("--agent-name", required=True,
-                        help="Logical Agent Name allowed to execute this task")
+    parser.add_argument("--agent-name", default="",
+                        help="Deprecated logical Worker name (legacy claim mode only)")
+    parser.add_argument("--acp-agent", choices=("claude", "codex"), default="",
+                        help="ACP agent override; otherwise selected from task type")
+    parser.add_argument("--acp-cwd", default="", help="ACP session working directory")
+    parser.add_argument(
+        "--acp-session-mode", choices=("new", "continue", "resume"), default="new"
+    )
+    parser.add_argument("--acp-session-from-task", default="")
+    parser.add_argument("--acp-session-id", default="")
     parser.add_argument("--service-name", default="", help="Associated service name")
     parser.add_argument("--execution-profile", default="", help="Named worker execution profile")
     parser.add_argument("--model", default="", help="Model override for this task")
@@ -158,6 +166,24 @@ def main():
             parser.error(str(exc))
     elif args.model or args.session_mode != "new" or args.session_from_task or args.session_id:
         parser.error("model/session options require --execution-profile or --command-json")
+
+    acp = {}
+    if args.acp_agent:
+        acp["agent"] = args.acp_agent
+    if args.acp_cwd:
+        acp["cwd"] = args.acp_cwd
+    if (args.acp_session_mode != "new" or args.acp_session_from_task
+            or args.acp_session_id):
+        session = {"mode": args.acp_session_mode}
+        if args.acp_session_from_task:
+            session["from_task"] = args.acp_session_from_task
+        if args.acp_session_id:
+            session["session_id"] = args.acp_session_id
+        if args.acp_session_mode == "continue" and not args.acp_session_from_task:
+            parser.error("--acp-session-from-task is required for continue mode")
+        if args.acp_session_mode == "resume" and not args.acp_session_id:
+            parser.error("--acp-session-id is required for resume mode")
+        acp["session"] = session
 
     consul = ConsulClient(addr=args.consul)
     base = f"workflows/{args.req_id}"
@@ -219,8 +245,11 @@ def main():
         "type": args.type,
         "depends_on": upstream,
         "description": args.description,
-        "agent_name": args.agent_name,
     }
+    if args.agent_name:
+        task_definition["agent_name"] = args.agent_name
+    if acp:
+        task_definition["acp"] = acp
     if args.service_name:
         task_definition["service_name"] = args.service_name
     if execution:
@@ -236,7 +265,10 @@ def main():
 
     consul.kv_put(f"{t_base}/status", initial_status)
     consul.kv_put(f"{t_base}/type", args.type)
-    consul.kv_put(f"{t_base}/agent_name", args.agent_name)
+    if args.agent_name:
+        consul.kv_put(f"{t_base}/agent_name", args.agent_name)
+    if acp:
+        consul.kv_put(f"{t_base}/acp", json.dumps(acp, ensure_ascii=False))
     if args.description:
         consul.kv_put(f"{t_base}/description", args.description)
     if args.service_name:

@@ -96,7 +96,11 @@ class Watchdog:
             hard_deadline_at = meta.get("hard_deadline_at", "")
 
             # 1. Agent 存活检查
-            if agent_id and agent_id not in alive:
+            # ACP tasks are child processes owned by ACPDispatcher and do not
+            # register in Consul service discovery.  Their liveness is fenced
+            # by attempt_id plus the renewable lease below.
+            acp_managed = meta.get("execution_transport") == "acp"
+            if agent_id and not acp_managed and agent_id not in alive:
                 log.warning("zombie task %s/%s (agent %s dead), recovering",
                             req_id, task_name, agent_id)
                 self._recover(req_id, task_name, meta)

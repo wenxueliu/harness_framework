@@ -1,6 +1,8 @@
-# 多 Agent 软件开发平台 · 最终完整方案（v4.1）
+# 多 Agent 软件开发平台 · 架构方案
 
 > **初次接触？** 从 [quickstart.md](quickstart.md) 开始，了解核心概念看 [concepts.md](concepts.md)。本文是完整的架构设计文档。
+>
+> **当前执行架构**：daemon 内的 ACPDispatcher 在 DAG 任务进入 `PENDING` 后直接通过 ACP 创建 Claude 或 Codex Agent。本文中 stage-bridge 的注册、心跳、轮询和抢占内容是 `--no-acp-dispatcher` 下的兼容执行层，不是默认路径。ACP 细节见 [acp-execution.md](acp-execution.md)。
 
 ---
 
@@ -8,7 +10,7 @@
 
 第一章 总体架构与设计原则
 第二章 框架层组件设计
-第三章 执行层与 stage-bridge Skill
+第三章 ACP 执行层与 stage-bridge 兼容模式
 第四章 Consul KV 数据模型
 第五章 核心协作流程
 第六章 P0-1 反应循环防护机制（含全链路 ABORT 检测）
@@ -25,23 +27,23 @@
 
 本平台是一个**面向软件开发场景的多 Agent 协作框架**，目标是让若干具名编码智能体（Codex、OpenCode、Claude Code 等）按任务协同完成一个需求的完整研发流程，涵盖需求设计、设计评审、代码开发、代码评审、重构、测试、部署等阶段。微服务或代码仓只是任务的可选业务上下文，不定义 Agent 身份。平台本身不替代编码智能体的"生成能力"，而是为它们提供**调度骨架、状态管理、协作契约与安全护栏**。
 
-平台严格区分**框架层**与**执行层**。框架层由平台团队负责维护，提供通用的依赖推进、状态存储、监控、看板能力；执行层由业务团队自由组合，任何符合 stage-bridge Skill 契约的编码智能体都能接入。这种分层让"平台能力"与"开发实践"解耦，平台升级不影响执行层、执行层定制也不污染平台。
+平台严格区分**框架层**与**执行层**。框架层提供依赖推进、状态存储、监控、看板及 ACP 调度；执行层由符合 ACP v1 的 Claude/Codex 适配器承载。stage-bridge 仍作为迁移期兼容执行方式保留。
 
 ### 1.2 协作模式定位
 
-对照 Anthropic 与 Claude 总结的五种协作模式[1] [2]，本平台的最终架构是**以 Shared State 为骨、轻量 Orchestrator 仅做依赖推进、在执行层嵌入 Generator-Verifier**的混合体。Consul KV 充当权威共享状态存储，承担 Agent 间的隐式协调；Aggregator 仅做"依赖推进"这一件事，不做能力匹配、不分配 Agent，更不参与任何 LLM 决策；每个开发 Agent 在内部自主决策是否进行 Generator-Verifier 自验证。
+本平台采用**共享状态 + 轻量调度器 + ACP 执行器**的混合架构。Consul KV 或本地后端保存权威工作流状态；Aggregator 只推进依赖；ACPDispatcher 根据任务的 `acp.agent` 或类型路由选择 Claude/Codex，并管理一次任务范围内的 ACP 会话。
 
 这种定位的核心考量是**避免过度设计**。Anthropic 文章反复强调"起步从简、按需演进"[1]，本平台在 MVP 阶段只实现骨架与一项必备增强（P0 反应循环防护），自验证由执行层自治推进，DAG 表达能力扩展为 P1，知识沉淀与事件总线则留待实际瓶颈出现后再实施。
 
 ### 1.3 设计原则
 
-平台的七条基本设计原则贯穿所有组件。**第一条是 Consul 作为唯一权威状态源**，所有 Agent 的协作都通过 Consul KV 完成，框架本身不保留任何进程内状态，这样 Agent 可以随意重启、迁移、并行扩容。**第二条是 CAS 原子操作保护竞态**，任务抢占、feedback 认领、预算扣减等涉及多实例竞争的写操作一律使用 Consul 的 Check-And-Set，杜绝任何形式的"读-改-写"非原子路径。**第三条是框架层不做 LLM 调用、不做 Agent 分配**，Aggregator、Watchdog 全部是无智能的规则引擎，LLM 调用与执行决策完全下沉到执行层，框架可以跑在极低配置的机器上，且行为完全可预测。
+平台的基本设计原则贯穿所有组件。**第一条是所选 KV 后端作为权威状态源**，任务与会话状态都可在进程重启后恢复。**第二条是 CAS 原子操作保护竞态**，Dispatcher 认领任务、feedback 认领、预算扣减等涉及竞争的写操作使用 Check-And-Set。**第三条是职责分离**：Aggregator、Watchdog 是确定性的规则引擎；ACPDispatcher 只按声明式规则选择和驱动 Agent，不参与任务内容推理。
 
-**第四条是执行层主动认领任务**，任务在 `dependencies.json` 中用 `agent_name` 静态指定逻辑执行者；Agent 注册同名身份后，主动轮询分配给自己的 `PENDING` 任务并 CAS 抢占。`service_name` 只描述业务归属，不参与调度。**第五条是全链路 ABORT 检测**，每个 Agent 在 LLM 调用前后、verify 循环每轮、feedback-listen 每次唤醒时都必须显式调用 `check-control`，收到 ABORT 立即干净退出，杜绝"框架已停、Agent 还在跑"的脏状态。
+**第四条是调度器按 DAG 就绪事件创建 Agent**：任务通过 `acp.agent` 显式指定执行者，未指定时按任务类型路由；Dispatcher 以 CAS 将 `PENDING` 改为 `IN_PROGRESS`，无需预注册或轮询 Worker。`service_name` 只描述业务归属。**第五条是全链路 ABORT 检测**：Dispatcher 发现 ABORT 后发送 `session/cancel` 并终止会话；兼容 Worker 继续使用 `check-control`。
 
 ### 1.4 架构全景
 
-从物理视角看，平台在一台开发机上运行以下进程：一个 Consul dev mode 实例，一个框架主进程 daemon（内含 Aggregator、Watchdog、WebAPI模块），若干以逻辑名称注册的 Agent 进程，以及一个 React 业务看板。Agent 通过 HTTP 与 Consul 通信，看板通过 HTTP 与 Consul 及框架 WebAPI 通信，框架 daemon 通过 HTTP 与 Consul 通信。整个平台 MVP 阶段对外只暴露两个端口：Consul 的 8500 与框架 WebAPI 的 8600。
+从物理视角看，框架主进程 daemon 内含 ACPDispatcher、Aggregator、Watchdog 和 WebAPI。Dispatcher 按任务启动 ACP stdio 子进程；状态后端可用 Consul、内嵌 HTTP 或本地文件。看板通过 WebAPI 读取聚合状态，Agent 无需注册服务或轮询 KV。
 
 ---
 
@@ -51,7 +53,7 @@
 
 ### 2.1 Aggregator 模块（仅做依赖推进）
 
-Aggregator 是 DAG 依赖推进引擎，**职责被严格收敛到一件事**：扫描 DAG，发现某任务的所有上游依赖均已 `DONE` 时，将该任务的 `phase` 从 `WAITING` 推进到 `PENDING`。Aggregator **不做能力匹配，不写 `assigned_agent_hint`，不参与任何 Agent 选择**——任务的逻辑执行者在 `dependencies.json` 的 `agent_name` 字段中声明，由注册同名的 Agent 主动抢占。
+Aggregator 是 DAG 依赖推进引擎，**职责被严格收敛到一件事**：扫描 DAG，发现某任务的所有上游依赖均已 `DONE` 时，将任务从 `BLOCKED` 推进到 `PENDING`。Aggregator 不做 Agent 选择；后续由 ACPDispatcher 按 `acp.agent` 或任务类型路由分派。
 
 Aggregator 还负责两类辅助推进。其一是 **feedback 闭环检测**：当 `test-e2e` 任务处于 `FAILED` 且所有 `feedback/<service>/status` 均为 `FIXED` 时，自动清除 feedback 记录并将 `test-e2e` 重置为 `PENDING` 以触发重测。其二是 **parallel/aggregate 节点推进**：parallel 节点上游全部完成时将其 children 全部置为 `PENDING`，aggregate 节点上游 parallel 全部 `DONE` 时将其自身置为 `DONE` 并推进下游，详见第八章。
 
@@ -63,7 +65,7 @@ Watchdog 是僵尸任务回收器。它每 30 秒扫描所有 `IN_PROGRESS` 状�
 
 ### 2.3 WebAPI 模块
 
-WebAPI 基于 FastAPI 实现，监听 8600 端口，为业务看板和 CI 工具提供统一的 HTTP 接口。主要接口包括：`
+WebAPI 基于标准库 `ThreadingHTTPServer` 实现，默认监听 8080 端口，为业务看板和 CI 工具提供统一的 HTTP 接口。主要接口包括：`
 GET /api/workflows` 返回所有需求的摘要列表，`
 GET /api/workflows/<req_id>` 返回指定需求的完整 DAG 与任务状态，`
 POST /api/workflows/<req_id>/control` 写入控制信号（PAUSE / RESUME / ABORT / RETRY），`
@@ -74,21 +76,21 @@ WebAPI 默认允许跨域，看板可以直接从浏览器调用。对于写入�
 
 ---
 
-## 第三章　执行层与 stage-bridge Skill
+## 第三章　ACP 执行层与 stage-bridge 兼容模式
 
 ### 3.1 执行层接入原理
 
-执行层指所有在平台上运行的 Agent。每个 Agent 本质上是一个驱动编码智能体的轻量进程，它**主动**从 Consul KV 拉取本服务的任务、调用编码智能体生成产出、将产出写回 Consul KV。平台不限制 Agent 用什么语言实现、也不限制驱动哪种编码智能体，只要求 Agent 使用 stage-bridge Skill 与 Consul 交互。
+执行层的默认入口是 ACPDispatcher。任务进入 `PENDING` 后，Dispatcher 读取 `acp.agent`（或按类型使用默认路由），CAS 认领任务并启动对应的 Claude/Codex ACP 适配器，再依次调用 `initialize`、`session/new` 或 `session/load`、`session/prompt`。流式更新与会话 ID 写回共享状态。
 
-stage-bridge Skill 是一组命令行脚本的集合，编码智能体（或 Agent 进程）通过执行 `python -m stage_bridge.<command> <args>` 来完成状态读写。这种"命令行桥接"方式的好处是天然跨语言、天然适配 CLI 型编码智能体、也便于人工调试（直接在终端跑命令可以模拟 Agent 行为）。
+stage-bridge Skill 是旧注册/抢占 Worker 的兼容接口，也可供 ACP Agent 在完成契约要求时写入 artifact、evidence 或日志。它不再负责默认任务分发。
 
 ### 3.2 Agent 与服务的绑定关系
 
-每个 Agent 在启动时通过 `register-agent --name backend-agent --capability dev` 向 Consul 声明稳定的逻辑名称与能力标签。这是一个**人工启动、人工命名**的过程；框架不主动拉起 Agent。同一个 Agent Name 可以有多个运行实例，每个实例使用独立 `agent_id`，CAS 保证同一任务只被执行一次。
+默认模式不需要预先启动或注册 Agent。`dependencies.json` 可写 `"acp": {"agent": "claude"}` 或 `codex`；未写时 design/review 路由到 Claude，其余可执行任务路由到 Codex。每个任务获得独立 `acp:<provider>:<uuid>` 实例 ID，CAS 保证只启动一次。
 
-任务的归属在 `dependencies.json` 设计阶段就由设计 Agent 或人工填写明确，每个可执行任务节点带有 `agent_name` 字段。Agent 启动后，stage-bridge 只返回与其注册 Agent Name 完全一致的 `PENDING` 任务，发现后尝试 CAS 抢占，无任务时按指数退避继续轮询。
+`agent_name` 仅供 `--no-acp-dispatcher` 兼容模式使用。在该模式下，既有 stage-bridge 注册、心跳和 CAS 抢占流程保持不变。
 
-### 3.3 stage-bridge 命令清单
+### 3.3 stage-bridge 兼容命令清单
 
 stage-bridge 在 v3 基础上新增两条命令支持 P0 反应循环防护，删除原 v4 草案中的 `verify-output` 和 `load-knowledge`。完整命令清单如下表。
 
@@ -184,9 +186,9 @@ Consul KV 的顶层命名空间采用业务语义分区，每个需求 `req_id` 
 
 一个需求从提交到交付的完整路径如下。CI 在收到新需求后，调用 `sync_to_consul.py` 将 `dependencies.json` 解析并写入 `workflows/<req_id>/dag`，将所有叶子任务（无依赖的任务）的 `phase` 置为 `PENDING`，其余任务置为 `WAITING`。
 
-每个逻辑 Agent 早已由人工启动并通过 `register-agent` 在 Consul 中登记。Agent 在循环中主动调用 `claim-task`，stage-bridge 内部列出 `workflows/*/tasks/*` 中 `agent_name` 与自身注册名称相同且 `phase == PENDING` 的任务，再尝试 CAS 抢占（将 `phase` 从 `PENDING` 改为 `IN_PROGRESS` 并写入实际 `assigned_agent` ID）。Agent 拿到任务后，先调用 `check-control` 确认未被 ABORT，再调用 `read-context` 读取上游产出，将其注入编码智能体的 System Prompt。
+ACPDispatcher 扫描已发布工作流中的 `PENDING` 任务，按优先级用 CAS 认领并写入 attempt、租约及 ACP provider。随后它创建任务范围的适配器进程、建立或续接会话、注入声明过的上下文并发送任务 Prompt。无需 Agent 注册、心跳或主动轮询。
 
-编码智能体生成代码后，开发 Agent 自行决定是否运行 `verify`（lint / type-check / unit test），结果通过 `log-step --type verify` 上报到 Session 事件流。每次重要的 LLM 推理前，必须调用 `check-control` 检查 ABORT。代码完成后，Agent 调用 `write-artifact` 写入产物（PR URL、服务端点等），调用 `complete-task` 将状态置为 `DONE`，Aggregator 检测到状态变更后推进下游任务。
+ACP 的 `session/update` 被持久化为 Session 事件。返回 `stopReason=end_turn` 且 completion contract 满足后，Dispatcher 将任务置为 `DONE`；拒绝、超限、取消、适配器异常或缺少必需 artifact/gate 时置为 `FAILED`。Aggregator 随后推进下游任务。
 
 ### 5.2 测试失败反馈流程
 
@@ -303,7 +305,7 @@ Anthropic 文章将 Workflow 模式细分为五种：Prompt Chaining、Routing�
 
 ### 8.2 两种新节点语义
 
-**Parallel 节点**声明一组可并行执行的子任务。Aggregator 在 Parallel 节点的 `depends_on` 全部完成后，将其 `children` 列表中所有子任务的 `phase` 置为 `PENDING`，由各自服务的 Agent 主动抢占执行；子任务彼此之间不互相等待。Parallel 节点本身不分配 Agent，phase 在所有 children 完成后由 Aggregator 自动推进到 `DONE`。
+**Parallel 节点**声明一组可并行执行的子任务。Aggregator 在 Parallel 节点的 `depends_on` 全部完成后，将其 `children` 列表中所有子任务置为 `PENDING`，ACPDispatcher 为它们创建对应 Agent；子任务彼此之间不互相等待。Parallel 节点本身不分配 Agent，在所有 children 完成后由 Aggregator 自动推进到 `DONE`。
 
 **Aggregate 节点**是 fan-in 汇聚点，本身也不分配 Agent 执行。Aggregator 在 Aggregate 节点的 `depends_on`（通常是上游 Parallel 节点）的 phase 变为 `DONE` 后，将 Aggregate 节点自身直接标记为 `DONE` 并推进其下游。Aggregate 节点的存在主要是让 DAG 视觉上清晰、便于看板渲染汇聚关系，逻辑上可以省略——直接让下游任务的 `depends_on` 指向 Parallel 节点也能工作。
 
@@ -343,7 +345,7 @@ Anthropic 文章将 Workflow 模式细分为五种：Prompt Chaining、Routing�
 
 对 `task` 节点的处理与现有逻辑保持不变：上游全部 `DONE` 时置为 `PENDING`。对 `parallel` 节点，Aggregator 在其 `depends_on` 全部完成后，将其 `children` 全部置为 `PENDING`，并在 Parallel 节点上维护 `children_done_count` 字段；当 `children_done_count == len(children)` 时将 Parallel 节点自身置为 `DONE`。对 `aggregate` 节点，Aggregator 检测其 `depends_on` 的状态，全部 `DONE` 时直接将 Aggregate 节点置为 `DONE` 并推进其下游。
 
-值得强调的是：**Aggregator 全程不知道哪个 Agent 实例会执行 children 中的任务**——任务只声明逻辑 `agent_name`，由注册同名的实例主动认领。Parallel 节点只改变“何时把 children 置为 PENDING”，并未引入中心化 Agent 选择。
+值得强调的是：**Aggregator 全程不知道哪个 Agent 实例会执行 children 中的任务**。任务可声明 `acp.agent`，具体实例由 ACPDispatcher 在任务就绪时创建；Parallel 节点只决定何时把 children 置为 `PENDING`。
 
 ### 8.5 向后兼容保证
 

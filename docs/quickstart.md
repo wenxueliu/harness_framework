@@ -1,6 +1,6 @@
 # 1 分钟快速上手
 
-> 前提：Python 3.9+。不需要 Consul，不需要 pip install。
+> 前提：Python 3.9+、Node.js 22+，并已完成 Claude 或 Codex adapter 认证。不需要 Consul，也不需要 pip install。认证方法见 [ACP 执行架构](acp-execution.md#安装与认证)。
 
 ## Step 1：启动框架
 
@@ -36,14 +36,14 @@ curl -s http://127.0.0.1:8080/api/workflow/hello-001 | python3 -m json.tool
 curl -s http://127.0.0.1:8080/api/health
 ```
 
-你会看到 `hello` 任务状态为 `PENDING`——Aggregator 检测到它无依赖，已自动激活。
+你会看到 `hello` 从 `PENDING` 进入 `IN_PROGRESS`，完成后变为 `DONE`。首次运行时 `npx` 下载 adapter 可能稍慢。
 
 ## 发生了什么
 
 ```
 你定义 hello-world.json       →  框架写入 KV
 hello 无依赖                  →  Aggregator 设为 PENDING
-Agent 认领执行                →  IN_PROGRESS → DONE
+ACPDispatcher 创建 Claude Agent →  IN_PROGRESS → DONE
 ```
 
 ## 下一步

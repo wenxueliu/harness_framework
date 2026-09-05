@@ -89,7 +89,7 @@ def validate_dependencies(data: dict) -> list[str]:
     for name, info in tasks.items():
         t = info.get("type", "task")
         if t not in ("task", "parallel", "aggregate",
-                     "design", "review", "backend", "test", "deploy"):
+                     "design", "review", "backend", "frontend", "test", "deploy"):
             errors.append(f"task '{name}': invalid type '{t}'")
 
         if t == "parallel" and "children" not in info:
@@ -102,8 +102,41 @@ def validate_dependencies(data: dict) -> list[str]:
             errors.append(f"task '{name}': agent_name must be a non-empty string")
         if service_name is not None and not isinstance(service_name, str):
             errors.append(f"task '{name}': service_name must be a string")
-        if t not in ("parallel", "aggregate") and not agent_name:
-            errors.append(f"task '{name}': missing 'agent_name'")
+        if "acp" in info:
+            acp = info["acp"]
+            if not isinstance(acp, dict):
+                errors.append(f"task '{name}': acp must be an object")
+            else:
+                provider = acp.get("agent")
+                if provider is not None and provider not in {"claude", "codex"}:
+                    errors.append(
+                        f"task '{name}': acp.agent must be claude or codex"
+                    )
+                cwd = acp.get("cwd")
+                if cwd is not None and (not isinstance(cwd, str) or not cwd):
+                    errors.append(f"task '{name}': acp.cwd must be a non-empty string")
+                permission_policy = acp.get("permission_policy")
+                if permission_policy is not None and permission_policy not in {
+                    "allow_once", "deny"
+                }:
+                    errors.append(
+                        f"task '{name}': acp.permission_policy must be allow_once or deny"
+                    )
+                session = acp.get("session", {"mode": "new"})
+                if not isinstance(session, dict):
+                    errors.append(f"task '{name}': acp.session must be an object")
+                else:
+                    mode = session.get("mode", "new")
+                    if mode not in {"new", "continue", "resume"}:
+                        errors.append(f"task '{name}': invalid acp.session.mode '{mode}'")
+                    if mode == "continue" and not session.get("from_task"):
+                        errors.append(
+                            f"task '{name}': acp.session.from_task is required"
+                        )
+                    if mode == "resume" and not session.get("session_id"):
+                        errors.append(
+                            f"task '{name}': acp.session.session_id is required"
+                        )
         try:
             AgentContract.from_dict(info.get("agent_contract"))
             completion = CompletionContract.from_dict(info.get("completion_contract"))
@@ -176,6 +209,25 @@ def validate_dependencies(data: dict) -> list[str]:
                         f"task '{name}': execution session source task "
                         f"'{source_task}' not found in tasks"
                     )
+        acp = info.get("acp")
+        if isinstance(acp, dict):
+            session = acp.get("session", {})
+            if isinstance(session, dict) and session.get("mode") == "continue":
+                source_task = session.get("from_task", "")
+                if source_task not in tasks:
+                    errors.append(
+                        f"task '{name}': ACP session source task '{source_task}' not found"
+                    )
+                else:
+                    source_acp = tasks[source_task].get("acp", {})
+                    source_provider = (
+                        source_acp.get("agent") if isinstance(source_acp, dict) else None
+                    )
+                    current_provider = acp.get("agent")
+                    if source_provider and current_provider and source_provider != current_provider:
+                        errors.append(
+                            f"task '{name}': ACP continue requires the same agent provider"
+                        )
 
     return errors
 
@@ -220,6 +272,8 @@ def write_workflow(
             deps_dict[name]["activation"] = info["activation"]
         if "execution" in info:
             deps_dict[name]["execution"] = info["execution"]
+        if "acp" in info:
+            deps_dict[name]["acp"] = info["acp"]
 
     consul.kv_put(f"workflows/{req_id}/dependencies", json.dumps(deps_dict))
 
@@ -258,6 +312,11 @@ def write_workflow(
 
         if info.get("agent_name"):
             consul.kv_put(f"{t_base}/agent_name", info["agent_name"])
+
+        if "acp" in info:
+            consul.kv_put(
+                f"{t_base}/acp", json.dumps(info["acp"], ensure_ascii=False)
+            )
 
         if info.get("service_name"):
             consul.kv_put(f"{t_base}/service_name", info["service_name"])

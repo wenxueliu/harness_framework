@@ -1,6 +1,8 @@
 # 存储模式详解
 
 > **初次接触？** 先看 [quickstart.md](quickstart.md) 和 [concepts.md](concepts.md)。本文是三种存储后端的深度对比。
+>
+> 存储后端与 Agent 通信协议彼此独立：三种模式默认都由 ACPDispatcher 通过 stdio ACP 创建 Claude/Codex Agent。下文的注册、心跳和主动抢占命令只适用于 `--no-acp-dispatcher` 兼容模式。
 
 ## 目录
 
@@ -482,7 +484,7 @@ $ python scripts/file_kv.py --data-file /tmp/store.json get workflows/req-001/ta
 
 三种模式使用相同的 `sync_to_consul.py` 命令，无需区分。
 
-### Agent 注册
+### Agent 注册（仅旧 Worker 兼容模式）
 
 | 模式 | 命令 |
 |------|------|
@@ -518,8 +520,8 @@ $ python scripts/file_kv.py --data-file /tmp/store.json get workflows/req-001/ta
 
 Agent 接入的完整教程见 [agent-guide.md](agent-guide.md)。本节仅说明存储模式在选择接入方式时的影响。
 
-- **Consul / Local 模式**：Agent 使用 `stage-bridge` Skill（HTTP 通信），注册 → 心跳 → 抢占 → 执行 → 完成 → 注销的完整生命周期
-- **Local-File 模式**：Agent 使用 `file-kv` Skill（CLI 直接读写 JSON），无需注册和心跳，Watchdog 默认 Agent 始终存活
+- **默认 ACP 模式**：不区分存储后端；Dispatcher 创建任务范围的 ACP Agent，无需注册、心跳或抢占
+- **旧 Worker 兼容模式**：Consul / Local 使用 `stage-bridge`，Local-File 使用 `file-kv`
 
 核心结论：Consul 和 Local 模式对 Agent **完全透明**（相同的 curl 命令，只需改 `CONSUL_ADDR`）。Local-File 模式需要改用 `file_kv.py` CLI。
 
@@ -532,9 +534,9 @@ Agent 接入的完整教程见 [agent-guide.md](agent-guide.md)。本节仅说�
 | **启动 Consul/存储** | `./scripts/start_consul_dev.sh` | 无需操作（框架内嵌） | 无需操作 |
 | **启动框架** | `python -m harness_framework.daemon` | `--local` | `--local-file` |
 | **初始化需求** | `sync_to_consul.py`（同） | 同上 | 同上 |
-| **Agent 注册** | `curl → PUT /v1/agent/service/register` | 同一 curl 命令 | `file_kv.py register` |
-| **Agent 心跳** | `curl → PUT /v1/agent/check/pass/` | 同一 curl 命令 | `file_kv.py heartbeat` |
-| **任务抢占** | `curl → PUT ?cas=<index>` | 同一 curl 命令 | `file_kv.py put --cas` |
+| **Agent 创建（默认）** | ACPDispatcher → stdio ACP | 同左 | 同左 |
+| **Agent 注册（兼容）** | `curl → PUT /v1/agent/service/register` | 同一 curl 命令 | `file_kv.py register` |
+| **任务抢占（兼容）** | `curl → PUT ?cas=<index>` | 同一 curl 命令 | `file_kv.py put --cas` |
 | **读写数据** | `curl → GET/PUT /v1/kv/` | 同一 curl 命令 | `file_kv.py get/put` |
 | **Blocking Query** | Consul 原生长轮询 | 0.5s 轮询模拟 | 0.5s 轮询模拟 |
 | **ABORT 检测** | `curl → GET /v1/kv/.../control?raw` | 同一 curl 命令 | `file_kv.py get` |

@@ -119,6 +119,10 @@ def sync_to_consul(req_id: str, deps: dict, title: str,
             consul._put(f"{t_base}/service_name", info["service_name"])
         if info.get("agent_name"):
             consul._put(f"{t_base}/agent_name", info["agent_name"])
+        if info.get("acp"):
+            consul._put(
+                f"{t_base}/acp", json.dumps(info["acp"], ensure_ascii=False)
+            )
         if info.get("description"):
             consul._put(f"{t_base}/description", info["description"])
         if info.get("capability"):
@@ -167,7 +171,7 @@ def validate_deps(deps: dict) -> list[str]:
 
         node_type = info.get("type", "task")
 
-        if node_type not in ("design", "review", "backend", "test", "deploy",
+        if node_type not in ("design", "review", "backend", "frontend", "test", "deploy",
                               "parallel", "aggregate"):
             errors.append(f"{name}: 未知类型 '{node_type}'")
 
@@ -179,9 +183,10 @@ def validate_deps(deps: dict) -> list[str]:
                 if child not in all_names:
                     errors.append(f"{name}: child '{child}' 不在 deps 中")
 
-        if node_type not in ("parallel", "aggregate"):
-            if not info.get("agent_name"):
-                errors.append(f"{name}: 缺少 agent_name")
+        acp = info.get("acp", {})
+        if acp and (not isinstance(acp, dict)
+                    or acp.get("agent") not in {"claude", "codex"}):
+            errors.append(f"{name}: acp.agent 必须是 claude 或 codex")
 
         for dep in info.get("depends_on", []):
             if isinstance(dep, str) and dep not in all_names:
