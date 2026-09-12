@@ -130,6 +130,10 @@ class ACPClient:
     ) -> ACPResult:
         if not self.session_id:
             raise ACPError("ACP session has not been created")
+        # Cancellation applies to one turn. A loaded session remains usable for
+        # a subsequent human turn after an interrupt.
+        self._cancelled = False
+        update_offset = len(self.updates)
         response = self.request(
             "session/prompt",
             {"sessionId": self.session_id, "prompt": [{"type": "text", "text": text}]},
@@ -140,7 +144,7 @@ class ACPClient:
             session_id=self.session_id,
             stop_reason=response.get("stopReason", ""),
             response=response,
-            updates=list(self.updates),
+            updates=list(self.updates[update_offset:]),
             stderr="".join(self._stderr_lines)[-8000:],
         )
 

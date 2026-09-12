@@ -4,6 +4,7 @@ import json
 
 from harness_framework.acp_client import ACPResult
 from harness_framework.acp_dispatcher import ACPDispatcher
+from harness_framework.human_interaction import create_human_message, list_human_messages
 from harness_framework.run_manager import RunManager
 from tests.conftest import MockConsulStore
 
@@ -18,6 +19,7 @@ class FakeACPClient:
         self.update_handler = update_handler
         self.session_id = ""
         self.cancelled = False
+        self.prompts = []
         self.__class__.instances.append(self)
 
     def start(self):
@@ -35,8 +37,9 @@ class FakeACPClient:
         return session_id
 
     def prompt(self, text, *, timeout, should_cancel):
-        assert "TASK PACKAGE" in text
+        assert "TASK PACKAGE" in text or "HUMAN MESSAGE" in text
         assert not should_cancel()
+        self.prompts.append(text)
         update = {
             "sessionId": self.session_id,
             "update": {"sessionUpdate": "agent_message_chunk",
@@ -109,6 +112,35 @@ def test_task_acp_override_selects_claude_and_continues_session():
 
     assert claim["provider"] == "claude"
     assert FakeACPClient.instances[0].session_id == "prior-session"
+
+
+def test_pending_human_message_resumes_own_session_as_new_attempt():
+    FakeACPClient.instances.clear()
+    store = _store("backend")
+    base = "workflows/req-1/tasks/build"
+    store._store[f"{base}/acp/session_id"] = "existing-session"
+    create_human_message(
+        store, "req-1", "build", message="Use JWT instead", actor="alice",
+    )
+    dispatcher = ACPDispatcher(
+        store, RunManager(store),
+        commands={"claude": ["claude-acp"], "codex": ["codex-acp"]},
+        client_factory=FakeACPClient,
+    )
+    req_id, task_name, meta = dispatcher._pending_tasks()[0]
+    claim = dispatcher._claim(req_id, task_name, meta)
+    dispatcher._active[(req_id, task_name)] = {**claim, "client": None}
+
+    dispatcher._execute(req_id, task_name, meta, claim)
+
+    client = FakeACPClient.instances[0]
+    assert client.session_id == "existing-session"
+    assert len(client.prompts) == 1
+    assert "Use JWT instead" in client.prompts[0]
+    message = list_human_messages(store, "req-1", "build")[0]
+    assert message["status"] == "APPLIED"
+    assert message["response"] == "done"
+    assert store._store[f"{base}/status"] == "DONE"
 
 
 def test_continue_session_rejects_provider_mismatch():

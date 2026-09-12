@@ -1,6 +1,6 @@
 # 1 分钟快速上手
 
-> 前提：Python 3.9+、Node.js 22+，并已完成 Claude 或 Codex adapter 认证。不需要 Consul，也不需要 pip install。认证方法见 [ACP 执行架构](acp-execution.md#安装与认证)。
+> 前提：Python 3.9+、Node.js 22.12+，并已完成 Claude 或 Codex adapter 认证。不需要 Consul，也不需要 pip install。认证方法见 [ACP 执行架构](acp-execution.md#安装与认证)。
 
 ## Step 1：启动框架
 
@@ -23,7 +23,26 @@ python scripts/sync_to_consul.py examples/hello-world.json \
 
 这个命令创建了一个工作流 `hello-001`，包含一个任务 `hello`，且已发布。
 
-## Step 3：查看结果
+## Step 3：启动任务看板
+
+再开一个终端，从项目根目录运行 Dashboard 启动脚本：
+
+```bash
+./scripts/start_dashboard.sh
+```
+
+脚本会检查 Node.js 版本，并在首次运行或依赖更新后自动安装依赖。保持这个终端开着。
+
+终端输出 `Local: http://localhost:3000/` 后，在浏览器访问：
+
+```text
+http://127.0.0.1:3000/
+```
+
+Dashboard 会通过 Harness WebAPI 显示真实工作流。`8080` 是后端 API 端口，
+`http://127.0.0.1:8080/` 本身没有 HTML 页面。
+
+## Step 4：查看 API 结果
 
 ```bash
 # WebAPI 查询所有工作流状态
@@ -37,6 +56,14 @@ curl -s http://127.0.0.1:8080/api/health
 ```
 
 你会看到 `hello` 从 `PENDING` 进入 `IN_PROGRESS`，完成后变为 `DONE`。首次运行时 `npx` 下载 adapter 可能稍慢。
+
+端口分工：
+
+| 端口 | 用途 |
+|------|------|
+| `3000` | Dashboard 页面 |
+| `8080` | Harness WebAPI |
+| `8500` | `--local` 模式提供的 Consul 兼容 API |
 
 ## 发生了什么
 

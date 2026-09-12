@@ -383,6 +383,80 @@ class TestWebAPI:
         assert resp["code"] == 404
         assert "error" in resp["body"]
 
+    def test_session_route_normalizes_acp_events(self):
+        event = {
+            "timestamp": "2026-09-06T01:02:03Z",
+            "type": "ACP_UPDATE",
+            "provider": "claude",
+            "payload": {
+                "update": {
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": {"type": "text", "text": "finished"},
+                }
+            },
+        }
+        store = {
+            "workflows/req-001/sessions/backend/session-1/events/0001": json.dumps(event),
+        }
+        handler, _, _, _ = make_handler(store)
+
+        resp = call_do_method(
+            handler, "GET", "/api/sessions/req-001/backend?limit=100",
+        )
+
+        assert resp["code"] == 200
+        assert resp["body"]["req_id"] == "req-001"
+        assert resp["body"]["task"] == "backend"
+        assert resp["body"]["events"][0]["step_type"] == "ASSISTANT_MSG"
+        assert resp["body"]["events"][0]["message"] == "finished"
+
+    def test_task_message_is_queued_for_running_task(self):
+        store = {"workflows/req-001/tasks/backend/status": "IN_PROGRESS"}
+        handler, consul, _, _ = make_handler(store)
+        body = json.dumps({
+            "actor": "alice", "message": "Use JWT", "mode": "queue",
+        }).encode()
+
+        sent = call_do_method(
+            handler, "POST",
+            "/api/workflow/req-001/task/backend/messages", body,
+        )
+        listed = call_do_method(
+            handler, "GET", "/api/workflow/req-001/task/backend/messages",
+        )
+
+        assert sent["code"] == 202
+        assert sent["body"]["reopened"] is False
+        assert listed["body"]["messages"][0]["message"] == "Use JWT"
+        assert consul._store["workflows/req-001/tasks/backend/status"] == "IN_PROGRESS"
+
+    def test_task_message_reopens_completed_task_and_downstream(self):
+        store = {
+            "workflows/req-001/dependencies": json.dumps({
+                "backend": {"depends_on": []},
+                "test": {"depends_on": ["backend"]},
+            }),
+            "workflows/req-001/tasks/backend/status": "DONE",
+            "workflows/req-001/tasks/backend/validity": "VALID",
+            "workflows/req-001/tasks/test/status": "DONE",
+            "workflows/req-001/tasks/test/validity": "VALID",
+        }
+        handler, consul, _, _ = make_handler(store)
+        body = json.dumps({
+            "actor": "alice", "message": "Adjust the API", "mode": "queue",
+        }).encode()
+
+        resp = call_do_method(
+            handler, "POST",
+            "/api/workflow/req-001/task/backend/messages", body,
+        )
+
+        assert resp["code"] == 202
+        assert resp["body"]["reopened"] is True
+        assert consul._store["workflows/req-001/tasks/backend/status"] == "PENDING"
+        assert consul._store["workflows/req-001/tasks/test/status"] == "BLOCKED"
+        assert consul._store["workflows/req-001/tasks/backend/validity"] == "INVALIDATED"
+
     def test_control_pause(self):
         handler, consul, _, _ = make_handler({})
 

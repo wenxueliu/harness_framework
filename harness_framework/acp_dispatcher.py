@@ -11,6 +11,12 @@ import uuid
 from typing import Any, Callable
 
 from .acp_client import ACPClient, ACPError, ACPResult
+from .human_interaction import (
+    claim_next_human_message,
+    finish_human_message,
+    has_pending_interrupt,
+    list_human_messages,
+)
 from .kv_store_protocol import KVStore
 from .run_manager import RunManager
 
@@ -208,6 +214,7 @@ class ACPDispatcher:
         provider = claim["provider"]
         event_count = 0
         session_id = ""
+        current_message: dict[str, Any] | None = None
 
         def on_update(params: dict[str, Any]) -> None:
             nonlocal event_count
@@ -245,6 +252,15 @@ class ACPDispatcher:
                 json.dumps(initialized, ensure_ascii=False),
             )
             resume_id = self._session_to_resume(req_id, config, provider)
+            pending_human = list_human_messages(
+                self.store, req_id, task_name, pending_only=True,
+            )
+            resumed_for_human = False
+            if not resume_id and pending_human:
+                previous_session, _ = self.store.kv_get(f"{base}/acp/session_id")
+                if previous_session:
+                    resume_id = str(previous_session)
+                    resumed_for_human = True
             if resume_id:
                 session_id = client.load_session(resume_id)
             else:
@@ -255,13 +271,53 @@ class ACPDispatcher:
             self.run_manager.record_session_start(
                 req_id, claim["run_id"], task_name, session_id, claim["agent_id"]
             )
-            result = client.prompt(
-                self._build_prompt(req_id, task_name, meta),
-                timeout=self.task_timeout,
-                should_cancel=lambda: self._should_cancel(req_id, task_name, claim),
-            )
-            if result.stop_reason not in SUCCESS_STOP_REASONS:
-                raise ACPError(f"ACP turn stopped with {result.stop_reason or 'unknown reason'}")
+            prompt_text = self._build_prompt(req_id, task_name, meta)
+            if resumed_for_human:
+                current_message = claim_next_human_message(
+                    self.store, req_id, task_name,
+                )
+                if current_message:
+                    prompt_text = self._build_human_prompt(current_message)
+
+            while True:
+                result = client.prompt(
+                    prompt_text,
+                    timeout=self.task_timeout,
+                    should_cancel=lambda: (
+                        self._should_cancel(req_id, task_name, claim)
+                        or has_pending_interrupt(self.store, req_id, task_name)
+                    ),
+                )
+                if result.stop_reason not in SUCCESS_STOP_REASONS:
+                    interrupted = result.stop_reason in {"cancelled", "canceled"}
+                    if (not interrupted
+                            or self._should_cancel(req_id, task_name, claim)
+                            or not has_pending_interrupt(self.store, req_id, task_name)):
+                        raise ACPError(
+                            f"ACP turn stopped with {result.stop_reason or 'unknown reason'}"
+                        )
+                    if current_message:
+                        finish_human_message(
+                            self.store, req_id, task_name, current_message,
+                            status="INTERRUPTED",
+                            response=_agent_text(result.updates),
+                        )
+                        current_message = None
+                elif current_message:
+                    finish_human_message(
+                        self.store, req_id, task_name, current_message,
+                        status="APPLIED",
+                        response=_agent_text(result.updates),
+                    )
+                    current_message = None
+
+                current_message = claim_next_human_message(
+                    self.store, req_id, task_name,
+                )
+                if not current_message:
+                    break
+                prompt_text = self._build_human_prompt(current_message)
+
             missing = self._missing_completion_requirements(req_id, task_name)
             if missing:
                 raise ACPError("completion contract not satisfied: " + ", ".join(missing))
@@ -271,6 +327,11 @@ class ACPDispatcher:
                 "completed", f"ACP {provider} turn completed",
             )
         except Exception as exc:
+            if current_message:
+                finish_human_message(
+                    self.store, req_id, task_name, current_message,
+                    status="FAILED", error=str(exc),
+                )
             self._fail(req_id, task_name, claim, str(exc))
             if session_id:
                 self.run_manager.record_session_end(
@@ -350,6 +411,21 @@ class ACPDispatcher:
             "are required, record them with the installed stage-bridge commands before ending. "
             "Do not claim success when verification fails.\n\nTASK PACKAGE:\n"
             + json.dumps(package, ensure_ascii=False, indent=2)
+        )
+
+    @staticmethod
+    def _build_human_prompt(message: dict[str, Any]) -> str:
+        return (
+            "A human has provided a follow-up instruction for this task. "
+            "Apply it in the existing workspace and session, reconcile it with the "
+            "task requirements, and run appropriate verification. Do not merely "
+            "describe the requested change.\n\nHUMAN MESSAGE:\n"
+            + json.dumps({
+                "message_id": message.get("message_id", ""),
+                "actor": message.get("actor", ""),
+                "mode": message.get("mode", "queue"),
+                "message": message.get("message", ""),
+            }, ensure_ascii=False, indent=2)
         )
 
     def _load_context(

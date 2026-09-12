@@ -14,21 +14,18 @@
     "type": "design",
     "depends_on": [],
     "acp": {"agent": "claude"},
-    "service_name": "myservice",
     "description": "设计 REST API 端点：GET /api/tasks、POST /api/tasks"
   },
   "backend": {
     "type": "backend",
     "depends_on": ["design"],
     "acp": {"agent": "codex"},
-    "service_name": "myservice",
     "description": "实现 /api/tasks 端点的 CRUD 逻辑"
   },
   "test": {
     "type": "test",
     "depends_on": ["backend"],
     "acp": {"agent": "codex"},
-    "service_name": "myservice",
     "description": "对 /api/tasks 做集成测试：CRUD 四条路径 + 错误场景"
   }
 }
@@ -46,10 +43,14 @@ design ──→ backend ──→ test
 ## 2. 启动框架
 
 ```bash
-python -m harness_framework.daemon --local
+python -m harness_framework.daemon --local \
+  --acp-workspace-root /absolute/path/to/your/project
 ```
 
 保持终端开着。
+
+`--acp-workspace-root` 是未在任务中设置 `acp.cwd` 时的默认 Agent 工作目录。
+生产任务应明确指向实际项目目录；`service_name` 只是可选业务标签，不负责定位仓库。
 
 ## 3. 初始化工作流
 
@@ -60,7 +61,21 @@ python scripts/sync_to_consul.py my-first-dag.json \
 
 加了 `--publish`，工作流会被 Aggregator、ACPDispatcher 和 Watchdog 接管。
 
-## 4. 观察 DAG 自动推进
+## 4. 启动 Dashboard
+
+另开一个终端：
+
+```bash
+./scripts/start_dashboard.sh
+```
+
+脚本会检查 Node.js 版本，并在首次运行或依赖更新后自动安装依赖。保持这个终端开着。
+
+浏览器访问 [http://127.0.0.1:3000/](http://127.0.0.1:3000/)。Dashboard 通过
+`http://127.0.0.1:8080` 的 Harness WebAPI 读取真实任务数据；不要把 `8080/`
+当作页面地址。
+
+## 5. 观察 DAG 自动推进
 
 ```bash
 # 查看整体状态
@@ -78,7 +93,7 @@ myapp-001 → phase=RUNNING, progress=0%
 
 **关键点**：`design` 被激活后，ACPDispatcher 会立即创建 Claude Agent，因此查询时可能已经是 `IN_PROGRESS` 或 `DONE`。`backend` 和 `test` 在上游完成前保持 `BLOCKED`。
 
-## 5. 观察 Agent 自动执行
+## 6. 观察 Agent 自动执行
 
 无需注册或启动常驻 Worker。等待几秒后再次查看：
 
@@ -95,7 +110,7 @@ myapp-001 → phase=RUNNING, progress=33%
 └── test      → BLOCKED
 ```
 
-## 6. 等待工作流完成
+## 7. 等待工作流完成
 
 同一链路会继续创建 backend 与 test 的 Codex Agent。再次查看，所有任务成功时流程结束：
 
@@ -122,3 +137,4 @@ Agent 不需要轮询整个 DAG；Dispatcher 只把当前步骤及显式上下�
 | 配置 Claude/Codex adapter、权限和会话 | [ACP 执行架构 →](acp-execution.md) |
 | 了解故障恢复（超时、Agent 死亡如何处理） | [核心概念 →](concepts.md) |
 | 查看所有可用的 WebAPI 端点 | [操作手册 →](usage-guide.md) |
+| 在任务执行中补充要求或人工修复 | [人工介入任务 →](human-task-interaction.md) |

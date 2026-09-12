@@ -5,6 +5,8 @@ WebAPI — 为业务看板提供 HTTP 接口
 - /api/workflows                  ← 一次性返回所有需求的聚合视图（看板首屏）
 - /api/workflow/<req_id>          ← 单个需求的完整状态
 - /api/workflow/<req_id>/control  ← POST 写入 PAUSE / RESUME / ABORT / RETRY
+- /api/workflow/<req_id>/task/<task>/messages ← GET/POST 人工任务消息
+- /api/sessions/<req_id>/<task>   ← 分页、标准化的 Agent 执行时间线
 - /api/workflow/<req_id>/proposals ← GET 查看提案 / POST 确认或拒绝
 - /api/agents                     ← 当前所有注册 Agent 列表
 
@@ -21,10 +23,15 @@ from urllib.parse import urlparse, parse_qs
 
 from .kv_store_protocol import KVStore
 from .message_bus import MessageBus, MessageStatus
+from .human_interaction import (
+    create_human_message,
+    finish_human_message,
+    list_human_messages,
+)
+from .recovery import rewind_to_task
 from .workflow_skills import WorkflowSkills
 from .run_manager import RunManager
 from .contracts import ReviewPolicy
-from .recovery import rewind_to_task
 
 log = logging.getLogger("webapi")
 
@@ -65,6 +72,9 @@ class APIHandler(BaseHTTPRequestHandler):
                 return self._list_workflows()
             if path.startswith("/api/workflow/"):
                 parts = path.split("/")
+                if (len(parts) == 7 and parts[4] == "task"
+                        and parts[6] == "messages"):
+                    return self._get_task_messages(parts[3], parts[5])
                 if "/messages/" in path:
                     msg_idx = parts.index("messages")
                     if len(parts) > msg_idx + 1:
@@ -95,9 +105,9 @@ class APIHandler(BaseHTTPRequestHandler):
                 return self._get_workflow(req_id)
             if path.startswith("/api/sessions/"):
                 parts = path.split("/")
-                if len(parts) >= 4:
-                    req_id, task_name = parts[2], parts[3]
-                    return self._get_session_events(req_id, task_name)
+                if len(parts) >= 5:
+                    req_id, task_name = parts[3], parts[4]
+                    return self._get_session_events(req_id, task_name, u)
                 return self._send_json(400, {"error": "invalid sessions path"})
             if path == "/api/agents":
                 return self._list_agents()
@@ -116,6 +126,11 @@ class APIHandler(BaseHTTPRequestHandler):
             raw = self.rfile.read(length) if length else b""
             body = json.loads(raw) if raw else {}
 
+            parts = path.split("/")
+            if (len(parts) == 7 and parts[1:3] == ["api", "workflow"]
+                    and parts[4] == "task" and parts[6] == "messages"):
+                return self._send_task_message(parts[3], parts[5], body)
+
             if (path.startswith("/api/workflow/")
                     and path.endswith("/requirement-change/assessed")):
                 req_id = path.split("/")[-3]
@@ -129,7 +144,6 @@ class APIHandler(BaseHTTPRequestHandler):
             if path.startswith("/api/workflow/") and path.endswith("/proposals"):
                 req_id = path.split("/")[-2]
                 return self._confirm_proposal(req_id, body)
-            parts = path.split("/")
             if (len(parts) == 7 and parts[1:3] == ["api", "workflow"]
                     and parts[4] == "task"
                     and parts[6] in {"approve", "reject"}):
@@ -275,12 +289,15 @@ class APIHandler(BaseHTTPRequestHandler):
         data = self.run_manager.export_run_sessions(req_id, run_id)
         self._send_json(200, data)
 
-    def _get_session_events(self, req_id: str, task_name: str):
+    def _get_session_events(self, req_id: str, task_name: str, parsed_url=None):
         items, _ = self.consul.kv_get(
             f"workflows/{req_id}/sessions/{task_name}/", recurse=True
         )
         if not items:
-            return self._send_json(200, {"req_id": req_id, "task": task_name, "events": []})
+            return self._send_json(200, {
+                "req_id": req_id, "task": task_name, "events": [],
+                "sessions": [], "total": 0, "next_cursor": None,
+            })
 
         prefix = f"workflows/{req_id}/sessions/{task_name}/"
         # 按 session_id 分组
@@ -309,20 +326,85 @@ class APIHandler(BaseHTTPRequestHandler):
                 entry = sessions[sid]["events"].setdefault(seq, {"seq": seq})
                 entry[field] = it.get("_decoded", "")
 
-        # 扁平化为有序列表
+        # 扁平化、标准化为前端时间线事件。
         result: list[dict] = []
         for sid_data in sessions.values():
             evts = list(sid_data["events"].values())
             evts.sort(key=lambda e: str(e.get("seq", "")))
-            result.extend(evts)
+            result.extend(
+                _normalize_session_event(event, sid_data["session_id"])
+                for event in evts
+            )
+
+        result = [event for event in result if event is not None]
+        result.sort(key=lambda event: (str(event.get("ts", "")), str(event.get("seq", ""))))
+        result = _coalesce_timeline_events(result)
+
+        query = parse_qs(parsed_url.query) if parsed_url is not None else {}
+        try:
+            limit = max(1, min(int(query.get("limit", ["200"])[0]), 500))
+            cursor_raw = query.get("cursor", [""])[0]
+            start = int(cursor_raw) if cursor_raw else max(0, len(result) - limit)
+        except (TypeError, ValueError):
+            return self._send_json(400, {"error": "cursor and limit must be integers"})
+        start = max(0, min(start, len(result)))
+        page = result[start:start + limit]
+        next_cursor = start + len(page)
+        if next_cursor >= len(result):
+            next_cursor = None
 
         self._send_json(200, {
             "req_id": req_id,
             "task": task_name,
-            "events": result,
+            "events": page,
             "sessions": [{"session_id": s["session_id"], "event_count": len(s["events"])}
                          for s in sessions.values()],
+            "total": len(result),
+            "next_cursor": next_cursor,
         })
+
+    def _get_task_messages(self, req_id: str, task_name: str):
+        self._send_json(200, {
+            "req_id": req_id,
+            "task": task_name,
+            "messages": list_human_messages(self.consul, req_id, task_name),
+        })
+
+    def _send_task_message(self, req_id: str, task_name: str, body: dict):
+        base = f"workflows/{req_id}/tasks/{task_name}"
+        status, _ = self.consul.kv_get(f"{base}/status")
+        if status is None:
+            return self._send_json(404, {"error": "task not found"})
+        item = None
+        try:
+            item = create_human_message(
+                self.consul, req_id, task_name,
+                message=body.get("message", ""),
+                actor=body.get("actor", ""),
+                mode=body.get("mode", "queue"),
+            )
+            reopened = False
+            if status in {"DONE", "FAILED", "AWAITING_REVIEW", "WAITING_FOR_HUMAN"}:
+                rewind_to_task(
+                    self.consul, req_id, task_name, task_name,
+                    {
+                        "source": "human",
+                        "message_id": item["message_id"],
+                        "comment": item["message"],
+                    },
+                    actor=item["actor"], allowed_targets=[task_name],
+                    run_manager=self.run_manager,
+                )
+                self.consul.kv_delete(f"{base}/control")
+                reopened = True
+        except (ValueError, RuntimeError, json.JSONDecodeError) as exc:
+            if item is not None:
+                finish_human_message(
+                    self.consul, req_id, task_name, item,
+                    status="FAILED", error=str(exc),
+                )
+            return self._send_json(400, {"error": str(exc)})
+        self._send_json(202, {"ok": True, "message": item, "reopened": reopened})
 
     def _list_agents(self):
         services = self.consul.list_services("agent-worker")
@@ -654,6 +736,91 @@ class APIHandler(BaseHTTPRequestHandler):
         if result["success"]:
             return self._send_json(200, result)
         return self._send_json(400, result)
+
+
+def _normalize_session_event(event: dict, session_id: str) -> dict | None:
+    """Convert raw ACP updates and legacy events to the dashboard timeline schema."""
+    if event.get("step_type"):
+        return {
+            **event,
+            "ts": event.get("ts") or event.get("timestamp") or "",
+            "level": event.get("level") or "info",
+            "message": event.get("message") or event.get("type") or "Event",
+            "session_id": session_id,
+        }
+
+    if event.get("type") != "ACP_UPDATE":
+        return {
+            "seq": event.get("seq", ""),
+            "ts": event.get("timestamp", ""),
+            "agent_id": event.get("agent_id", ""),
+            "level": event.get("level", "info"),
+            "step_type": event.get("type", "EVENT"),
+            "message": event.get("message", event.get("type", "Event")),
+            "data": event.get("data", {}),
+            "session_id": session_id,
+        }
+
+    payload = event.get("payload", {})
+    update = payload.get("update", {}) if isinstance(payload, dict) else {}
+    update_type = update.get("sessionUpdate", "ACP_UPDATE")
+    if update_type in {"available_commands_update", "current_mode_update"}:
+        return None
+
+    step_type = {
+        "agent_message_chunk": "ASSISTANT_MSG",
+        "tool_call": "TOOL_CALL",
+        "tool_call_update": "TOOL_RESULT",
+        "plan": "PLAN",
+        "usage_update": "USAGE",
+    }.get(update_type, "ACP_UPDATE")
+    level = "error" if update.get("status") == "failed" else "info"
+    message = _event_message(update_type, update)
+    return {
+        "seq": event.get("seq", ""),
+        "ts": event.get("timestamp", ""),
+        "agent_id": event.get("provider", ""),
+        "level": level,
+        "step_type": step_type,
+        "message": message,
+        "data": {
+            "tool_call_id": update.get("toolCallId", ""),
+            "status": update.get("status", ""),
+            "kind": update.get("kind", ""),
+        },
+        "session_id": session_id,
+    }
+
+
+def _event_message(update_type: str, update: dict) -> str:
+    content = update.get("content")
+    if isinstance(content, dict) and isinstance(content.get("text"), str):
+        return content["text"]
+    if isinstance(content, list):
+        chunks = [
+            item.get("text", "") for item in content
+            if isinstance(item, dict) and isinstance(item.get("text"), str)
+        ]
+        if chunks:
+            return "".join(chunks)
+    for key in ("title", "message", "status"):
+        if isinstance(update.get(key), str) and update[key]:
+            return update[key]
+    return update_type.replace("_", " ")
+
+
+def _coalesce_timeline_events(events: list[dict]) -> list[dict]:
+    """Join adjacent assistant chunks so one response is readable as one event."""
+    result: list[dict] = []
+    for event in events:
+        if (result and event.get("step_type") == "ASSISTANT_MSG"
+                and result[-1].get("step_type") == "ASSISTANT_MSG"
+                and result[-1].get("session_id") == event.get("session_id")):
+            result[-1]["message"] += event.get("message", "")
+            result[-1]["seq"] = event.get("seq", result[-1].get("seq", ""))
+            continue
+        result.append(event)
+    return result
 
 
 def serve(consul: KVStore, host: str = "0.0.0.0", port: int = 8080,

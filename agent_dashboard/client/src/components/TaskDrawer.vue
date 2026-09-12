@@ -1,7 +1,12 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { onMounted, onUnmounted, ref, watch } from 'vue'
 import type { Task, SessionEvent } from '@/lib/mockData'
-import { fetchTaskSessionEvents } from '@/lib/consulApi'
+import {
+  fetchTaskMessages,
+  fetchTaskSessionEvents,
+  sendTaskMessage,
+  type HumanMessage,
+} from '@/lib/harnessApi'
 import StatusBadge from './StatusBadge.vue'
 import ExecutionTimeline from './ExecutionTimeline.vue'
 import {
@@ -13,6 +18,7 @@ import {
   Camera,
   History,
   RefreshCw,
+  Send,
 } from 'lucide-vue-next'
 import { cn } from '@/lib/utils'
 
@@ -21,10 +27,16 @@ const props = defineProps<{
   reqId?: string
   onClose: () => void
 }>()
+const emit = defineEmits<{ messageSent: [] }>()
 
 const sessionEvents = ref<SessionEvent[]>([])
+const humanMessages = ref<HumanMessage[]>([])
 const sessionLoading = ref(false)
 const sessionError = ref('')
+const messageDraft = ref('')
+const messageMode = ref<'queue' | 'interrupt'>('queue')
+const messageSending = ref(false)
+const messageError = ref('')
 
 async function loadSessions() {
   if (!props.task || !props.reqId) return
@@ -41,14 +53,57 @@ async function loadSessions() {
   }
 }
 
+async function loadMessages() {
+  if (!props.task || !props.reqId) return
+  try {
+    humanMessages.value = await fetchTaskMessages(props.reqId, props.task.id)
+  } catch {
+    messageError.value = '加载人工消息失败'
+  }
+}
+
+async function submitMessage() {
+  if (!props.task || !props.reqId || !messageDraft.value.trim()) return
+  messageSending.value = true
+  messageError.value = ''
+  try {
+    await sendTaskMessage(props.reqId, props.task.id, {
+      message: messageDraft.value.trim(),
+      actor: 'human:web',
+      mode: messageMode.value,
+    })
+    messageDraft.value = ''
+    await Promise.all([loadMessages(), loadSessions()])
+    emit('messageSent')
+  } catch (error) {
+    messageError.value = error instanceof Error ? error.message : '发送消息失败'
+  } finally {
+    messageSending.value = false
+  }
+}
+
 // Reload sessions when task changes
 watch(() => props.task?.id, () => {
   sessionEvents.value = []
+  humanMessages.value = []
   sessionError.value = ''
+  messageError.value = ''
   if (props.task && props.reqId) {
-    loadSessions()
+    void Promise.all([loadSessions(), loadMessages()])
   }
 }, { immediate: true })
+
+let refreshTimer: ReturnType<typeof setInterval> | null = null
+onMounted(() => {
+  refreshTimer = setInterval(() => {
+    if (props.task && props.reqId) {
+      void Promise.all([loadSessions(), loadMessages()])
+    }
+  }, 3000)
+})
+onUnmounted(() => {
+  if (refreshTimer) clearInterval(refreshTimer)
+})
 
 function formatDate(iso: string): string {
   return new Date(iso).toLocaleString('zh-CN', {
@@ -185,6 +240,59 @@ function formatDate(iso: string): string {
             {{ dep }}
           </span>
         </div>
+      </div>
+
+      <!-- Execution History -->
+      <div v-if="reqId" class="mt-3 py-2.5 border-t border-border/50">
+        <div class="flex items-center gap-1.5 mb-2">
+          <Send :size="12" class="text-muted-foreground" />
+          <span class="text-xs text-muted-foreground font-medium">人工介入</span>
+        </div>
+
+        <div v-if="humanMessages.length" class="space-y-2 mb-3">
+          <div
+            v-for="item in humanMessages"
+            :key="item.message_id"
+            class="rounded border border-border/50 bg-accent/30 px-2 py-1.5"
+          >
+            <div class="flex items-center justify-between gap-2 text-[10px] font-mono text-muted-foreground">
+              <span>{{ item.actor }} · {{ item.mode }}</span>
+              <span>{{ item.status }}</span>
+            </div>
+            <div class="mt-1 text-[11px] text-foreground whitespace-pre-wrap break-words">{{ item.message }}</div>
+            <div v-if="item.response" class="mt-1.5 border-t border-border/50 pt-1.5 text-[11px] text-muted-foreground whitespace-pre-wrap break-words">
+              Agent：{{ item.response }}
+            </div>
+            <div v-if="item.error" class="mt-1 text-[11px] text-red-400">{{ item.error }}</div>
+          </div>
+        </div>
+
+        <textarea
+          v-model="messageDraft"
+          rows="3"
+          placeholder="补充要求、说明人工修改，或要求 Agent 调整…"
+          class="w-full rounded border border-border bg-background px-2 py-1.5 text-xs text-foreground placeholder:text-muted-foreground resize-y focus:outline-none focus:border-blue-400"
+          @keydown.ctrl.enter="submitMessage"
+        />
+        <div class="flex items-center gap-2 mt-2">
+          <select
+            v-model="messageMode"
+            class="rounded border border-border bg-background px-2 py-1 text-[11px] text-foreground"
+          >
+            <option value="queue">当前步骤后处理</option>
+            <option value="interrupt">中断并立即处理</option>
+          </select>
+          <button
+            class="ml-auto inline-flex items-center gap-1 rounded bg-blue-500 px-2 py-1 text-[11px] text-white disabled:opacity-40"
+            :disabled="messageSending || !messageDraft.trim()"
+            @click="submitMessage"
+          >
+            <Send :size="10" />
+            {{ messageSending ? '发送中' : '发送' }}
+          </button>
+        </div>
+        <div v-if="messageError" class="mt-1.5 text-xs text-red-400">{{ messageError }}</div>
+        <div class="mt-1 text-[10px] text-muted-foreground">Ctrl+Enter 发送；已结束任务会创建新 attempt 并恢复原 session。</div>
       </div>
 
       <!-- Execution History -->

@@ -2,10 +2,10 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import type { Workflow, Task } from '@/lib/mockData'
 import {
-  fetchWorkflowsFromConsul,
-  sendControlSignalToConsul,
-  pingConsul,
-} from '@/lib/consulApi'
+  fetchWorkflowsFromHarness,
+  sendControlSignalToHarness,
+  pingHarness,
+} from '@/lib/harnessApi'
 import { fetchWorkflows as fetchWorkflowsMock, sendControlSignal as sendControlSignalMock, PHASE_CONFIG, TASK_TYPE_ICON } from '@/lib/mockData'
 import DagGraph from '@/components/DagGraph.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
@@ -42,7 +42,7 @@ const selectedId = ref<string | null>(null)
 const selectedTask = ref<Task | null>(null)
 const pendingSignal = ref<ControlSignal | null>(null)
 const pendingTaskName = ref<string | null>(null)
-const dataSource = ref<'consul' | 'mock'>('mock')
+const dataSource = ref<'api' | 'mock'>('mock')
 const dialogOpen = ref(false)
 const refreshing = ref(false)
 const sheetOpen = ref(false)
@@ -81,21 +81,25 @@ async function load(silent = false) {
   else refreshing.value = true
   try {
     let data: Workflow[] = []
-    let usedConsul = false
+    let usedApi = false
     try {
-      const consulOk = await pingConsul()
-      if (consulOk) {
-        data = await fetchWorkflowsFromConsul()
-        usedConsul = true
+      const apiOk = await pingHarness()
+      if (apiOk) {
+        data = await fetchWorkflowsFromHarness()
+        usedApi = true
       }
     } catch (e) {
-      console.warn('Consul fetch failed, falling back to mock', e)
+      console.warn('Harness API fetch failed, falling back to mock', e)
     }
-    if (!usedConsul || data.length === 0) {
+    if (!usedApi) {
       data = await fetchWorkflowsMock()
     }
-    dataSource.value = usedConsul && data.length > 0 ? 'consul' : 'mock'
+    dataSource.value = usedApi ? 'api' : 'mock'
     workflows.value = data
+    if (selectedTask.value && selectedId.value) {
+      const refreshedWorkflow = data.find((workflow) => workflow.id === selectedId.value)
+      selectedTask.value = refreshedWorkflow?.tasks[selectedTask.value.id] ?? null
+    }
     if (data.length > 0 && !selectedId.value) {
       selectedId.value = data[0].id
     }
@@ -127,8 +131,8 @@ async function handleConfirm() {
   if (!pendingSignal.value || !selectedId.value) return
   dialogOpen.value = false
   try {
-    if (dataSource.value === 'consul') {
-      await sendControlSignalToConsul(
+    if (dataSource.value === 'api') {
+      await sendControlSignalToHarness(
         selectedId.value,
         pendingSignal.value,
         pendingTaskName.value ?? undefined,
@@ -138,7 +142,7 @@ async function handleConfirm() {
     }
     console.log(`控制信号已发送: ${pendingSignal.value}`)
   } catch {
-    console.error('指令发送失败，请检查 Consul 连接')
+    console.error('指令发送失败，请检查 Harness API 连接')
   }
   pendingSignal.value = null
   pendingTaskName.value = null
@@ -187,11 +191,11 @@ function selectWorkflow(id: string) {
         <span
           :class="cn(
             'w-1.5 h-1.5 rounded-full pulse-dot',
-            dataSource === 'consul' ? 'bg-emerald-400' : 'bg-amber-400',
+            dataSource === 'api' ? 'bg-emerald-400' : 'bg-amber-400',
           )"
         />
         <span class="text-xs text-muted-foreground font-mono">
-          {{ dataSource === 'consul' ? 'Consul · 已连接' : 'Mock · 演示数据' }}
+          {{ dataSource === 'api' ? 'Harness API · 已连接' : 'Mock · 演示数据' }}
         </span>
       </div>
 
@@ -531,7 +535,7 @@ function selectWorkflow(id: string) {
 
               <!-- Desktop right task detail -->
               <div v-if="selectedTask" class="hidden md:flex w-64 flex-shrink-0 overflow-hidden border-l border-border">
-                <TaskDrawer :task="selectedTask" :req-id="selectedId ?? undefined" @close="selectedTask = null" />
+                <TaskDrawer :task="selectedTask" :req-id="selectedId ?? undefined" @close="selectedTask = null" @message-sent="load(true)" />
               </div>
             </div>
           </div>
@@ -589,7 +593,7 @@ function selectWorkflow(id: string) {
           <div class="w-10 h-1 rounded-full bg-border" />
         </div>
         <div class="overflow-y-auto" :style="{ maxHeight: 'calc(75vh - 32px)' }">
-          <TaskDrawer :task="selectedTask" :req-id="selectedId ?? undefined" @close="taskDrawerOpen = false" />
+          <TaskDrawer :task="selectedTask" :req-id="selectedId ?? undefined" @close="taskDrawerOpen = false" @message-sent="load(true)" />
         </div>
       </div>
     </Teleport>
