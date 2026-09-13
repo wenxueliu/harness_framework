@@ -192,10 +192,20 @@ class Page:
         self.default_timeout = timeout
 
     def goto(self, url: str) -> None:
-        result = self._command("navigate", {
+        args = {
             "url": url, "newTab": not bool(self._url),
             "group_title": "Harness E2E（Kimi WebBridge）",
-        })
+        }
+        try:
+            result = self._command("navigate", args)
+        except WebBridgeError as exc:
+            # The extension can retain a stale tab id after another test has
+            # closed its group. Reset only this test session and retry once.
+            if "No tab with given id" not in str(exc):
+                raise
+            self.close_session()
+            self._url = ""
+            result = self._command("navigate", {**args, "newTab": True})
         self._url = str(result.get("url", url))
 
     @property
@@ -204,6 +214,14 @@ class Page:
 
     def reload(self) -> None:
         self.goto(self._url)
+
+    def close_session(self) -> None:
+        """Close tabs opened by this test session only."""
+        try:
+            self._command("close_session")
+        except Exception:
+            # Browser teardown must not hide the test result.
+            pass
 
     def title(self) -> str:
         return str(self.evaluate("() => document.title"))

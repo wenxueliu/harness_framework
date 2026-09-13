@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import time
 from datetime import datetime
 from pathlib import Path
@@ -18,6 +19,12 @@ from typing import Any
 import pytest
 import requests
 from .webbridge import Page
+
+from harness_framework.consul_client import ConsulClient
+from harness_framework.project_groups import ProjectGroupService
+from harness_framework.run_manager import RunManager
+from harness_framework.workspace_manager import WorkspaceManager
+from harness_framework.workspace_security import WorkspaceSecurity
 
 
 # ---- 路径常量 ----
@@ -123,6 +130,23 @@ def cleanup_test_workflow(req_id: str) -> None:
         pass  # 清理失败不阻断测试
 
 
+def api_json(method: str, path: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Call the real Dashboard WebAPI used by the browser."""
+    response = requests.request(
+        method,
+        f"{WEBAPI_URL}{path}",
+        json=body,
+        headers={
+            "Content-Type": "application/json",
+            "Idempotency-Key": f"e2e-{time.time_ns()}",
+        },
+        timeout=20,
+    )
+    if response.status_code >= 300:
+        raise RuntimeError(f"{method} {path}: {response.status_code} {response.text[:500]}")
+    return response.json()
+
+
 @pytest.fixture
 def page(request: pytest.FixtureRequest) -> Page:
     """每个测试独立的 WebBridge session，操作用户真实 Chrome。"""
@@ -130,7 +154,10 @@ def page(request: pytest.FixtureRequest) -> Page:
         pytest.skip("Kimi WebBridge daemon unavailable at 127.0.0.1:10086")
     pg = Page(session=f"harness-e2e-{request.node.name}")
     pg.set_default_timeout(DEFAULT_TIMEOUT)
-    yield pg
+    try:
+        yield pg
+    finally:
+        pg.close_session()
 
 
 @pytest.fixture
@@ -199,6 +226,144 @@ def consul_multi_workflow() -> list[str]:
 
     for rid in req_ids:
         cleanup_test_workflow(rid)
+
+
+@pytest.fixture
+def workspace_user_journey(unique_req_id: str) -> dict[str, Any]:
+    """Provision the complete data model used by the workspace user journey.
+
+    The fixture talks to the same HTTP API and KV endpoint as the browser, then
+    uses the domain WorkspaceManager only to create immutable Attempt bindings.
+    This keeps the UI test focused on user-visible behavior while still testing
+    real Run/Workspace/Attempt records instead of mock-only placeholders.
+    """
+    req_id = f"journey-{unique_req_id}"
+    group_id = ""
+    project_workspace_id = ""
+    run_id = ""
+    isolated_ids: list[str] = []
+    store = ConsulClient(addr=CONSUL_URL)
+    workspace_manager: WorkspaceManager | None = None
+    run_root = ""
+    try:
+        create_test_workflow(
+            req_id,
+            title="Workspace 用户旅程",
+            tasks={
+                "design": {"type": "design", "depends_on": [], "status_hint": "DONE"},
+                "backend": {"type": "backend", "depends_on": ["design"], "status_hint": "IN_PROGRESS"},
+            },
+        )
+        group_id = api_json(
+            "POST", "/api/project-groups",
+            {"name": f"E2E Workspace {unique_req_id[-8:]}", "description": "UI journey"},
+        )["project_group"]["group_id"]
+        consul_put(f"workflows/{req_id}/project-group", group_id)
+        # A primary workflow relation is indexed separately from cross-group
+        # references; the latter endpoint intentionally rejects primary refs.
+        consul_put(f"project-groups/{group_id}/workflows/{req_id}", "primary")
+        project_workspace_id = api_json(
+            "POST", f"/api/project-groups/{group_id}/workspaces",
+            {
+                "name": "examples",
+                "source_type": "LOCAL_PATH",
+                "root_alias": "default",
+                "relative_path": "examples",
+                "access": "READ_WRITE",
+            },
+        )["workspace"]["workspace_id"]
+        run = api_json(
+            "POST", f"/api/workflows/{req_id}/runs",
+            {"workspace": {"project_workspace_id": project_workspace_id, "strategy": "CONTROLLED_COPY"}},
+        )
+        run_id = run["run"]["run_id"]
+
+        workspace_manager = WorkspaceManager(
+            store,
+            WorkspaceSecurity({"default": str(Path.cwd())}),
+            ProjectGroupService(store),
+            provision_root_alias="default",
+        )
+        run_workspace = workspace_manager.get_run_workspace(req_id, run_id, include_root=True)
+        run_root = workspace_manager.security.resolve_root_ref(run_workspace["root_ref"], must_exist=False)
+
+        # Two immutable attempts make the Attempt switcher and explicit merge
+        # flow visible in the workbench.
+        for attempt_id in ("attempt-journey-1", "attempt-journey-2"):
+            isolated = workspace_manager.provision_isolated_workspace(
+                req_id=req_id, run_id=run_id, task_id="backend", attempt_id=attempt_id,
+            )
+            isolated_ids.append(isolated["workspace_id"])
+            workspace_manager.bind_attempt(
+                req_id=req_id, run_id=run_id, task_id="backend", attempt_id=attempt_id,
+                write_scope=("hello-world.json",), isolated_workspace_id=isolated["workspace_id"],
+            )
+            time.sleep(0.02)
+
+        source_path = Path(workspace_manager.resolve_attempt_path(
+            req_id, run_id, "backend", "attempt-journey-1"
+        )) / "hello-world.json"
+        source_path.write_text(
+            source_path.read_text(encoding="utf-8") + "\n// changed by source attempt\n",
+            encoding="utf-8",
+        )
+
+        # Seed one legacy session event so the Workbench timeline has a
+        # meaningful, filtered execution history for the selected attempt.
+        session_id = "session-journey"
+        now = datetime.utcnow().isoformat() + "Z"
+        store.kv_put(
+            f"workflows/{req_id}/sessions/backend/{session_id}/events/000001",
+            json.dumps({
+                "type": "FILE_EDIT", "timestamp": now, "agent_id": "agent-journey",
+                "message": "Agent inspected workspace", "run_id": run_id,
+                "attempt_id": "attempt-journey-2", "data": {"file": "hello-world.json"},
+            }, ensure_ascii=False),
+        )
+        run_manager = RunManager(store)
+        run_manager.record_session_start(
+            req_id, run_id, "backend", session_id, "agent-journey", "attempt-journey-2"
+        )
+        run_manager.record_session_end(
+            req_id, run_id, "backend", event_count=1, status="completed",
+            summary="Workspace journey complete", attempt_id="attempt-journey-2",
+        )
+    except Exception as exc:
+        cleanup_test_workflow(req_id)
+        if group_id:
+            try:
+                consul_delete(f"project-groups/{group_id}", recurse=True)
+            except Exception:
+                pass
+        pytest.skip(f"Workspace journey setup unavailable: {exc}")
+
+    try:
+        yield {
+            "req_id": req_id,
+            "group_id": group_id,
+            "run_id": run_id,
+            "project_workspace_id": project_workspace_id,
+        }
+    finally:
+        if workspace_manager:
+            for isolated_id in isolated_ids:
+                try:
+                    workspace_manager.discard_isolated_workspace(isolated_id)
+                except Exception:
+                    pass
+        if run_root:
+            shutil.rmtree(run_root, ignore_errors=True)
+        cleanup_test_workflow(req_id)
+        if group_id:
+            try:
+                consul_delete(f"project-groups/{group_id}", recurse=True)
+            except Exception:
+                pass
+        if project_workspace_id:
+            try:
+                consul_delete(f"workspaces/projects/{project_workspace_id}", recurse=True)
+            except Exception:
+                pass
 
 
 @pytest.fixture(autouse=True)

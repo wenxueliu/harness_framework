@@ -605,7 +605,17 @@ API 测试通过真实 HTTP/ASGI 服务器验证上述契约；不要求额外�
 
 覆盖 Viewer 浏览、Developer 保存并 queue、Maintainer 创建/控制 Run、Owner 管理成员和归档；覆盖 DAG 到 Task 深链、刷新恢复、Attempt 切换、三方 Diff 与部分成功提示。
 
-UI 自动化使用 Dashboard 的浏览器驱动测试，覆盖项目组、Run、Task Workbench、Attempt 切换、文件树、编辑冲突、Merge Task、日志和 SSE 重连提示。
+UI 自动化使用 Dashboard 的浏览器驱动测试，按用户旅程覆盖：
+
+1. 进入项目组和 Workflow，选择 Task，进入稳定的 Task Workbench URL；
+2. 查看 Run/Attempt/Session 历史，浏览文件树并搜索文件；
+3. 通过人工消息补充上下文，切换 Attempt，查看 Diff；
+4. 创建并应用 Merge Task，随后跳转执行日志和全局配置；
+5. 独立覆盖控制对话框、DAG/任务列表、权限入口和 SSE 日志页面。
+
+对应用例为 `tests/e2e/test_dashboard_user_journey.py`、
+`tests/e2e/test_dashboard_workbench.py`，由 `workspace_user_journey` 夹具创建真实
+Project Group、Run Workspace、两个 Attempt Binding 和 Session 历史，不使用 Demo fixture。
 
 ### 安全与性能测试
 
@@ -667,7 +677,7 @@ UI 自动化使用 Dashboard 的浏览器驱动测试，覆盖项目组、Run、
 
 满足本文后，`dashboard-ui-design.md` 可以直接进入按 Phase 拆分和编码阶段；后续澄清应限制在具体实现细节或 ADR，不再阻塞整体开发。
 
-## 19. 当前代码落地状态（2026-09-13）
+## 19. 当前代码落地状态（2026-09-14）
 
 本轮实现已经把上述契约接入现有 Harness，而不是另起一套演示数据源：
 
@@ -677,4 +687,4 @@ UI 自动化使用 Dashboard 的浏览器驱动测试，覆盖项目组、Run、
 - Phase 6：EventJournal 保留窗口、SSE 过滤/心跳/游标重放/reset、ASGI 入口、执行日志筛选/导出、Workspace RETAINED/CLEANUP_PENDING/Trash/恢复/后台清理 Worker、Agent/Human/External 文件事件和审计已落地。
 - 前端真实 API 是唯一事实源；只有显式 `VITE_DEMO_MODE=true` 才加载 Demo fixture。项目组、工作区、Run 创建、Task Workbench、文件编辑、Merge Task 和执行日志都有真实路由。
 
-验证方式限定为 API 集成测试和 UI 自动化测试；不新增单元测试。API 测试覆盖真实 HTTP/ASGI 契约，UI 测试覆盖 Dashboard 关键路径、Attempt 切换、文件编辑冲突和日志导航。
+验证方式限定为 API 集成测试和 UI 自动化测试；不新增单元测试。API 测试覆盖真实 HTTP/ASGI 契约，UI 测试覆盖上述完整用户旅程、Attempt 切换、文件搜索/Diff、人工介入、Merge Task 和日志导航。
