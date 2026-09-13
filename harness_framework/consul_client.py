@@ -15,6 +15,8 @@ import urllib.request
 import urllib.error
 from typing import Any, Optional
 
+from .kv_pagination import paginate_items
+
 
 class ConsulClient:
     def __init__(self, addr: Optional[str] = None, token: Optional[str] = None,
@@ -116,6 +118,22 @@ class ConsulClient:
         v = items[0].get("Value")
         decoded = base64.b64decode(v).decode("utf-8") if v else ""
         return decoded, new_index
+
+    def kv_list(self, prefix: str, cursor: Optional[str] = None,
+                limit: int = 100
+                ) -> tuple[list[dict[str, Any]], Optional[str]]:
+        """List decoded entries below ``prefix`` with backend-neutral paging."""
+        raw_items, _ = self.kv_get(prefix, recurse=True)
+        items = [
+            {
+                "key": item.get("Key", ""),
+                "value": item.get("_decoded", ""),
+                "modify_index": int(item.get("ModifyIndex", 0)),
+            }
+            for item in (raw_items or [])
+            if item.get("Key", "").startswith(prefix)
+        ]
+        return paginate_items(items, prefix=prefix, cursor=cursor, limit=limit)
 
     # ── Health / Catalog ────────────────────────────────────────────────────
     def list_services(self, service_name: str = "agent-worker") -> list[dict]:

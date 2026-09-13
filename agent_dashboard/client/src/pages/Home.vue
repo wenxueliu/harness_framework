@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
-import type { Workflow, Task } from '@/lib/mockData'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import type { Workflow, Task } from '@/api/types'
 import {
   fetchWorkflowsFromHarness,
   sendControlSignalToHarness,
@@ -13,6 +13,9 @@ import PhaseBadge from '@/components/PhaseBadge.vue'
 import WorkflowListItem from '@/components/WorkflowListItem.vue'
 import ControlDialog from '@/components/ControlDialog.vue'
 import TaskDrawer from '@/components/TaskDrawer.vue'
+import ProjectGroupSidebar from '@/components/ProjectGroupSidebar.vue'
+import RunCreationDialog from '@/components/RunCreationDialog.vue'
+import { createRun } from '@/api/dashboard'
 import {
   Pause,
   Play,
@@ -30,10 +33,19 @@ import {
   LayoutList,
   GitBranch,
   BarChart3,
+  Settings,
 } from 'lucide-vue-next'
 import { cn } from '@/lib/utils'
+import { useCapabilityStore } from '@/stores/capabilities'
+import { useProjectGroupStore } from '@/stores/projectGroups'
+import { useRoute, useRouter } from 'vue-router'
 import type { ControlSignal } from '@/lib/constants'
 type MobileTab = 'dag' | 'tasks' | 'stats'
+const router = useRouter()
+const route = useRoute()
+const capabilityStore = useCapabilityStore()
+const projectGroupStore = useProjectGroupStore()
+const demoMode = import.meta.env.VITE_DEMO_MODE === 'true'
 
 // ─── State ───────────────────────────────────────────────────────────────────
 const workflows = ref<Workflow[]>([])
@@ -42,15 +54,41 @@ const selectedId = ref<string | null>(null)
 const selectedTask = ref<Task | null>(null)
 const pendingSignal = ref<ControlSignal | null>(null)
 const pendingTaskName = ref<string | null>(null)
-const dataSource = ref<'api' | 'mock'>('mock')
+const dataSource = ref<'api' | 'demo' | 'offline'>('offline')
+const loadError = ref<string | null>(null)
 const dialogOpen = ref(false)
 const refreshing = ref(false)
 const sheetOpen = ref(false)
 const mobileTab = ref<MobileTab>('dag')
 const taskDrawerOpen = ref(false)
+const runDialogOpen = ref(false)
+const runCreating = ref(false)
+const runError = ref('')
+
+function syncRouteSelection(data = workflows.value) {
+  const workflowId = typeof route.params.workflowId === 'string' ? route.params.workflowId : null
+  const taskId = typeof route.params.taskId === 'string' ? route.params.taskId : null
+  if (workflowId && data.some((workflow) => workflow.id === workflowId)) {
+    selectedId.value = workflowId
+  }
+  if (taskId && selectedId.value) {
+    selectedTask.value = data.find((workflow) => workflow.id === selectedId.value)?.tasks[taskId] ?? null
+    taskDrawerOpen.value = selectedTask.value !== null
+  } else if (route.name === 'workflow-dashboard') {
+    selectedTask.value = null
+    taskDrawerOpen.value = false
+  }
+}
 
 // ─── Derived ────────────────────────────────────────────────────────────────
 const selectedWorkflow = computed(() => workflows.value.find((w) => w.id === selectedId.value) ?? null)
+const visibleWorkflows = computed(() => {
+  if (!projectGroupStore.workflowIds.length && projectGroupStore.selectedId === 'unassigned') {
+    return workflows.value
+  }
+  const allowed = new Set(projectGroupStore.workflowIds)
+  return workflows.value.filter((workflow) => allowed.has(workflow.id))
+})
 
 const totalDone = computed(() => workflows.value.filter((w) => w.phase === 'DONE').length)
 const totalInProgress = computed(() =>
@@ -80,21 +118,28 @@ async function load(silent = false) {
   if (!silent) loading.value = true
   else refreshing.value = true
   try {
-    let data: Workflow[] = []
-    let usedApi = false
+    let data: Workflow[]
+    loadError.value = null
     try {
       const apiOk = await pingHarness()
-      if (apiOk) {
-        data = await fetchWorkflowsFromHarness()
-        usedApi = true
+      if (!apiOk) throw new Error('Harness API 当前不可用')
+      const capabilityGroupId = typeof route.params.groupId === 'string' ? route.params.groupId : undefined
+      await capabilityStore.load(capabilityGroupId)
+      if (capabilityStore.enabled('project_groups')) {
+        const groupId = typeof route.params.groupId === 'string' ? route.params.groupId : 'unassigned'
+        await projectGroupStore.load(groupId)
       }
+      data = await fetchWorkflowsFromHarness()
+      dataSource.value = 'api'
     } catch (e) {
-      console.warn('Harness API fetch failed, falling back to mock', e)
-    }
-    if (!usedApi) {
+      if (!demoMode) {
+        dataSource.value = 'offline'
+        loadError.value = e instanceof Error ? e.message : 'Harness API 当前不可用'
+        return
+      }
       data = await fetchWorkflowsMock()
+      dataSource.value = 'demo'
     }
-    dataSource.value = usedApi ? 'api' : 'mock'
     workflows.value = data
     if (selectedTask.value && selectedId.value) {
       const refreshedWorkflow = data.find((workflow) => workflow.id === selectedId.value)
@@ -103,6 +148,7 @@ async function load(silent = false) {
     if (data.length > 0 && !selectedId.value) {
       selectedId.value = data[0].id
     }
+    syncRouteSelection(data)
   } finally {
     loading.value = false
     refreshing.value = false
@@ -119,6 +165,8 @@ onMounted(() => {
 onUnmounted(() => {
   if (refreshTimer) clearInterval(refreshTimer)
 })
+
+watch(() => route.fullPath, () => syncRouteSelection())
 
 // ─── Actions ─────────────────────────────────────────────────────────────────
 function handleControl(signal: ControlSignal, taskName?: string) {
@@ -137,8 +185,10 @@ async function handleConfirm() {
         pendingSignal.value,
         pendingTaskName.value ?? undefined,
       )
-    } else {
+    } else if (dataSource.value === 'demo') {
       await sendControlSignalMock(selectedId.value, pendingSignal.value)
+    } else {
+      throw new Error('离线只读状态不能发送控制指令')
     }
     console.log(`控制信号已发送: ${pendingSignal.value}`)
   } catch {
@@ -149,6 +199,17 @@ async function handleConfirm() {
 }
 
 function handleTaskClick(task: Task) {
+  if (selectedId.value) {
+    router.push({
+      name: 'task-workbench',
+      params: {
+        groupId: typeof route.params.groupId === 'string' ? route.params.groupId : 'unassigned',
+        workflowId: selectedId.value,
+        taskId: task.id,
+      },
+    })
+    return
+  }
   selectedTask.value = task
   taskDrawerOpen.value = true
 }
@@ -157,6 +218,44 @@ function selectWorkflow(id: string) {
   selectedId.value = id
   selectedTask.value = null
   mobileTab.value = 'dag'
+  if (typeof route.params.groupId === 'string') {
+    router.push({
+      name: 'workflow-dashboard',
+      params: { groupId: route.params.groupId, workflowId: id },
+    })
+  }
+}
+
+async function selectProjectGroup(groupId: string) {
+  await projectGroupStore.select(groupId)
+  await capabilityStore.load(groupId)
+  const workflowId = projectGroupStore.workflowIds[0]
+  if (workflowId) {
+    selectedId.value = workflowId
+    await router.push({ name: 'workflow-dashboard', params: { groupId, workflowId } })
+  }
+}
+
+async function startRun(input: { workspaceId: string; strategy: 'ORIGINAL' | 'GIT_WORKTREE' | 'CONTROLLED_COPY'; gitRef: string; acceptDirty: boolean }) {
+  if (!selectedId.value) return
+  runCreating.value = true; runError.value = ''
+  try {
+    await createRun(selectedId.value, input.workspaceId, input.strategy, input.gitRef, input.acceptDirty)
+    runDialogOpen.value = false
+    await load(true)
+  } catch (cause) { runError.value = cause instanceof Error ? cause.message : 'Run 启动失败' }
+  finally { runCreating.value = false }
+}
+
+function closeTaskDetail() {
+  selectedTask.value = null
+  taskDrawerOpen.value = false
+  if (typeof route.params.groupId === 'string' && selectedId.value) {
+    router.push({
+      name: 'workflow-dashboard',
+      params: { groupId: route.params.groupId, workflowId: selectedId.value },
+    })
+  }
 }
 </script>
 
@@ -191,15 +290,37 @@ function selectWorkflow(id: string) {
         <span
           :class="cn(
             'w-1.5 h-1.5 rounded-full pulse-dot',
-            dataSource === 'api' ? 'bg-emerald-400' : 'bg-amber-400',
+            dataSource === 'api' ? 'bg-emerald-400' : dataSource === 'demo' ? 'bg-amber-400' : 'bg-red-400',
           )"
         />
         <span class="text-xs text-muted-foreground font-mono">
-          {{ dataSource === 'api' ? 'Harness API · 已连接' : 'Mock · 演示数据' }}
+          {{ dataSource === 'api' ? 'Harness API · 已连接' : dataSource === 'demo' ? 'Demo · 模拟数据' : '离线 · 只读' }}
         </span>
       </div>
 
       <div class="ml-auto flex items-center gap-2">
+        <button
+          v-if="typeof route.params.groupId === 'string' && selectedId"
+          aria-label="查看执行日志"
+          class="hidden md:flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors px-2 py-1.5 rounded hover:bg-accent"
+          @click="router.push({ name: 'workflow-logs', params: { groupId: route.params.groupId, workflowId: selectedId } })"
+        >
+          <LayoutList :size="12" />执行日志
+        </button>
+        <button
+          aria-label="打开全局配置"
+          class="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors px-2 py-1.5 rounded hover:bg-accent"
+          @click="router.push('/settings')"
+        >
+          <Settings :size="12" /><span class="hidden lg:inline">配置</span>
+        </button>
+        <button
+          class="flex items-center gap-1.5 text-xs bg-blue-500 hover:bg-blue-400 text-white transition-colors px-3 py-1.5 rounded-md"
+          @click="router.push('/workflows/new')"
+        >
+          <span class="text-sm leading-none">+</span>
+          <span class="hidden sm:inline">新建任务</span>
+        </button>
         <button
           class="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors px-2 py-1 rounded hover:bg-accent"
           :disabled="refreshing"
@@ -213,6 +334,15 @@ function selectWorkflow(id: string) {
         </span>
       </div>
     </header>
+
+    <div
+      v-if="loadError"
+      role="alert"
+      class="mx-3 mt-3 flex items-center justify-between gap-3 rounded-md border border-red-400/30 bg-red-400/10 px-3 py-2 text-sm text-red-200"
+    >
+      <span>{{ loadError }}。当前不会自动切换到模拟数据。</span>
+      <button class="rounded border border-red-300/30 px-2 py-1 text-xs hover:bg-red-300/10" @click="load()">重试</button>
+    </div>
 
     <!-- Mobile Requirement Sheet -->
     <Teleport to="body">
@@ -245,6 +375,7 @@ function selectWorkflow(id: string) {
 
     <!-- Body -->
     <div class="flex flex-1 overflow-hidden">
+      <ProjectGroupSidebar v-if="capabilityStore.enabled('project_groups')" @select="selectProjectGroup" />
       <!-- Desktop sidebar -->
       <aside class="hidden md:flex w-56 border-r border-border flex-col flex-shrink-0 overflow-hidden">
         <div class="px-3 py-2.5 border-b border-border">
@@ -253,7 +384,7 @@ function selectWorkflow(id: string) {
         </div>
         <div class="flex-1 overflow-y-auto py-1">
           <WorkflowListItem
-            v-for="wf in workflows"
+            v-for="wf in visibleWorkflows"
             :key="wf.id"
             :workflow="wf"
             :selected="wf.id === selectedId"
@@ -283,6 +414,13 @@ function selectWorkflow(id: string) {
 
             <!-- Control buttons -->
             <div class="flex items-center gap-2 overflow-x-auto pb-0.5 scrollbar-hide">
+              <button
+                v-if="capabilityStore.permitted('run:create') && projectGroupStore.workspaces.length"
+                class="flex-shrink-0 flex items-center gap-1.5 text-xs px-3 py-1.5 rounded bg-blue-500/10 border border-blue-500/30 text-blue-300 hover:bg-blue-500/20 transition-colors whitespace-nowrap"
+                @click="runError = ''; runDialogOpen = true"
+              >
+                <Play :size="11" />启动 Run
+              </button>
               <button
                 v-if="selectedWorkflow.phase === 'BLOCKED'"
                 class="flex-shrink-0 flex items-center gap-1.5 text-xs px-3 py-1.5 rounded bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/20 transition-colors whitespace-nowrap"
@@ -463,7 +601,7 @@ function selectWorkflow(id: string) {
                           :key="task.id"
                           class="border-b border-border/50 last:border-0 cursor-pointer transition-colors"
                           :class="selectedTask?.id === task.id ? 'bg-blue-500/5' : 'hover:bg-accent/50'"
-                          @click="selectedTask = selectedTask?.id === task.id ? null : task"
+                          @click="handleTaskClick(task)"
                         >
                           <td class="px-4 py-3">
                             <div class="flex items-center gap-2">
@@ -535,7 +673,7 @@ function selectWorkflow(id: string) {
 
               <!-- Desktop right task detail -->
               <div v-if="selectedTask" class="hidden md:flex w-64 flex-shrink-0 overflow-hidden border-l border-border">
-                <TaskDrawer :task="selectedTask" :req-id="selectedId ?? undefined" @close="selectedTask = null" @message-sent="load(true)" />
+                <TaskDrawer :task="selectedTask" :req-id="selectedId ?? undefined" @close="closeTaskDetail" @message-sent="load(true)" />
               </div>
             </div>
           </div>
@@ -580,10 +718,11 @@ function selectWorkflow(id: string) {
         </div>
       </aside>
     </div>
+    <RunCreationDialog :open="runDialogOpen" :req-id="selectedId || ''" :workspaces="projectGroupStore.workspaces" :busy="runCreating" :error="runError" @close="runDialogOpen = false" @create="startRun" />
 
     <!-- Mobile Task Detail Bottom Sheet -->
     <Teleport to="body">
-      <div v-if="taskDrawerOpen && selectedTask" class="fixed inset-0 bg-black/60 z-40 md:hidden" @click="taskDrawerOpen = false" />
+      <div v-if="taskDrawerOpen && selectedTask" class="fixed inset-0 bg-black/60 z-40 md:hidden" @click="closeTaskDetail" />
       <div
         class="fixed bottom-0 left-0 right-0 z-50 bg-[oklch(0.135_0.009_264)] border-t border-border rounded-t-2xl transition-transform duration-300 ease-in-out md:hidden"
         :class="taskDrawerOpen ? 'translate-y-0' : 'translate-y-full'"
@@ -593,7 +732,7 @@ function selectWorkflow(id: string) {
           <div class="w-10 h-1 rounded-full bg-border" />
         </div>
         <div class="overflow-y-auto" :style="{ maxHeight: 'calc(75vh - 32px)' }">
-          <TaskDrawer :task="selectedTask" :req-id="selectedId ?? undefined" @close="taskDrawerOpen = false" @message-sent="load(true)" />
+          <TaskDrawer :task="selectedTask" :req-id="selectedId ?? undefined" @close="closeTaskDetail" @message-sent="load(true)" />
         </div>
       </div>
     </Teleport>

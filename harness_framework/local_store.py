@@ -20,6 +20,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Optional
 from urllib.parse import parse_qs, urlparse
 
+from .kv_pagination import paginate_items
+
 log = logging.getLogger("local_store")
 
 
@@ -71,21 +73,21 @@ class LocalStore:
     def _save(self) -> None:
         if not self._data_file:
             return
-        with self._lock:
-            data = {
-                "global_index": self._global_index,
-                "store": {k: [v, idx] for k, (v, idx) in self._store.items()},
-                "heartbeats": {k: v for k, v in self._heartbeats.items()},
-                "agent_services": dict(self._agent_services),
-            }
         try:
-            parent = os.path.dirname(os.path.abspath(self._data_file))
-            os.makedirs(parent, exist_ok=True)
-            tmp = self._data_file + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False)
-            os.replace(tmp, self._data_file)  # 原子重命名
-            self._dirty = False
+            with self._lock:
+                data = {
+                    "global_index": self._global_index,
+                    "store": {k: [v, idx] for k, (v, idx) in self._store.items()},
+                    "heartbeats": {k: v for k, v in self._heartbeats.items()},
+                    "agent_services": dict(self._agent_services),
+                }
+                parent = os.path.dirname(os.path.abspath(self._data_file))
+                os.makedirs(parent, exist_ok=True)
+                tmp = self._data_file + ".tmp"
+                with open(tmp, "w", encoding="utf-8") as f:
+                    json.dump(data, f, ensure_ascii=False)
+                os.replace(tmp, self._data_file)  # 原子重命名
+                self._dirty = False
         except Exception:
             log.exception("LocalStore save failed")
 
@@ -156,13 +158,17 @@ class LocalStore:
 
     def kv_delete(self, key: str, recurse: bool = False) -> None:
         with self._lock:
+            changed = False
             if recurse:
                 to_delete = [k for k in self._store if k.startswith(key)]
                 for k in to_delete:
                     del self._store[k]
+                changed = bool(to_delete)
             else:
-                self._store.pop(key, None)
-            self._mark_dirty()
+                changed = self._store.pop(key, None) is not None
+            if changed:
+                self._global_index += 1
+                self._mark_dirty()
 
     def kv_blocking_get(self, key: str, index: int = 0,
                         wait: str = "30s", recurse: bool = False
@@ -173,11 +179,23 @@ class LocalStore:
         while first or time.time() < deadline:
             first = False
             v, new_idx = self.kv_get(key, recurse=recurse)
-            if v is not None and new_idx != index:
+            if new_idx != index:
                 return v, new_idx
             time.sleep(0.5)
         # 超时
         return None, self._global_index
+
+    def kv_list(self, prefix: str, cursor: Optional[str] = None,
+                limit: int = 100
+                ) -> tuple[list[dict[str, Any]], Optional[str]]:
+        """List decoded KV entries using a stable, exclusive key cursor."""
+        with self._lock:
+            items = [
+                {"key": key, "value": value, "modify_index": modify_index}
+                for key, (value, modify_index) in self._store.items()
+                if key.startswith(prefix)
+            ]
+        return paginate_items(items, prefix=prefix, cursor=cursor, limit=limit)
 
     # ── Agent 服务注册/心跳 ──────────────────────────────────────────────────
 

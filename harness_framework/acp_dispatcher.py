@@ -19,6 +19,10 @@ from .human_interaction import (
 )
 from .kv_store_protocol import KVStore
 from .run_manager import RunManager
+from .workspace_manager import WorkspaceManager
+from .event_journal import EventJournal
+from .project_groups import UNASSIGNED_GROUP_ID
+from .api_errors import ConflictError
 
 log = logging.getLogger("acp_dispatcher")
 
@@ -33,6 +37,10 @@ DEFAULT_AGENT_ROUTING = {
     "generic": "codex",
 }
 SUCCESS_STOP_REASONS = frozenset({"end_turn"})
+
+
+class WorkspaceUnavailable(RuntimeError):
+    pass
 
 
 class ACPDispatcher:
@@ -52,6 +60,7 @@ class ACPDispatcher:
         max_concurrency: int = 4,
         permission_policy: str = "allow_once",
         client_factory: Callable[..., ACPClient] = ACPClient,
+        workspace_manager: WorkspaceManager | None = None,
     ):
         self.store = store
         self.run_manager = run_manager
@@ -64,6 +73,8 @@ class ACPDispatcher:
         self.max_concurrency = max_concurrency
         self.permission_policy = permission_policy
         self.client_factory = client_factory
+        self.workspace_manager = workspace_manager
+        self.event_journal = EventJournal(store)
         if max_concurrency < 1:
             raise ValueError("ACP max_concurrency must be positive")
         if task_timeout < 1 or lease_duration < 1:
@@ -105,6 +116,11 @@ class ACPDispatcher:
                 break
             try:
                 claim = self._claim(req_id, task_name, meta)
+            except ConflictError as exc:
+                # A scope conflict is an expected scheduler outcome; leave the
+                # task PENDING so the next safe slot can claim it.
+                log.info("defer %s/%s: %s", req_id, task_name, exc)
+                continue
             except (ValueError, ACPError) as exc:
                 self.store.kv_put(
                     f"workflows/{req_id}/tasks/{task_name}/dispatch_error", str(exc)
@@ -151,6 +167,8 @@ class ACPDispatcher:
                         workflow["priority"] = int(value)
                     except ValueError:
                         pass
+                elif parts[2] == "execution_mode":
+                    workflow["execution_mode"] = value
             elif len(parts) >= 5 and parts[2] == "tasks":
                 workflow["tasks"].setdefault(parts[3], {})["/".join(parts[4:])] = value
 
@@ -162,6 +180,19 @@ class ACPDispatcher:
                 continue
             if workflow.get("status") == "Proposal":
                 continue
+            if workflow.get("execution_mode") == "managed-workspace":
+                run_id = self.run_manager.get_active_run(req_id)
+                if not run_id:
+                    continue
+                workspace_raw, _ = self.store.kv_get(
+                    f"workflows/{req_id}/runs/{run_id}/workspace/record"
+                )
+                try:
+                    workspace_status = json.loads(workspace_raw or "{}").get("status")
+                except json.JSONDecodeError:
+                    workspace_status = None
+                if workspace_status not in {"READY", "ACTIVE"}:
+                    continue
             for task_name, meta in workflow["tasks"].items():
                 if meta.get("status") != "PENDING":
                     continue
@@ -180,11 +211,53 @@ class ACPDispatcher:
         if provider not in self.commands:
             self._mark_unroutable(req_id, task_name, provider)
             return None
-        if not self.store.kv_put(f"{base}/status", "IN_PROGRESS", cas=index):
-            return None
+        execution_mode, _ = self.store.kv_get(f"workflows/{req_id}/execution_mode")
+        if execution_mode == "managed-workspace":
+            run_id = self.run_manager.get_active_run(req_id)
+            if not run_id:
+                return None
+            if self.workspace_manager is None:
+                raise ValueError("managed workspace service is not configured")
+        else:
+            run_id = self.run_manager.get_or_create_run(req_id, "acp-dispatcher")
         attempt_id = f"attempt-{uuid.uuid4().hex}"
         previous_epoch, _ = self.store.kv_get(f"{base}/lease_epoch")
         lease_epoch = int(previous_epoch or "0") + 1
+        binding_key = ""
+        isolated_workspace_id = None
+        if execution_mode == "managed-workspace":
+            raw_scope = _json_value(meta.get("write_scope"), [])
+            if not isinstance(raw_scope, list) or not all(
+                isinstance(item, str) for item in raw_scope
+            ):
+                raise ValueError("write_scope must be a list of strings")
+            if str(meta.get("workspace_binding_type", "RUN_SHARED")) == "ISOLATED":
+                isolated = self.workspace_manager.provision_isolated_workspace(
+                    req_id=req_id, run_id=run_id, task_id=task_name,
+                    attempt_id=attempt_id,
+                )
+                isolated_workspace_id = isolated["workspace_id"]
+            self.workspace_manager.bind_attempt(
+                req_id=req_id, run_id=run_id, task_id=task_name,
+                attempt_id=attempt_id, write_scope=tuple(raw_scope),
+                isolated_workspace_id=isolated_workspace_id,
+            )
+            binding_key = (
+                f"workflows/{req_id}/runs/{run_id}/tasks/{task_name}/attempts/"
+                f"{attempt_id}/workspace-binding"
+            )
+        if not self.store.kv_put(f"{base}/status", "IN_PROGRESS", cas=index):
+            if binding_key:
+                self.store.kv_delete(binding_key)
+            if isolated_workspace_id:
+                self.workspace_manager.discard_isolated_workspace(isolated_workspace_id)
+            return None
+        self._task_event(
+            req_id, run_id, task_name, attempt_id, "TASK_STATUS_CHANGED",
+            {"previous_status": "PENDING", "status": "IN_PROGRESS",
+             "provider": provider},
+            {"type": "agent", "id": f"acp:{provider}"},
+        )
         agent_id = f"acp:{provider}:{uuid.uuid4().hex[:12]}"
         now = _now_iso()
         self.store.kv_put(f"{base}/attempt_id", attempt_id)
@@ -196,7 +269,6 @@ class ACPDispatcher:
         self.store.kv_put(f"{base}/lease_renewed_at", now)
         self.store.kv_put(f"{base}/lease_expires_at", _deadline(self.lease_duration))
         self.store.kv_put(f"{base}/hard_deadline_at", _deadline(self.task_timeout))
-        run_id = self.run_manager.get_or_create_run(req_id, "acp-dispatcher")
         self.run_manager.record_transition(
             req_id, run_id, task_name, "PENDING", "IN_PROGRESS", agent_id,
             "dispatched through ACP", {"provider": provider, "attempt_id": attempt_id},
@@ -228,10 +300,29 @@ class ACPDispatcher:
                         "provider": provider, "payload": params,
                     }, ensure_ascii=False),
                 )
+                self._task_event(
+                    req_id, claim["run_id"], task_name, claim["attempt_id"],
+                    "SESSION_EVENT", {"session_id": session_id,
+                                      "event_count": event_count},
+                    {"type": "agent", "id": claim["agent_id"]},
+                )
 
         try:
             provider, config = self._resolve_agent(meta)
-            cwd = os.path.abspath(config.get("cwd") or meta.get("repo_path") or self.workspace_root)
+            execution_mode, _ = self.store.kv_get(f"workflows/{req_id}/execution_mode")
+            if execution_mode == "managed-workspace":
+                try:
+                    if self.workspace_manager is None:
+                        raise RuntimeError("managed workspace service is not configured")
+                    cwd = self.workspace_manager.resolve_attempt_path(
+                        req_id, claim["run_id"], task_name, claim["attempt_id"]
+                    )
+                except Exception as exc:
+                    raise WorkspaceUnavailable(str(exc)) from exc
+            else:
+                cwd = os.path.abspath(
+                    config.get("cwd") or meta.get("repo_path") or self.workspace_root
+                )
             client = self.client_factory(
                 self.commands[provider], cwd=cwd,
                 env={
@@ -326,6 +417,14 @@ class ACPDispatcher:
                 req_id, claim["run_id"], task_name, event_count, 0,
                 "completed", f"ACP {provider} turn completed",
             )
+        except WorkspaceUnavailable as exc:
+            if current_message:
+                finish_human_message(
+                    self.store, req_id, task_name, current_message,
+                    status="FAILED", error=str(exc),
+                )
+            self._wait_for_workspace(req_id, task_name, claim, str(exc))
+            log.error("ACP task %s/%s waiting for workspace: %s", req_id, task_name, exc)
         except Exception as exc:
             if current_message:
                 finish_human_message(
@@ -519,6 +618,11 @@ class ACPDispatcher:
             claim["agent_id"], "ACP turn completed", {"provider": claim["provider"]},
         )
         self.run_manager.check_run_completion(req_id, claim["run_id"])
+        self._task_event(
+            req_id, claim["run_id"], task_name, claim["attempt_id"],
+            "TASK_STATUS_CHANGED", {"previous_status": "IN_PROGRESS", "status": "DONE"},
+            {"type": "agent", "id": claim["agent_id"]},
+        )
 
     def _fail(
         self, req_id: str, task_name: str, claim: dict[str, Any], error: str
@@ -539,6 +643,56 @@ class ACPDispatcher:
             claim["agent_id"], error[:1000], {"provider": claim["provider"]},
         )
         self.run_manager.check_run_completion(req_id, claim["run_id"])
+        self._task_event(
+            req_id, claim["run_id"], task_name, claim["attempt_id"],
+            "TASK_STATUS_CHANGED", {"previous_status": "IN_PROGRESS", "status": "FAILED",
+                                     "error": error[:1000]},
+            {"type": "agent", "id": claim["agent_id"]},
+        )
+
+    def _wait_for_workspace(
+        self, req_id: str, task_name: str, claim: dict[str, Any], error: str
+    ) -> None:
+        base = f"workflows/{req_id}/tasks/{task_name}"
+        if not self._attempt_is_current(base, claim):
+            return
+        status, index = self.store.kv_get(f"{base}/status")
+        if status != "IN_PROGRESS":
+            return
+        if not self.store.kv_put(f"{base}/status", "WAITING_FOR_HUMAN", cas=index):
+            return
+        self.store.kv_put(f"{base}/waiting_reason", "WORKSPACE_UNAVAILABLE")
+        self.store.kv_put(f"{base}/error_message", error[:8000])
+        self.run_manager.record_transition(
+            req_id, claim["run_id"], task_name, "IN_PROGRESS", "WAITING_FOR_HUMAN",
+            claim["agent_id"], error[:1000],
+            {"provider": claim["provider"], "reason": "WORKSPACE_UNAVAILABLE"},
+        )
+        self._task_event(
+            req_id, claim["run_id"], task_name, claim["attempt_id"],
+            "TASK_STATUS_CHANGED", {"previous_status": "IN_PROGRESS",
+                                     "status": "WAITING_FOR_HUMAN",
+                                     "reason": "WORKSPACE_UNAVAILABLE"},
+            {"type": "system", "id": "acp-dispatcher"},
+        )
+
+    def _task_event(
+        self, req_id: str, run_id: str, task_id: str, attempt_id: str,
+        event_type: str, data: dict[str, Any], actor: dict[str, str],
+    ) -> None:
+        group_id, _ = self.store.kv_get(f"workflows/{req_id}/project-group")
+        try:
+            self.event_journal.append(
+                event_type,
+                subject={"group_id": group_id or UNASSIGNED_GROUP_ID,
+                         "req_id": req_id, "run_id": run_id,
+                         "task_id": task_id, "attempt_id": attempt_id},
+                actor=actor, data=data,
+            )
+        except Exception:
+            # Event delivery must not roll back or strand an already-CASed task;
+            # the KV transition remains the execution source of truth.
+            log.exception("failed to journal task event req=%s task=%s", req_id, task_id)
 
     def _mark_unroutable(self, req_id: str, task_name: str, provider: str) -> None:
         base = f"workflows/{req_id}/tasks/{task_name}"

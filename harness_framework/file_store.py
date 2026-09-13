@@ -17,6 +17,8 @@ import os
 import time
 from typing import Any, Optional
 
+from .kv_pagination import paginate_items
+
 log = logging.getLogger("file_store")
 
 DEFAULT_DATA_FILE = os.path.expanduser("~/.harness/file_store.json")
@@ -173,13 +175,17 @@ class FileStore:
         try:
             data = self._read_data()
             store = data["store"]
+            changed = False
             if recurse:
                 to_delete = [k for k in store if k.startswith(key)]
                 for k in to_delete:
                     del store[k]
+                changed = bool(to_delete)
             else:
-                store.pop(key, None)
-            self._write_data(data)
+                changed = store.pop(key, None) is not None
+            if changed:
+                data["global_index"] += 1
+                self._write_data(data)
         finally:
             self._release_lock(fd)
 
@@ -192,10 +198,26 @@ class FileStore:
         while first or time.time() < deadline:
             first = False
             v, new_idx = self.kv_get(key, recurse=recurse)
-            if v is not None and new_idx != index:
+            if new_idx != index:
                 return v, new_idx
             time.sleep(0.5)
         return None, self._get_global_index()
+
+    def kv_list(self, prefix: str, cursor: Optional[str] = None,
+                limit: int = 100
+                ) -> tuple[list[dict[str, Any]], Optional[str]]:
+        """List decoded KV entries using a stable, exclusive key cursor."""
+        fd = self._acquire_lock()
+        try:
+            data = self._read_data()
+            items = [
+                {"key": key, "value": value, "modify_index": modify_index}
+                for key, (value, modify_index) in data["store"].items()
+                if key.startswith(prefix)
+            ]
+        finally:
+            self._release_lock(fd)
+        return paginate_items(items, prefix=prefix, cursor=cursor, limit=limit)
 
     # ── Agent 服务/心跳 ───────────────────────────────────────────────────
 

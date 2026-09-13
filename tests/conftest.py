@@ -51,6 +51,13 @@ class MockConsulStore:
         else:
             self._store.pop(key, None)
 
+    def kv_list(self, prefix: str, cursor: str | None = None, limit: int = 100):
+        from harness_framework.kv_pagination import paginate_items
+        return paginate_items([
+            {"key": key, "value": value, "modify_index": self._index}
+            for key, value in self._store.items() if key.startswith(prefix)
+        ], prefix=prefix, cursor=cursor, limit=limit)
+
     def list_services(self, service_name: str = "agent-worker") -> list[dict]:
         return []
 
@@ -73,6 +80,7 @@ def mock_consul(mock_store: MockConsulStore):
     consul.kv_get = Mock(side_effect=mock_store.kv_get)
     consul.kv_put = Mock(side_effect=mock_store.kv_put)
     consul.kv_delete = Mock(side_effect=mock_store.kv_delete)
+    consul.kv_list = Mock(side_effect=mock_store.kv_list)
     consul.list_services = Mock(side_effect=mock_store.list_services)
     consul.kv_blocking_get = Mock(return_value=(None, 1))
     return consul
@@ -123,6 +131,7 @@ def mock_consul_with_workflow(mock_store: MockConsulStore, sample_workflow: dict
     consul.kv_get = Mock(side_effect=mock_store.kv_get)
     consul.kv_put = Mock(side_effect=mock_store.kv_put)
     consul.kv_delete = Mock(side_effect=mock_store.kv_delete)
+    consul.kv_list = Mock(side_effect=mock_store.kv_list)
     consul.list_services = Mock(return_value=[])
     consul.kv_blocking_get = Mock(return_value=(None, 1))
     return consul

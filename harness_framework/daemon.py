@@ -29,6 +29,11 @@ from .watchdog import Watchdog
 from .webapi import serve as webapi_serve
 from .run_manager import RunManager
 from .acp_dispatcher import ACPDispatcher
+from .auth import AuthConfig
+from .capabilities import FeatureConfig
+from .workspace_security import WorkspaceSecurity
+from .workspace_manager import WorkspaceManager
+from .project_groups import ProjectGroupService
 
 
 def setup_logging(level: str, log_dir: str = "",
@@ -69,6 +74,25 @@ def main() -> None:
     p.add_argument("--token", default=os.environ.get("CONSUL_TOKEN", ""))
     p.add_argument("--host", default="0.0.0.0", help="WebAPI 监听地址")
     p.add_argument("--port", type=int, default=8080, help="WebAPI 端口")
+    p.add_argument("--auth-mode", choices=("local", "trusted-proxy"),
+                   default=os.environ.get("HARNESS_AUTH_MODE", "local"),
+                   help="WebAPI 身份模式")
+    p.add_argument("--local-user", default=os.environ.get(
+        "HARNESS_LOCAL_USER", os.environ.get("USER", "local-user")),
+        help="local 身份模式显示的用户")
+    p.add_argument("--trusted-proxy", action="append", default=None,
+                   help="允许提供身份头的反向代理地址，可重复")
+    p.add_argument("--platform-owner", action="append", default=None,
+                   help="允许创建项目组的平台管理员 subject，可重复")
+    p.add_argument("--workspace-root", action="append", default=None,
+                   metavar="ALIAS=PATH",
+                   help="允许登记的 Workspace 根目录，可重复")
+    p.add_argument("--workspace-provision-root", default="default",
+                   help="创建 worktree/受控副本使用的 root alias")
+    p.add_argument("--demo-mode", action="store_true",
+                   help="显式启用 /tmp 临时演示工作区")
+    p.add_argument("--git-host", action="append", default=None,
+                   help="允许 GIT_CLONE Workspace 的 HTTPS host，可重复")
     p.add_argument("--aggregator-interval", type=int, default=5)
     p.add_argument("--watchdog-interval", type=int, default=30)
     p.add_argument("--task-timeout", type=int, default=120,
@@ -172,6 +196,19 @@ def main() -> None:
 
     # 共享的 RunManager 实例
     run_manager = RunManager(consul)
+    root_values = args.workspace_root or [f"default={args.acp_workspace_root}"]
+    if args.demo_mode and not any(value.startswith("demo=") for value in root_values):
+        root_values = [*root_values, "demo=/tmp"]
+    workspace_roots = _parse_workspace_roots(root_values)
+    workspace_security = WorkspaceSecurity(workspace_roots)
+    project_groups = ProjectGroupService(consul)
+    workspace_manager = WorkspaceManager(
+        consul, workspace_security, project_groups,
+        provision_root_alias=args.workspace_provision_root,
+        demo_mode=args.demo_mode, demo_root_alias="demo",
+        allowed_git_hosts=tuple(args.git_host or ()),
+    )
+    run_manager.workspace_manager = workspace_manager
 
     if args.standalone:
         log.info("单机模式已启用，默认 Agent ID: %s（无需注册/心跳）",
@@ -212,6 +249,7 @@ def main() -> None:
             task_timeout=args.acp_task_timeout,
             max_concurrency=args.acp_max_concurrency,
             permission_policy=args.acp_permission_policy,
+            workspace_manager=workspace_manager,
         )
         components.append(acp_dispatcher)
         t = threading.Thread(
@@ -237,8 +275,25 @@ def main() -> None:
     # WebAPI
     server = None
     if not args.no_webapi:
+        trusted_proxies = frozenset(args.trusted_proxy or ["127.0.0.1", "::1"])
+        auth_config = AuthConfig(
+            mode=args.auth_mode,
+            local_user=args.local_user,
+            trusted_proxy_addresses=trusted_proxies,
+            platform_owners=frozenset(args.platform_owner or []),
+        )
         server = webapi_serve(consul, host=args.host, port=args.port,
-                              run_manager=run_manager)
+                              run_manager=run_manager,
+                              auth_config=auth_config,
+                              features=FeatureConfig({
+                                  "project_groups": True,
+                                  "workspace_browse": True,
+                                  "workspace_write": True,
+                                  "workspace_diff": True,
+                                  "sse_events": True,
+                              }),
+                              workspace_security=workspace_security,
+                              workspace_manager=workspace_manager)
         t = threading.Thread(target=server.serve_forever, name="webapi", daemon=True)
         t.start()
         threads.append(t)
@@ -291,6 +346,21 @@ def _json_argv(raw: str, option: str) -> list[str]:
     ):
         raise ValueError(f"{option} must be a non-empty JSON argv array")
     return value
+
+
+def _parse_workspace_roots(values: list[str]) -> dict[str, str]:
+    roots: dict[str, str] = {}
+    for value in values:
+        if "=" not in value:
+            raise ValueError("--workspace-root must use ALIAS=PATH")
+        alias, path = value.split("=", 1)
+        alias, path = alias.strip(), os.path.abspath(path.strip())
+        if not alias or not path.strip():
+            raise ValueError("--workspace-root must use non-empty ALIAS=PATH")
+        if alias in roots:
+            raise ValueError(f"duplicate workspace root alias: {alias}")
+        roots[alias] = path
+    return roots
 
 
 if __name__ == "__main__":

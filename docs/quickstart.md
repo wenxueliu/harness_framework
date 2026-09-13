@@ -42,6 +42,11 @@ http://127.0.0.1:3000/
 Dashboard 会通过 Harness WebAPI 显示真实工作流。`8080` 是后端 API 端口，
 `http://127.0.0.1:8080/` 本身没有 HTML 页面。
 
+本快速示例使用兼容模式，便于一分钟内看到 DAG。需要从 Dashboard 创建可编辑的生产 Run
+时，请在“全局配置”登记 Project Workspace，在项目组工作流页面点击“启动 Run”，选择
+`GIT_WORKTREE`、`CONTROLLED_COPY` 或明确的 `ORIGINAL`；未选择 Workspace 的 managed Run
+会返回 `WORKSPACE_SELECTION_REQUIRED`。只有显式 `--demo-mode` 才会使用 `/tmp` 临时演示目录。
+
 ## Step 4：查看 API 结果
 
 ```bash

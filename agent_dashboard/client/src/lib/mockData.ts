@@ -1,67 +1,6 @@
-// Mock data simulating Consul KV API responses
-// In production, replace fetchWorkflows() with real Consul HTTP API calls:
-// GET /v1/kv/workflows/?recurse=true&token=<ACL_TOKEN>
-
-export type TaskStatus = 'PENDING' | 'IN_PROGRESS' | 'DONE' | 'FAILED' | 'BLOCKED';
-export type WorkflowPhase =
-  | 'DESIGN'
-  | 'DEVELOPMENT'
-  | 'TEST_READY'
-  | 'TESTING'
-  | 'DONE'
-  | 'BLOCKED'
-  | 'PAUSED'
-  | 'ROLLBACK';
-
-export interface SessionEvent {
-  ts: string;
-  agent_id: string;
-  level: 'debug' | 'info' | 'warn' | 'error';
-  message: string;
-  step_type: string;
-  run_id: string;
-  data?: Record<string, unknown>;
-  seq?: string;
-}
-
-export interface SessionInfo {
-  session_id: string;
-  event_count: number;
-}
-
-export interface TaskSessionEvents {
-  req_id: string;
-  task: string;
-  events: SessionEvent[];
-  sessions: SessionInfo[];
-}
-
-export interface Task {
-  id: string;
-  name: string;
-  status: TaskStatus;
-  assigned_agent: string;
-  depends_on: string[];
-  last_updated: string;
-  deployed_version?: string;
-  health_check_url?: string;
-  error_log_url?: string;
-  screenshot_url?: string;
-  git_commit?: string;
-  type?: 'design' | 'backend' | 'frontend' | 'test';
-}
-
-export interface Workflow {
-  id: string;
-  title: string;
-  phase: WorkflowPhase;
-  created_at: string;
-  tasks: Record<string, Task>;
-  artifacts: {
-    api_spec?: string;
-    test_report?: string;
-  };
-}
+// Explicit Demo-mode fixtures. Production code must never fall back to these.
+import type { Task, TaskStatus, Workflow, WorkflowPhase } from '@/api/types'
+export type { SessionEvent, SessionInfo, Task, TaskSessionEvents, TaskStatus, Workflow, WorkflowPhase } from '@/api/types'
 
 export const MOCK_WORKFLOWS: Workflow[] = [
   {
@@ -324,6 +263,11 @@ export const STATUS_CONFIG: Record<
     dotColor: 'bg-red-400',
     bgColor: 'bg-red-400/10 border border-red-400/20',
   },
+  ABORTED: { label: 'ABORTED', color: 'text-slate-400', dotColor: 'bg-slate-400', bgColor: 'bg-slate-400/10 border border-slate-400/20' },
+  AWAITING_REVIEW: { label: 'AWAITING REVIEW', color: 'text-violet-400', dotColor: 'bg-violet-400', bgColor: 'bg-violet-400/10 border border-violet-400/20' },
+  WAITING_FOR_HUMAN: { label: 'WAITING FOR HUMAN', color: 'text-purple-400', dotColor: 'bg-purple-400', bgColor: 'bg-purple-400/10 border border-purple-400/20' },
+  SKIPPED_UPSTREAM_FAILED: { label: 'UPSTREAM FAILED', color: 'text-rose-300', dotColor: 'bg-rose-300', bgColor: 'bg-rose-400/10 border border-rose-400/20' },
+  UNKNOWN: { label: 'UNKNOWN', color: 'text-slate-400', dotColor: 'bg-slate-500', bgColor: 'bg-slate-500/10 border border-slate-500/20' },
 };
 
 export const PHASE_CONFIG: Record<
@@ -370,6 +314,11 @@ export const PHASE_CONFIG: Record<
     color: 'text-amber-400',
     bgColor: 'bg-amber-400/10 border border-amber-400/20',
   },
+  EMPTY: { label: 'EMPTY', color: 'text-slate-400', bgColor: 'bg-slate-500/10 border border-slate-500/20' },
+  PENDING: { label: 'PENDING', color: 'text-amber-400', bgColor: 'bg-amber-400/10 border border-amber-400/20' },
+  RUNNING: { label: 'RUNNING', color: 'text-blue-400', bgColor: 'bg-blue-400/10 border border-blue-400/20' },
+  FAILED: { label: 'FAILED', color: 'text-red-400', bgColor: 'bg-red-400/10 border border-red-400/20' },
+  UNKNOWN: { label: 'UNKNOWN', color: 'text-slate-400', bgColor: 'bg-slate-500/10 border border-slate-500/20' },
 };
 
 export const TASK_TYPE_ICON: Record<string, string> = {

@@ -6,6 +6,9 @@ from harness_framework.acp_client import ACPResult
 from harness_framework.acp_dispatcher import ACPDispatcher
 from harness_framework.human_interaction import create_human_message, list_human_messages
 from harness_framework.run_manager import RunManager
+from harness_framework.project_groups import ProjectGroupService
+from harness_framework.workspace_manager import WorkspaceManager
+from harness_framework.workspace_security import WorkspaceSecurity
 from tests.conftest import MockConsulStore
 
 
@@ -90,6 +93,107 @@ def test_task_type_selects_agent_and_dispatch_completes():
     assert store._store[f"{base}/acp/session_id"] == "acp-session-new"
     assert FakeACPClient.instances[0].command == ["codex-acp"]
     assert not any(key.startswith("agents/") for key in store._store)
+
+
+def test_managed_workspace_task_is_not_claimed_before_run_is_active():
+    store = _store("backend")
+    store._store["workflows/req-1/execution_mode"] = "managed-workspace"
+    dispatcher = ACPDispatcher(
+        store, RunManager(store),
+        commands={"claude": ["claude-acp"], "codex": ["codex-acp"]},
+        client_factory=FakeACPClient,
+    )
+    assert dispatcher._pending_tasks() == []
+    assert not any("/runs/" in key for key in store._store)
+
+
+def test_managed_workspace_task_requires_ready_workspace_record():
+    store = _store("backend")
+    store._store["workflows/req-1/execution_mode"] = "managed-workspace"
+    run_id = RunManager(store).create_provisioning_run(
+        "req-1", "user:alice", idempotency_key="one"
+    )
+    store._store[f"workflows/req-1/current_run"] = run_id
+    store._store[f"workflows/req-1/runs/{run_id}/status"] = "RUNNING"
+    dispatcher = ACPDispatcher(
+        store, RunManager(store),
+        commands={"claude": ["claude-acp"], "codex": ["codex-acp"]},
+        client_factory=FakeACPClient,
+    )
+    assert dispatcher._pending_tasks() == []
+    store._store[f"workflows/req-1/runs/{run_id}/workspace/record"] = json.dumps({
+        "status": "READY"
+    })
+    assert len(dispatcher._pending_tasks()) == 1
+
+
+def _managed_dispatcher(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    store = _store("backend")
+    store.kv_put("workflows/req-1/dependencies", json.dumps({
+        "build": {"type": "backend", "depends_on": []}
+    }))
+    groups = ProjectGroupService(store)
+    group = groups.create(name="Core", description="", actor="local:alice")
+    groups.assign_primary_workflow(group["group_id"], "req-1")
+    manager = WorkspaceManager(
+        store, WorkspaceSecurity({"projects": str(tmp_path)}), groups,
+        provision_root_alias="projects",
+    )
+    project = manager.register_local(
+        group_id=group["group_id"], name="Repo", root_alias="projects",
+        relative_path="repo",
+    )
+    runs = RunManager(store)
+    store.kv_put("workflows/req-1/execution_mode", "managed-workspace")
+    run_id = runs.create_provisioning_run(
+        "req-1", "local:alice", idempotency_key="managed-one"
+    )
+    manager.provision_run_workspace(
+        req_id="req-1", run_id=run_id,
+        project_workspace_id=project["workspace_id"], strategy="ORIGINAL",
+    )
+    runs.activate_provisioned_run("req-1", run_id)
+    dispatcher = ACPDispatcher(
+        store, runs,
+        commands={"claude": ["claude-acp"], "codex": ["codex-acp"]},
+        client_factory=FakeACPClient, workspace_manager=manager,
+    )
+    return store, manager, dispatcher, repo, run_id
+
+
+def test_managed_attempt_binds_agent_to_run_workspace(tmp_path):
+    FakeACPClient.instances.clear()
+    store, manager, dispatcher, repo, run_id = _managed_dispatcher(tmp_path)
+    req_id, task_name, meta = dispatcher._pending_tasks()[0]
+    claim = dispatcher._claim(req_id, task_name, meta)
+    assert claim is not None
+    binding = manager.get_attempt_binding(
+        req_id, run_id, task_name, claim["attempt_id"]
+    )
+    dispatcher._active[(req_id, task_name)] = {**claim, "client": None}
+    dispatcher._execute(req_id, task_name, meta, claim)
+
+    assert binding["binding_type"] == "RUN_SHARED"
+    assert FakeACPClient.instances[0].cwd == str(repo)
+    assert store._store[f"workflows/{req_id}/tasks/{task_name}/status"] == "DONE"
+
+
+def test_missing_managed_workspace_waits_for_human(tmp_path):
+    FakeACPClient.instances.clear()
+    store, _, dispatcher, repo, _ = _managed_dispatcher(tmp_path)
+    req_id, task_name, meta = dispatcher._pending_tasks()[0]
+    claim = dispatcher._claim(req_id, task_name, meta)
+    assert claim is not None
+    repo.rmdir()
+    dispatcher._active[(req_id, task_name)] = {**claim, "client": None}
+    dispatcher._execute(req_id, task_name, meta, claim)
+
+    base = f"workflows/{req_id}/tasks/{task_name}"
+    assert store._store[f"{base}/status"] == "WAITING_FOR_HUMAN"
+    assert store._store[f"{base}/waiting_reason"] == "WORKSPACE_UNAVAILABLE"
+    assert FakeACPClient.instances == []
 
 
 def test_task_acp_override_selects_claude_and_continues_session():

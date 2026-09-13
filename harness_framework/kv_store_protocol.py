@@ -2,7 +2,7 @@
 KVStore Protocol — 定义 ConsulClient 和 LocalStore 共用的接口
 
 使用 typing.Protocol 实现结构化类型（PEP 544），
-任何具有这 5 个方法的对象都可以作为 KVStore 使用，
+任何具有这些方法的对象都可以作为 KVStore 使用，
 无需 ABC 继承或显式注册。
 """
 from __future__ import annotations
@@ -20,5 +20,8 @@ class KVStore(Protocol):
     def kv_blocking_get(self, key: str, index: int = 0,
                         wait: str = "30s", recurse: bool = False
                         ) -> tuple[Optional[Any], int]: ...
+    def kv_list(self, prefix: str, cursor: Optional[str] = None,
+                limit: int = 100
+                ) -> tuple[list[dict[str, Any]], Optional[str]]: ...
     def list_services(self, service_name: str = "agent-worker"
                       ) -> list[dict]: ...

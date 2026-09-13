@@ -30,6 +30,34 @@ class TestRunLifecycle:
         run_status, _ = store.kv_get(f"workflows/req-001/runs/{run_id}/status")
         assert run_status == "RUNNING"
 
+    def test_get_active_run_never_creates_a_run(self):
+        rm, store, _ = make_run_manager()
+        assert rm.get_active_run("req-001") is None
+        assert not any("/runs/" in key for key in store._store)
+
+    def test_managed_run_is_not_active_until_workspace_provisioned(self):
+        rm, store, _ = make_run_manager()
+        run_id = rm.create_provisioning_run(
+            "req-001", "user:alice", idempotency_key="idem-1"
+        )
+        assert rm.get_active_run("req-001") is None
+        assert store.kv_get(f"workflows/req-001/runs/{run_id}/status")[0] == "PROVISIONING"
+        assert rm.create_provisioning_run(
+            "req-001", "user:alice", idempotency_key="idem-1"
+        ) == run_id
+
+        rm.activate_provisioned_run("req-001", run_id)
+        assert rm.get_active_run("req-001") == run_id
+
+    def test_failed_provisioning_run_never_becomes_active(self):
+        rm, store, _ = make_run_manager()
+        run_id = rm.create_provisioning_run(
+            "req-001", "user:alice", idempotency_key="idem-2"
+        )
+        rm.fail_provisioning_run("req-001", run_id, "clone failed")
+        assert rm.get_active_run("req-001") is None
+        assert store.kv_get(f"workflows/req-001/runs/{run_id}/error_message")[0] == "clone failed"
+
     def test_reuse_active_run(self):
         rm, store, consul = make_run_manager()
         run_id_1 = rm.get_or_create_run("req-001", "aggregator")
@@ -56,6 +84,14 @@ class TestRunLifecycle:
         rm.end_run("req-001", run_id, "COMPLETED")
         current, _ = store.kv_get("workflows/req-001/current_run")
         assert current is None
+
+    def test_ending_old_run_does_not_clear_successor_pointer(self):
+        rm, store, _ = make_run_manager()
+        old_run = rm.get_or_create_run("req-001", "aggregator")
+        store.kv_put("workflows/req-001/current_run", "run-successor")
+        store.kv_put("workflows/req-001/runs/run-successor/status", "RUNNING")
+        rm.end_run("req-001", old_run, "SUPERSEDED")
+        assert store.kv_get("workflows/req-001/current_run")[0] == "run-successor"
 
     def test_end_run_sets_finished_at(self):
         rm, store, consul = make_run_manager()

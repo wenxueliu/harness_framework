@@ -1,6 +1,22 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import type { Task } from '@/lib/mockData'
+import { computed, nextTick, ref, watch } from 'vue'
+import {
+  Handle,
+  Position,
+  VueFlow,
+  type Edge,
+  type Node,
+  type NodeMouseEvent,
+  type VueFlowStore,
+} from '@vue-flow/core'
+import { Background } from '@vue-flow/background'
+import { Controls } from '@vue-flow/controls'
+import { MiniMap } from '@vue-flow/minimap'
+import '@vue-flow/core/dist/style.css'
+import '@vue-flow/core/dist/theme-default.css'
+import '@vue-flow/controls/dist/style.css'
+import '@vue-flow/minimap/dist/style.css'
+import type { Task } from '@/api/types'
 import { TASK_TYPE_ICON, TASK_TYPE_ORDER } from '@/lib/mockData'
 
 const props = defineProps<{
@@ -8,111 +24,14 @@ const props = defineProps<{
   onTaskClick?: (task: Task) => void
 }>()
 
-interface NodePosition {
-  x: number
-  y: number
+interface TaskNodeData extends Record<string, unknown> {
   task: Task
 }
 
-const NODE_W = 160
-const NODE_H = 64
-const COL_GAP = 80
-const ROW_GAP = 24
-const PAD_X = 24
-const PAD_Y = 24
-
-// Topological sort to determine column (level) for each node
-function computeLevels(tasks: Record<string, Task>): Record<string, number> {
-  const levels: Record<string, number> = {}
-  const visited = new Set<string>()
-
-  function dfs(id: string): number {
-    if (visited.has(id)) return levels[id] ?? 0
-    visited.add(id)
-    const task = tasks[id]
-    if (!task || task.depends_on.length === 0) {
-      levels[id] = 0
-      return 0
-    }
-    const maxDep = Math.max(...task.depends_on.map((dep) => dfs(dep)))
-    levels[id] = maxDep + 1
-    return levels[id]
-  }
-
-  Object.keys(tasks).forEach((id) => dfs(id))
-  return levels
-}
-
-const positions = computed<Record<string, NodePosition>>(() => {
-  const levels = computeLevels(props.tasks)
-  const maxLevel = Math.max(...Object.values(levels), 0)
-
-  const byLevel: Record<number, string[]> = {}
-  Object.entries(levels).forEach(([id, lvl]) => {
-    if (!byLevel[lvl]) byLevel[lvl] = []
-    byLevel[lvl].push(id)
-  })
-
-  Object.values(byLevel).forEach((ids) => {
-    ids.sort((a, b) => {
-      const ta = TASK_TYPE_ORDER.indexOf((props.tasks[a]?.type ?? '') as typeof TASK_TYPE_ORDER[number])
-      const tb = TASK_TYPE_ORDER.indexOf((props.tasks[b]?.type ?? '') as typeof TASK_TYPE_ORDER[number])
-      return ta - tb
-    })
-  })
-
-  const result: Record<string, NodePosition> = {}
-  for (let lvl = 0; lvl <= maxLevel; lvl++) {
-    const ids = byLevel[lvl] ?? []
-    ids.forEach((id, i) => {
-      result[id] = {
-        x: PAD_X + lvl * (NODE_W + COL_GAP),
-        y: PAD_Y + i * (NODE_H + ROW_GAP),
-        task: props.tasks[id],
-      }
-    })
-  }
-
-  return result
-})
-
-const svgWidth = computed(() => {
-  const levels = computeLevels(props.tasks)
-  const maxLevel = Math.max(...Object.values(levels), 0)
-  return PAD_X * 2 + (maxLevel + 1) * (NODE_W + COL_GAP) - COL_GAP
-})
-
-const svgHeight = computed(() => {
-  const levels = computeLevels(props.tasks)
-  const byLevel: Record<number, string[]> = {}
-  Object.entries(levels).forEach(([id, lvl]) => {
-    if (!byLevel[lvl]) byLevel[lvl] = []
-    byLevel[lvl].push(id)
-  })
-  const maxRows = Math.max(...Object.values(byLevel).map((ids) => ids.length), 0)
-  return PAD_Y * 2 + maxRows * (NODE_H + ROW_GAP) - ROW_GAP
-})
-
-const edges = computed(() => {
-  const result: { from: string; to: string }[] = []
-  Object.entries(props.tasks).forEach(([id, task]) => {
-    task.depends_on.forEach((dep) => {
-      if (positions.value[dep] && positions.value[id]) {
-        result.push({ from: dep, to: id })
-      }
-    })
-  })
-  return result
-})
-
-function getEdgePath(from: string, to: string): string {
-  const fx = positions.value[from].x + NODE_W
-  const fy = positions.value[from].y + NODE_H / 2
-  const tx = positions.value[to].x
-  const ty = positions.value[to].y + NODE_H / 2
-  const cx = (fx + tx) / 2
-  return `M ${fx} ${fy} C ${cx} ${fy}, ${cx} ${ty}, ${tx} ${ty}`
-}
+const NODE_W = 184
+const NODE_H = 72
+const COL_GAP = 104
+const ROW_GAP = 36
 
 const STATUS_COLORS: Record<Task['status'], string> = {
   DONE: '#34d399',
@@ -120,112 +39,230 @@ const STATUS_COLORS: Record<Task['status'], string> = {
   PENDING: '#fbbf24',
   FAILED: '#f87171',
   BLOCKED: '#f87171',
+  ABORTED: '#94a3b8',
+  AWAITING_REVIEW: '#a78bfa',
+  WAITING_FOR_HUMAN: '#c084fc',
+  SKIPPED_UPSTREAM_FAILED: '#fda4af',
+  UNKNOWN: '#64748b',
 }
+
+function taskOrder(task: Task | undefined): number {
+  const index = TASK_TYPE_ORDER.indexOf((task?.type ?? '') as typeof TASK_TYPE_ORDER[number])
+  return index < 0 ? TASK_TYPE_ORDER.length : index
+}
+
+function computeLevels(tasks: Record<string, Task>): Record<string, number> {
+  const levels: Record<string, number> = {}
+  const visiting = new Set<string>()
+
+  function visit(id: string): number {
+    if (levels[id] !== undefined) return levels[id]
+    if (visiting.has(id)) return 0
+    visiting.add(id)
+    const task = tasks[id]
+    const dependencies = (task?.depends_on ?? []).filter((dependency) => tasks[dependency])
+    const level = dependencies.length === 0
+      ? 0
+      : Math.max(...dependencies.map((dependency) => visit(dependency))) + 1
+    visiting.delete(id)
+    levels[id] = level
+    return level
+  }
+
+  Object.keys(tasks).forEach(visit)
+  return levels
+}
+
+const nodes = computed<Node<TaskNodeData>[]>(() => {
+  const levels = computeLevels(props.tasks)
+  const columns = new Map<number, string[]>()
+  Object.entries(levels).forEach(([id, level]) => {
+    const column = columns.get(level) ?? []
+    column.push(id)
+    columns.set(level, column)
+  })
+
+  columns.forEach((ids) => {
+    ids.sort((left, right) => {
+      const typeDifference = taskOrder(props.tasks[left]) - taskOrder(props.tasks[right])
+      return typeDifference || left.localeCompare(right)
+    })
+  })
+
+  return Object.entries(props.tasks).map(([id, task]) => {
+    const level = levels[id] ?? 0
+    const row = columns.get(level)?.indexOf(id) ?? 0
+    return {
+      id,
+      type: 'task',
+      position: { x: level * (NODE_W + COL_GAP), y: row * (NODE_H + ROW_GAP) },
+      data: { task },
+      width: NODE_W,
+      height: NODE_H,
+      draggable: false,
+      connectable: false,
+      deletable: false,
+      focusable: true,
+      selectable: true,
+      sourcePosition: Position.Right,
+      targetPosition: Position.Left,
+      ariaLabel: `${task.name}，状态 ${task.status}，点击查看详情`,
+    }
+  })
+})
+
+const edges = computed<Edge[]>(() => Object.entries(props.tasks).flatMap(([target, task]) =>
+  task.depends_on
+    .filter((source) => Boolean(props.tasks[source]))
+    .map((source) => ({
+      id: `${source}--${target}`,
+      source,
+      target,
+      type: 'smoothstep',
+      animated: props.tasks[source].status === 'IN_PROGRESS',
+      selectable: false,
+      focusable: false,
+      style: {
+        stroke: props.tasks[source].status === 'DONE' ? '#34d399' : '#64748b',
+        strokeWidth: props.tasks[source].status === 'DONE' ? 2 : 1.5,
+        opacity: props.tasks[source].status === 'DONE' ? 0.8 : 0.45,
+      },
+    })),
+))
+
+const flow = ref<VueFlowStore | null>(null)
+
+function fitGraph() {
+  nextTick(() => flow.value?.fitView({ padding: 0.2, duration: 250 }))
+}
+
+function onPaneReady(instance: VueFlowStore) {
+  flow.value = instance
+  fitGraph()
+}
+
+function selectTask(task: Task) {
+  props.onTaskClick?.(task)
+}
+
+function onNodeClick({ node }: NodeMouseEvent) {
+  selectTask((node.data as TaskNodeData).task)
+}
+
+function minimapNodeColor(node: Node): string {
+  const task = (node.data as TaskNodeData | undefined)?.task
+  return task ? STATUS_COLORS[task.status] : STATUS_COLORS.UNKNOWN
+}
+
+function taskStatusColor(status: unknown): string {
+  return typeof status === 'string' && status in STATUS_COLORS
+    ? STATUS_COLORS[status as Task['status']]
+    : STATUS_COLORS.UNKNOWN
+}
+
+watch(() => props.tasks, fitGraph, { deep: true })
 </script>
 
 <template>
-  <div class="overflow-x-auto overflow-y-auto">
-    <svg
-      :width="svgWidth"
-      :height="svgHeight"
-      :viewBox="`0 0 ${svgWidth} ${svgHeight}`"
-      class="block"
+  <div class="dag-flow" aria-label="任务依赖拓扑图">
+    <VueFlow
+      :nodes="nodes"
+      :edges="edges"
+      :min-zoom="0.35"
+      :max-zoom="1.8"
+      :nodes-draggable="false"
+      :nodes-connectable="false"
+      :elements-selectable="true"
+      :fit-view-on-init="true"
+      :delete-key-code="null"
+      :multi-selection-key-code="null"
+      class="dag-flow__canvas"
+      @pane-ready="onPaneReady"
+      @node-click="onNodeClick"
     >
-      <!-- Edges -->
-      <path
-        v-for="({ from, to }) in edges"
-        :key="`${from}-${to}`"
-        :d="getEdgePath(from, to)"
-        fill="none"
-        :stroke="positions[from].task.status === 'DONE' ? '#34d399' : '#6b7280'"
-        :stroke-opacity="positions[from].task.status === 'DONE' ? 0.8 : 0.4"
-        stroke-width="1.5"
+      <Background :gap="20" :size="1" color="#334155" />
+      <Controls position="bottom-left" :show-interactive="false" />
+      <MiniMap
+        position="bottom-right"
+        :pannable="true"
+        :zoomable="true"
+        :node-color="minimapNodeColor"
+        mask-color="rgba(8, 12, 20, 0.72)"
       />
 
-      <!-- Nodes -->
-      <g
-        v-for="(pos, id) in positions"
-        :key="id"
-        :transform="`translate(${pos.x}, ${pos.y})`"
-        class="cursor-pointer"
-        @click="onTaskClick?.(pos.task)"
-      >
-        <!-- Node background -->
-        <rect
-          :width="NODE_W"
-          :height="NODE_H"
-          rx="6"
-          fill="oklch(0.16 0.01 264)"
-          :stroke="STATUS_COLORS[pos.task.status]"
-          :stroke-width="pos.task.status === 'IN_PROGRESS' ? 1.5 : 1"
-          :stroke-opacity="pos.task.status === 'IN_PROGRESS' ? 1 : 0.6"
-        />
-        <!-- Active glow -->
-        <rect
-          v-if="pos.task.status === 'IN_PROGRESS'"
-          :width="NODE_W"
-          :height="NODE_H"
-          rx="6"
-          fill="none"
-          :stroke="STATUS_COLORS[pos.task.status]"
-          stroke-width="4"
-          stroke-opacity="0.15"
-        />
-        <!-- Type icon -->
-        <text
-          x="14"
-          :y="NODE_H / 2 + 1"
-          dominant-baseline="middle"
-          font-size="14"
-          :fill="STATUS_COLORS[pos.task.status]"
-          opacity="0.9"
+      <template #node-task="{ data, selected }">
+        <div
+          class="dag-task-node"
+          :class="{ 'dag-task-node--active': data.task.status === 'IN_PROGRESS', 'dag-task-node--selected': selected }"
+          :style="{ '--task-status-color': taskStatusColor(data.task.status) }"
+          role="button"
+          tabindex="0"
+          :aria-label="`${data.task.name}，状态 ${data.task.status}，按回车查看详情`"
+          @keydown.enter.prevent="selectTask(data.task)"
+          @keydown.space.prevent="selectTask(data.task)"
         >
-          {{ TASK_TYPE_ICON[pos.task.type ?? ''] }}
-        </text>
-        <!-- Task name -->
-        <text
-          x="32"
-          :y="NODE_H / 2 - 8"
-          dominant-baseline="middle"
-          font-size="11"
-          font-family="'Space Grotesk', sans-serif"
-          font-weight="500"
-          fill="oklch(0.88 0.005 264)"
-        >
-          {{ pos.task.name.length > 12 ? pos.task.name.slice(0, 12) + '…' : pos.task.name }}
-        </text>
-        <!-- Agent ID -->
-        <text
-          x="32"
-          :y="NODE_H / 2 + 8"
-          dominant-baseline="middle"
-          font-size="9"
-          font-family="'JetBrains Mono', monospace"
-          fill="oklch(0.5 0.01 264)"
-        >
-          {{ pos.task.assigned_agent.length > 20 ? pos.task.assigned_agent.slice(0, 20) + '…' : pos.task.assigned_agent }}
-        </text>
-        <!-- Status dot -->
-        <circle
-          :cx="NODE_W - 12"
-          :cy="NODE_H / 2"
-          r="4"
-          :fill="STATUS_COLORS[pos.task.status]"
-          opacity="0.9"
-        />
-        <!-- Failed indicator -->
-        <text
-          v-if="pos.task.status === 'FAILED' || pos.task.status === 'BLOCKED'"
-          :x="NODE_W - 12"
-          :y="NODE_H / 2 - 12"
-          text-anchor="middle"
-          dominant-baseline="middle"
-          font-size="10"
-          fill="#f87171"
-        >
-          ✕
-        </text>
-      </g>
-    </svg>
+          <Handle type="target" :position="Position.Left" :connectable="false" />
+          <span class="dag-task-node__icon" aria-hidden="true">{{ TASK_TYPE_ICON[data.task.type ?? ''] }}</span>
+          <span class="dag-task-node__copy">
+            <span class="dag-task-node__name" :title="data.task.name">{{ data.task.name }}</span>
+            <span class="dag-task-node__agent" :title="data.task.assigned_agent">{{ data.task.assigned_agent || '未分配 Agent' }}</span>
+          </span>
+          <span class="dag-task-node__status" :title="data.task.status" />
+          <span v-if="data.task.status === 'FAILED' || data.task.status === 'BLOCKED'" class="dag-task-node__error" aria-hidden="true">×</span>
+          <Handle type="source" :position="Position.Right" :connectable="false" />
+        </div>
+      </template>
+    </VueFlow>
   </div>
 </template>
+
+<style scoped>
+.dag-flow {
+  width: 100%;
+  height: clamp(22rem, 52vh, 38rem);
+  overflow: hidden;
+  border-radius: 0.5rem;
+  background: oklch(0.115 0.009 264);
+}
+
+.dag-flow__canvas { background: transparent; }
+
+.dag-task-node {
+  position: relative;
+  display: flex;
+  width: 184px;
+  height: 72px;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid color-mix(in srgb, var(--task-status-color) 64%, transparent);
+  border-radius: 0.5rem;
+  background: oklch(0.16 0.01 264);
+  color: oklch(0.9 0.005 264);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.16);
+  cursor: pointer;
+}
+
+.dag-task-node:focus-visible,
+.dag-task-node--selected {
+  outline: 2px solid var(--task-status-color);
+  outline-offset: 3px;
+}
+
+.dag-task-node--active {
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--task-status-color) 16%, transparent), 0 8px 24px rgb(0 0 0 / 0.22);
+}
+
+.dag-task-node__icon { flex: 0 0 auto; color: var(--task-status-color); font-size: 0.95rem; }
+.dag-task-node__copy { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 0.25rem; }
+.dag-task-node__name, .dag-task-node__agent { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dag-task-node__name { font-family: 'Space Grotesk', sans-serif; font-size: 0.75rem; font-weight: 600; }
+.dag-task-node__agent { color: oklch(0.56 0.01 264); font-family: 'JetBrains Mono', monospace; font-size: 0.625rem; }
+.dag-task-node__status { width: 0.5rem; height: 0.5rem; flex: 0 0 auto; border-radius: 9999px; background: var(--task-status-color); }
+.dag-task-node__error { position: absolute; top: 0.35rem; right: 0.55rem; color: #f87171; font-size: 0.75rem; }
+
+:deep(.vue-flow__handle) { width: 7px; height: 7px; border: 1px solid oklch(0.22 0.01 264); background: var(--task-status-color); }
+:deep(.vue-flow__controls), :deep(.vue-flow__minimap) { border: 1px solid oklch(0.25 0.01 264); border-radius: 0.4rem; background: oklch(0.145 0.01 264); box-shadow: 0 8px 24px rgb(0 0 0 / 0.24); }
+:deep(.vue-flow__controls-button) { border-color: oklch(0.25 0.01 264); background: oklch(0.16 0.01 264); fill: oklch(0.78 0.005 264); }
+:deep(.vue-flow__controls-button:hover) { background: oklch(0.22 0.01 264); }
+</style>

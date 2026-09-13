@@ -13,6 +13,13 @@ from unittest.mock import MagicMock, Mock
 import pytest
 
 from harness_framework.webapi import APIHandler
+from harness_framework.run_manager import RunManager
+from harness_framework.auth import AuthConfig, AuthorizationService
+from harness_framework.capabilities import CapabilitiesService, FeatureConfig
+from harness_framework.project_groups import ProjectGroupService
+from harness_framework.workspace_manager import WorkspaceManager
+from harness_framework.workspace_security import WorkspaceSecurity
+from harness_framework.workspace_files import WorkspaceFileService
 
 
 def make_mock_run_manager():
@@ -63,16 +70,24 @@ def make_consul_mock(store: dict) -> MagicMock:
         elif key in actual_store:
             del actual_store[key]
 
+    def kv_list(prefix: str, cursor: str | None = None, limit: int = 100):
+        from harness_framework.kv_pagination import paginate_items
+        return paginate_items([
+            {"key": key, "value": value, "modify_index": 1}
+            for key, value in actual_store.items() if key.startswith(prefix)
+        ], prefix=prefix, cursor=cursor, limit=limit)
+
     consul = MagicMock()
     consul.kv_get = Mock(side_effect=kv_get)
     consul.kv_put = Mock(side_effect=kv_put)
     consul.kv_delete = Mock(side_effect=kv_delete)
+    consul.kv_list = Mock(side_effect=kv_list)
     consul.list_services = Mock(return_value=[])
     consul._store = actual_store
     return consul
 
 
-def make_handler(store: dict) -> tuple[APIHandler, MagicMock]:
+def make_handler(store: dict, workspace_root: str = ".", real_run_manager: bool = False) -> tuple[APIHandler, MagicMock]:
     consul = make_consul_mock(store)
 
     from harness_framework.message_bus import MessageBus
@@ -83,7 +98,21 @@ def make_handler(store: dict) -> tuple[APIHandler, MagicMock]:
 
     TestHandler.consul = consul
     TestHandler.message_bus = message_bus
-    TestHandler.run_manager = make_mock_run_manager()
+    TestHandler.run_manager = RunManager(consul) if real_run_manager else make_mock_run_manager()
+    TestHandler.auth_config = AuthConfig(mode="local", local_user="test-user")
+    TestHandler.authorization = AuthorizationService(consul, TestHandler.auth_config)
+    TestHandler.capabilities = CapabilitiesService(
+        TestHandler.authorization,
+        FeatureConfig({"project_groups": False, "sse_events": True}),
+    )
+    TestHandler.project_groups = ProjectGroupService(consul)
+    TestHandler.workspace_manager = WorkspaceManager(
+        consul, WorkspaceSecurity({"test": workspace_root}),
+        TestHandler.project_groups,
+    )
+    TestHandler.workspace_files = WorkspaceFileService(
+        consul, TestHandler.workspace_manager
+    )
 
     response_body = BytesIO()
     response_code = [200]
@@ -126,7 +155,10 @@ def call_do_method(handler, method: str, path: str, body: bytes = b"", headers: 
     handler.path = path
     handler.rfile = BytesIO(body)
     mock_headers = MagicMock()
-    mock_headers.get = Mock(return_value=str(len(body)))
+    request_headers = {"Content-Length": str(len(body)), **(headers or {})}
+    mock_headers.get = Mock(
+        side_effect=lambda name, default=None: request_headers.get(name, default)
+    )
     handler.headers = mock_headers
 
     response_body = BytesIO()
@@ -151,6 +183,12 @@ def call_do_method(handler, method: str, path: str, body: bytes = b"", headers: 
         handler.do_GET()
     elif method == "POST":
         handler.do_POST()
+    elif method == "PUT":
+        handler.do_PUT()
+    elif method == "PATCH":
+        handler.do_PATCH()
+    elif method == "DELETE":
+        handler.do_DELETE()
     elif method == "OPTIONS":
         handler.do_OPTIONS()
 
@@ -163,6 +201,130 @@ def call_do_method(handler, method: str, path: str, body: bytes = b"", headers: 
 
 
 class TestWebAPI:
+    def test_workspace_first_run_requires_selection_and_is_idempotent(self, tmp_path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        store = {
+            "workflows/req-1/dependencies": "{}",
+            "workflows/req-1/published": "true",
+        }
+        handler, _, _, _ = make_handler(store, str(tmp_path), real_run_manager=True)
+        missing = call_do_method(
+            handler, "POST", "/api/workflows/req-1/runs", b"{}",
+            headers={"Idempotency-Key": "missing"},
+        )
+        assert missing["code"] == 422
+        assert missing["body"]["error"]["code"] == "WORKSPACE_SELECTION_REQUIRED"
+
+        group = call_do_method(
+            handler, "POST", "/api/project-groups",
+            json.dumps({"name": "Core"}).encode(),
+        )["body"]["project_group"]
+        handler.project_groups.assign_primary_workflow(group["group_id"], "req-1")
+        workspace = call_do_method(
+            handler, "POST", f"/api/project-groups/{group['group_id']}/workspaces",
+            json.dumps({
+                "name": "Repo", "root_alias": "test", "relative_path": "repo"
+            }).encode(),
+        )["body"]["workspace"]
+        body = json.dumps({"workspace": {
+            "project_workspace_id": workspace["workspace_id"],
+            "strategy": "ORIGINAL",
+        }}).encode()
+        first = call_do_method(
+            handler, "POST", "/api/workflows/req-1/runs", body,
+            headers={"Idempotency-Key": "run-one"},
+        )
+        second = call_do_method(
+            handler, "POST", "/api/workflows/req-1/runs", body,
+            headers={"Idempotency-Key": "run-one"},
+        )
+        assert first["code"] == 201
+        assert first["body"]["run"]["status"] == "RUNNING"
+        assert second["code"] == 200
+        assert second["body"]["run"]["run_id"] == first["body"]["run"]["run_id"]
+
+    def test_project_workspace_register_list_and_preflight(self, tmp_path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        handler, _, _, _ = make_handler({}, str(tmp_path))
+        created_group = call_do_method(
+            handler, "POST", "/api/project-groups",
+            json.dumps({"name": "Core"}).encode(),
+        )
+        group_id = created_group["body"]["project_group"]["group_id"]
+        created = call_do_method(
+            handler, "POST", f"/api/project-groups/{group_id}/workspaces",
+            json.dumps({
+                "name": "Repo", "root_alias": "test", "relative_path": "repo"
+            }).encode(),
+        )
+        assert created["code"] == 201
+        workspace_id = created["body"]["workspace"]["workspace_id"]
+        assert created["body"]["workspace"]["root_ref"] == "test:repo"
+        listed = call_do_method(
+            handler, "GET", f"/api/project-groups/{group_id}/workspaces"
+        )
+        assert listed["body"]["workspaces"][0]["workspace_id"] == workspace_id
+        preflight = call_do_method(
+            handler, "POST", f"/api/workspaces/{workspace_id}/preflight", b"{}"
+        )
+        assert preflight["code"] == 200
+        assert preflight["body"]["preflight"]["exists"] is True
+
+    def test_project_group_crud_uses_authenticated_actor(self):
+        handler, _, _, _ = make_handler({})
+        created = call_do_method(
+            handler, "POST", "/api/project-groups",
+            json.dumps({"name": "Core", "description": "team", "actor": "forged"}).encode(),
+        )
+        assert created["code"] == 201
+        group = created["body"]["project_group"]
+        assert group["created_by"] == "local:test-user"
+
+        listed = call_do_method(handler, "GET", "/api/project-groups")
+        assert any(item["group_id"] == group["group_id"]
+                   for item in listed["body"]["project_groups"])
+
+        updated = call_do_method(
+            handler, "PATCH", f"/api/project-groups/{group['group_id']}",
+            json.dumps({"expected_revision": 1, "name": "Platform"}).encode(),
+        )
+        assert updated["code"] == 200
+        assert updated["body"]["project_group"]["name"] == "Platform"
+
+    def test_project_group_member_api_and_structured_conflict(self):
+        handler, _, _, _ = make_handler({})
+        created = call_do_method(
+            handler, "POST", "/api/project-groups",
+            json.dumps({"name": "Core"}).encode(),
+        )
+        group_id = created["body"]["project_group"]["group_id"]
+        member = call_do_method(
+            handler, "PUT", f"/api/project-groups/{group_id}/members/user%3Abob",
+            json.dumps({"role": "developer"}).encode(),
+        )
+        assert member["code"] == 200
+        assert member["body"]["member"]["role"] == "DEVELOPER"
+
+        conflict = call_do_method(
+            handler, "DELETE", f"/api/project-groups/{group_id}/members/local%3Atest-user",
+        )
+        assert conflict["code"] == 409
+        assert conflict["body"]["error"]["code"] == "LAST_OWNER_REQUIRED"
+
+    def test_capabilities_reports_real_features_permissions_and_actor(self):
+        handler, _, _, _ = make_handler({})
+        response = call_do_method(handler, "GET", "/api/capabilities")
+
+        assert response["code"] == 200
+        assert response["body"]["features"]["sse_events"] is True
+        assert response["body"]["features"]["project_groups"] is False
+        assert "group:manage" in response["body"]["permissions"]
+        assert response["body"]["actor"]["subject"] == "local:test-user"
+        assert response["body"]["mode"] == "local"
+        assert response["body"]["request_id"].startswith("http_")
+
     def test_assessed_requirement_change_http_endpoint(self):
         from harness_framework.versioning import VersionedResourceStore
         store = {

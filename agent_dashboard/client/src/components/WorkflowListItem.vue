@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { AlertCircle } from 'lucide-vue-next'
-import type { Workflow } from '@/lib/mockData'
+import type { Workflow } from '@/api/types'
 import { PHASE_CONFIG } from '@/lib/mockData'
 import { cn } from '@/lib/utils'
 

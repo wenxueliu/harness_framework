@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref, watch } from 'vue'
-import type { Task, SessionEvent } from '@/lib/mockData'
+import type { Task, SessionEvent } from '@/api/types'
 import {
   fetchTaskMessages,
   fetchTaskSessionEvents,
@@ -69,7 +69,6 @@ async function submitMessage() {
   try {
     await sendTaskMessage(props.reqId, props.task.id, {
       message: messageDraft.value.trim(),
-      actor: 'human:web',
       mode: messageMode.value,
     })
     messageDraft.value = ''

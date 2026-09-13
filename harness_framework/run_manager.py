@@ -14,6 +14,7 @@ RunManager — 运行生命周期管理 + 状态转换审计日志
 from __future__ import annotations
 
 import datetime
+import hashlib
 import json
 import logging
 import time
@@ -31,20 +32,31 @@ TASK_TERMINAL_STATES = frozenset({
 
 
 class RunManager:
-    def __init__(self, consul: KVStore):
+    def __init__(self, consul: KVStore, workspace_manager=None):
         self.consul = consul
+        self.workspace_manager = workspace_manager
 
     # ── Run 生命周期 ────────────────────────────────────────────────────────
 
-    def get_or_create_run(self, req_id: str, actor: str) -> str:
-        """获取当前活跃 run，若无则创建新的。返回 run_id。"""
+    def get_active_run(self, req_id: str) -> Optional[str]:
+        """Return the active Run without creating execution state."""
         current, _ = self.consul.kv_get(f"workflows/{req_id}/current_run")
-        if current:
-            status, _ = self.consul.kv_get(
-                f"workflows/{req_id}/runs/{current}/status"
-            )
-            if status and status not in RUN_TERMINAL_STATES:
-                return current
+        if not current:
+            return None
+        status, _ = self.consul.kv_get(f"workflows/{req_id}/runs/{current}/status")
+        if not status or status in RUN_TERMINAL_STATES:
+            return None
+        return current
+
+    def get_or_create_run(self, req_id: str, actor: str) -> str:
+        """Legacy compatibility path: get or create a directly RUNNING Run.
+
+        Managed Workspace execution must use ``create_provisioning_run`` and
+        ``activate_provisioned_run`` instead.
+        """
+        active = self.get_active_run(req_id)
+        if active:
+            return active
 
         run_id = _generate_run_id()
         now = _now_iso()
@@ -55,17 +67,89 @@ class RunManager:
         self.consul.kv_put(f"{base}/summary", json.dumps(
             {"total": 0, "done": 0, "failed": 0, "aborted": 0}
         ))
-        self.consul.kv_put(f"workflows/{req_id}/current_run", run_id)
+        current_key = f"workflows/{req_id}/current_run"
+        previous, previous_index = self.consul.kv_get(current_key)
+        cas = previous_index if previous else 0
+        if not self.consul.kv_put(current_key, run_id, cas=cas):
+            winner = self.get_active_run(req_id)
+            self.consul.kv_delete(base, recurse=True)
+            if winner:
+                return winner
+            raise RuntimeError("active run changed concurrently")
         log.info("created run %s for workflow %s (actor=%s)", run_id, req_id, actor)
         return run_id
 
+    def create_provisioning_run(
+        self, req_id: str, actor: str, *, idempotency_key: str
+    ) -> str:
+        """Create one managed Run which cannot dispatch until activated."""
+        if not actor or not idempotency_key:
+            raise ValueError("actor and idempotency_key are required")
+        idem_digest = hashlib.sha256(idempotency_key.encode("utf-8")).hexdigest()
+        idem_key = f"workflows/{req_id}/run-idempotency/{idem_digest}"
+        existing, _ = self.consul.kv_get(idem_key)
+        if existing:
+            return existing
+        if self.get_active_run(req_id):
+            raise RuntimeError("workflow already has an active run")
+        run_id = _generate_run_id()
+        now = _now_iso()
+        base = f"workflows/{req_id}/runs/{run_id}"
+        self.consul.kv_put(f"{base}/status", "PROVISIONING")
+        self.consul.kv_put(f"{base}/started_at", now)
+        self.consul.kv_put(f"{base}/started_by", actor)
+        self.consul.kv_put(f"{base}/execution_mode", "managed-workspace")
+        self.consul.kv_put(f"{base}/summary", json.dumps(
+            {"total": 0, "done": 0, "failed": 0, "aborted": 0}
+        ))
+        if not self.consul.kv_put(idem_key, run_id, cas=0):
+            winner, _ = self.consul.kv_get(idem_key)
+            self.consul.kv_delete(base, recurse=True)
+            if winner:
+                return winner
+            raise RuntimeError("run idempotency record changed concurrently")
+        return run_id
+
+    def activate_provisioned_run(self, req_id: str, run_id: str) -> None:
+        base = f"workflows/{req_id}/runs/{run_id}"
+        status, status_index = self.consul.kv_get(f"{base}/status")
+        if status != "PROVISIONING":
+            raise ValueError(f"run is not provisioning: {status}")
+        current_key = f"workflows/{req_id}/current_run"
+        current, current_index = self.consul.kv_get(current_key)
+        if current:
+            raise RuntimeError("workflow already has an active run")
+        if not self.consul.kv_put(current_key, run_id, cas=0 if not current else current_index):
+            raise RuntimeError("active run changed concurrently")
+        if not self.consul.kv_put(f"{base}/status", "RUNNING", cas=status_index):
+            # Do not dispatch: get_active_run verifies status. Leave the pointer
+            # for a consistency repair instead of activating a partial Run.
+            raise RuntimeError("run status changed concurrently")
+
+    def fail_provisioning_run(self, req_id: str, run_id: str, reason: str) -> None:
+        base = f"workflows/{req_id}/runs/{run_id}"
+        status, index = self.consul.kv_get(f"{base}/status")
+        if status != "PROVISIONING":
+            raise ValueError(f"run is not provisioning: {status}")
+        if not self.consul.kv_put(f"{base}/status", "FAILED", cas=index):
+            raise RuntimeError("run status changed concurrently")
+        self.consul.kv_put(f"{base}/finished_at", _now_iso())
+        self.consul.kv_put(f"{base}/error_message", reason)
+
     def end_run(self, req_id: str, run_id: str, status: str) -> None:
         """以给定状态终止 run，清除 current_run 指针。"""
+        if status not in RUN_TERMINAL_STATES:
+            raise ValueError(f"invalid terminal run status: {status}")
         now = _now_iso()
         base = f"workflows/{req_id}/runs/{run_id}"
         self.consul.kv_put(f"{base}/status", status)
         self.consul.kv_put(f"{base}/finished_at", now)
-        self.consul.kv_delete(f"workflows/{req_id}/current_run")
+        current_key = f"workflows/{req_id}/current_run"
+        current, _ = self.consul.kv_get(current_key)
+        if current == run_id:
+            self.consul.kv_delete(current_key)
+        if self.workspace_manager is not None:
+            self.workspace_manager.finish_run_workspace(req_id, run_id)
         log.info("ended run %s for workflow %s: %s", run_id, req_id, status)
 
     def roll_forward_run(

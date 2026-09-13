@@ -10,7 +10,9 @@ import type {
   TaskStatus,
   Workflow,
   WorkflowPhase,
-} from "./mockData";
+} from "@/api/types";
+import { apiRequest, jsonRequest } from '@/api/client'
+import type { CapabilitiesSnapshot } from '@/api/types'
 
 const HARNESS_API =
   (import.meta.env.VITE_HARNESS_API as string) || "http://127.0.0.1:8080";
@@ -19,6 +21,7 @@ interface WorkflowSummary {
   req_id: string;
   title?: string;
   control?: string;
+  phase?: string;
 }
 
 interface WorkflowListResponse {
@@ -52,20 +55,23 @@ export interface HumanMessage {
 }
 
 async function getJson<T>(path: string): Promise<T> {
-  const response = await fetch(`${HARNESS_API}${path}`);
-  if (!response.ok) {
-    throw new Error(`Harness API ${path} failed: ${response.status}`);
-  }
-  return response.json() as Promise<T>;
+  return apiRequest<T>(path)
 }
 
 function normalizeStatus(raw: string): TaskStatus {
-  if (["PENDING", "IN_PROGRESS", "DONE", "FAILED", "BLOCKED"].includes(raw)) {
+  if (["PENDING", "IN_PROGRESS", "DONE", "FAILED", "BLOCKED", "ABORTED",
+    "AWAITING_REVIEW", "WAITING_FOR_HUMAN", "SKIPPED_UPSTREAM_FAILED"].includes(raw)) {
     return raw as TaskStatus;
   }
-  if (raw === "ABORTED") return "FAILED";
-  if (["AWAITING_REVIEW", "WAITING_FOR_HUMAN"].includes(raw)) return "BLOCKED";
-  return "PENDING";
+  return "UNKNOWN";
+}
+
+function normalizePhase(raw: string | undefined): WorkflowPhase | null {
+  if (raw && ["EMPTY", "PENDING", "RUNNING", "DONE", "FAILED", "PAUSED",
+    "DESIGN", "DEVELOPMENT", "TEST_READY", "TESTING", "BLOCKED", "ROLLBACK"].includes(raw)) {
+    return raw as WorkflowPhase
+  }
+  return null
 }
 
 function derivePhase(
@@ -110,6 +116,7 @@ function toWorkflow(summary: WorkflowSummary, detail: WorkflowDetail): Workflow 
       id: name,
       name: fields.description || name,
       status: normalizeStatus(fields.status || "PENDING"),
+      raw_status: fields.status || "",
       assigned_agent: fields.assigned_agent || "",
       depends_on: definition.depends_on ?? [],
       last_updated:
@@ -119,6 +126,7 @@ function toWorkflow(summary: WorkflowSummary, detail: WorkflowDetail): Workflow 
       error_log_url: fields.error_log_url,
       git_commit: fields.commit,
       type: (definition.type || fields.type || "backend") as Task["type"],
+      error_message: fields.error_message,
     };
   }
 
@@ -132,7 +140,8 @@ function toWorkflow(summary: WorkflowSummary, detail: WorkflowDetail): Workflow 
   return {
     id: detail.req_id,
     title: summary.title || detail.req_id,
-    phase: derivePhase(tasks, control),
+    phase: normalizePhase(summary.phase) || derivePhase(tasks, control),
+    raw_phase: summary.phase,
     created_at: createdAt,
     tasks,
     artifacts: {
@@ -160,17 +169,8 @@ export async function sendControlSignalToHarness(
   signal: "PAUSE" | "RESUME" | "ABORT" | "RETRY",
   taskName?: string,
 ): Promise<void> {
-  const response = await fetch(
-    `${HARNESS_API}/api/workflow/${encodeURIComponent(reqId)}/control`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: signal, task_name: taskName || "" }),
-    },
-  );
-  if (!response.ok) {
-    throw new Error(`Harness control API failed: ${response.status}`);
-  }
+  await apiRequest(`/api/workflow/${encodeURIComponent(reqId)}/control`,
+    jsonRequest('POST', { action: signal, task_name: taskName || '' }))
 }
 
 export async function pingHarness(): Promise<boolean> {
@@ -180,6 +180,10 @@ export async function pingHarness(): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+export async function fetchCapabilities(): Promise<CapabilitiesSnapshot> {
+  return apiRequest<CapabilitiesSnapshot>('/api/capabilities')
 }
 
 export async function fetchTaskSessionEvents(
@@ -215,7 +219,7 @@ export async function fetchTaskMessages(
 export async function sendTaskMessage(
   reqId: string,
   taskName: string,
-  input: { message: string; actor: string; mode: "queue" | "interrupt" },
+  input: { message: string; mode: "queue" | "interrupt" },
 ): Promise<HumanMessage> {
   const response = await fetch(
     `${HARNESS_API}/api/workflow/${encodeURIComponent(reqId)}/task/${encodeURIComponent(taskName)}/messages`,

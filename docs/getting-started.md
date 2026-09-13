@@ -52,6 +52,17 @@ python -m harness_framework.daemon --local \
 `--acp-workspace-root` 是未在任务中设置 `acp.cwd` 时的默认 Agent 工作目录。
 生产任务应明确指向实际项目目录；`service_name` 只是可选业务标签，不负责定位仓库。
 
+### Workspace-first 执行
+
+上面的命令保留了旧 CLI 的兼容路径。生产环境建议使用 Workspace-first 流程：
+
+1. 用 `--workspace-root ALIAS=/absolute/path` 配置服务端允许的根目录；不要把任意绝对路径交给浏览器。
+2. 在 Dashboard“全局配置”中登记 Project Workspace，并执行 Preflight。
+3. 在项目组的工作流页面点击“启动 Run”，选择隔离策略和 Git ref。
+4. Run 准备成功后，Dispatcher 才会认领任务；每个 Attempt 的 ACP cwd 都来自不可变 Binding。
+
+`service_name` 不参与路由。`--demo-mode` 仅用于演示，允许显式 `DEMO_TEMP` 在 `/tmp` 创建临时目录；生产 managed Run 缺少 Workspace 会被拒绝。
+
 ## 3. 初始化工作流
 
 ```bash

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { SessionEvent } from '@/lib/mockData'
+import type { SessionEvent } from '@/api/types'
 import {
   Clock,
   AlertCircle,

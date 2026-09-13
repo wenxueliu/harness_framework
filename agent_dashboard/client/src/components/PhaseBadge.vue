@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { WorkflowPhase } from '@/lib/mockData'
+import type { WorkflowPhase } from '@/api/types'
 import { PHASE_CONFIG } from '@/lib/mockData'
 import { cn } from '@/lib/utils'
 
