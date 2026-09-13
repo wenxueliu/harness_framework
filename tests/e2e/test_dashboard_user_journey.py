@@ -38,6 +38,8 @@ def test_user_journey_from_group_to_agent_intervention(
     attempt_select.wait_for(timeout=10000)
     expect(page.get_by_text("Agent inspected workspace")).to_be_visible(timeout=10000)
     expect(page.get_by_text("hello-world.json")).to_be_visible(timeout=10000)
+    page.locator('[data-testid="workspace-file-entry"]').first.click()
+    page.locator(".monaco-editor").first.wait_for(timeout=15000)
 
     # Search is a user-visible action, not a direct API assertion.
     search = page.locator('input[placeholder="搜索工作区文件"]')
@@ -75,7 +77,7 @@ def test_user_journey_attempt_diff_merge_and_navigation(
         "s => document.querySelector(s)?.innerText || ''", attempt_select._css()
     )
 
-    page.get_by_text("hello-world.json").first.click()
+    page.locator('[data-testid="workspace-file-entry"]').first.click()
     page.get_by_text("Diff").click()
     expect(page.locator("pre").first).to_be_visible(timeout=10000)
 

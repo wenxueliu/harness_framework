@@ -242,7 +242,7 @@ onMounted(load)
         </div>
         <div class="my-2 truncate text-[11px] font-mono text-blue-300">/{{ currentPath }}</div>
         <button v-if="currentPath" class="mb-1 text-xs text-muted-foreground" @click="currentPath = ''; binding && listWorkspaceTree(binding).then(value => entries = value)">返回根目录</button>
-        <button v-for="entry in entries" :key="entry.path" class="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-accent" @click="openEntry(entry)">
+        <button v-for="entry in entries" :key="entry.path" data-testid="workspace-file-entry" class="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-accent" @click="openEntry(entry)">
           <Folder v-if="entry.type === 'directory'" :size="13" class="text-amber-300" /><File v-else :size="13" class="text-slate-400" /><span class="truncate">{{ entry.name }}</span><ChevronRight v-if="entry.type === 'directory'" :size="11" class="ml-auto" />
         </button>
         <div class="mt-4 border-t border-border pt-3">
