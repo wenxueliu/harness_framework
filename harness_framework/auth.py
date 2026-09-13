@@ -27,13 +27,13 @@ ROLE_CAPABILITIES: dict[Role, frozenset[str]] = {
         "workspace:register", "workspace:policy", "workspace:path:diagnose",
         "workflow:draft", "workflow:publish", "run:create", "run:control",
         "task:retry", "task:message:queue", "task:message:interrupt",
-        "file:read", "file:write", "checkpoint:create",
+        "file:read", "file:write", "checkpoint:create", "workspace:merge",
     }),
     Role.MAINTAINER: frozenset({
         "group:read", "workflow:draft", "workflow:publish", "run:create",
         "run:control", "task:retry", "task:message:queue",
         "task:message:interrupt", "file:read", "file:write",
-        "checkpoint:create", "workspace:path:diagnose",
+        "checkpoint:create", "workspace:path:diagnose", "workspace:merge",
     }),
     Role.DEVELOPER: frozenset({
         "group:read", "workflow:draft", "task:message:queue", "file:read",
@@ -133,16 +133,83 @@ class AuthorizationService:
             return None
 
     def capabilities_for(
-        self, context: AuthenticationContext, group_id: Optional[str] = None
+        self, context: AuthenticationContext, group_id: Optional[str] = None,
+        req_id: Optional[str] = None,
     ) -> frozenset[str]:
-        role = self.role_for(context, group_id)
-        return ROLE_CAPABILITIES.get(role, frozenset()) if role else frozenset()
+        primary_group = None
+        if req_id:
+            primary_group, _ = self.store.kv_get(f"workflows/{req_id}/project-group")
+        effective_group = primary_group or group_id
+        role = self.role_for(context, effective_group)
+        if req_id and primary_group and group_id and group_id != primary_group:
+            role = self.role_for(context, primary_group)
+            if not role:
+                capabilities = self._reference_capabilities(context, primary_group, req_id)
+            else:
+                capabilities = ROLE_CAPABILITIES.get(role, frozenset())
+        else:
+            capabilities = None
+        if capabilities is None:
+            capabilities = (
+                ROLE_CAPABILITIES.get(role, frozenset())
+                if role else self._reference_capabilities(context, effective_group, req_id)
+            )
+        if not capabilities:
+            return frozenset()
+        policy_group = effective_group or group_id
+        if policy_group and policy_group != "unassigned":
+            raw, _ = self.store.kv_get(f"project-groups/{policy_group}/record")
+            try:
+                policy = json.loads(raw).get("policy", {}) if raw else {}
+            except (TypeError, json.JSONDecodeError):
+                policy = {}
+            allowed = policy.get("allowed_capabilities")
+            if isinstance(allowed, (list, tuple, set)):
+                capabilities = capabilities.intersection(str(item) for item in allowed)
+        return frozenset(capabilities)
+
+    def _reference_capabilities(
+        self, context: AuthenticationContext, primary_group_id: Optional[str],
+        req_id: Optional[str],
+    ) -> frozenset[str]:
+        """Return role ∩ explicit cross-group reference grants for a workflow."""
+        if not req_id or not primary_group_id:
+            return frozenset()
+        items: list[dict] = []
+        cursor = None
+        while True:
+            page, cursor = self.store.kv_list("project-groups/", cursor=cursor, limit=1000)
+            items.extend(page)
+            if cursor is None:
+                break
+        result: set[str] = set()
+        for item in items:
+            key = item.get("key", "")
+            if not key.endswith(f"/references/{req_id}"):
+                continue
+            parts = key.split("/")
+            if len(parts) < 4 or parts[1] == primary_group_id:
+                continue
+            reference_group = parts[1]
+            role = self.role_for(context, reference_group)
+            if not role:
+                continue
+            try:
+                record = json.loads(item.get("value", "{}"))
+            except (TypeError, json.JSONDecodeError):
+                continue
+            grants = set(record.get("capabilities", []))
+            if "workflow:read" in grants:
+                grants.add("group:read")
+            result.update(ROLE_CAPABILITIES[role].intersection(grants))
+        return frozenset(result)
 
     def require(
         self,
         context: AuthenticationContext,
         capability: str,
         group_id: Optional[str] = None,
+        req_id: Optional[str] = None,
     ) -> None:
-        if capability not in self.capabilities_for(context, group_id):
+        if capability not in self.capabilities_for(context, group_id, req_id):
             raise PermissionError(f"missing capability: {capability}")

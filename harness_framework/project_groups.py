@@ -271,6 +271,14 @@ class ProjectGroupService:
         )
         return record
 
+    def delete_reference(self, group_id: str, req_id: str) -> None:
+        self._require_active(group_id)
+        key = f"project-groups/{group_id}/references/{req_id}"
+        raw, _ = self.store.kv_get(key)
+        if not raw:
+            raise NotFoundError("跨组 Workflow 引用不存在", code="WORKFLOW_REFERENCE_NOT_FOUND")
+        self.store.kv_delete(key)
+
     def list_workflows(self, group_id: str) -> list[dict[str, Any]]:
         if group_id == UNASSIGNED_GROUP_ID:
             workflows, _ = self.store.kv_get("workflows/", recurse=True)

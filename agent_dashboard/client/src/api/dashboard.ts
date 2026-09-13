@@ -1,5 +1,5 @@
 import { apiRequest, jsonRequest } from './client'
-import type { AttemptWorkspaceBinding, ProjectGroup, ProjectGroupMember, ProjectWorkspace, RunCreationResult, RunSummary, WorkspaceAction, WorkspaceActionResult, WorkspaceFile, WorkspacePreflight, WorkspaceTreeEntry } from './types'
+import type { AttemptWorkspaceBinding, MergeTask, ProjectGroup, ProjectGroupMember, ProjectWorkspace, RunCreationResult, RunSummary, WorkspaceAction, WorkspaceActionResult, WorkspaceChange, WorkspaceDiff, WorkspaceFile, WorkspaceManifest, WorkspacePreflight, WorkspaceTreeEntry } from './types'
 
 export async function listProjectGroups(): Promise<ProjectGroup[]> {
   const payload = await apiRequest<{ project_groups: ProjectGroup[] }>('/api/project-groups')
@@ -126,4 +126,47 @@ export async function createWorkspaceCheckpoint(binding: AttemptWorkspaceBinding
   return apiRequest(`/api/workspaces/${encodeURIComponent(binding.workspace_id)}/checkpoints`,
     jsonRequest('POST', { req_id: binding.req_id, run_id: binding.run_id, task_id: binding.task_id,
       attempt_id: binding.attempt_id, message }, { 'Idempotency-Key': crypto.randomUUID() }))
+}
+
+export async function listWorkspaceChanges(binding: AttemptWorkspaceBinding): Promise<WorkspaceChange[]> {
+  const payload = await apiRequest<{ changes: WorkspaceChange[] }>(
+    `/api/workspaces/${encodeURIComponent(binding.workspace_id)}/changes?${contextQuery(binding)}`,
+  )
+  return payload.changes
+}
+
+export async function searchWorkspace(binding: AttemptWorkspaceBinding, query: string): Promise<Array<Record<string, unknown>>> {
+  const payload = await apiRequest<{ results: Array<Record<string, unknown>> }>(
+    `/api/workspaces/${encodeURIComponent(binding.workspace_id)}/search?${contextQuery(binding)}&q=${encodeURIComponent(query)}`,
+  )
+  return payload.results
+}
+
+export async function getWorkspaceDiff(binding: AttemptWorkspaceBinding, path = ''): Promise<WorkspaceDiff> {
+  return apiRequest(`/api/workspaces/${encodeURIComponent(binding.workspace_id)}/diff?${contextQuery(binding)}&path=${encodeURIComponent(path)}`)
+}
+
+export async function getRunManifest(reqId: string, runId: string): Promise<WorkspaceManifest> {
+  const payload = await apiRequest<{ manifest: WorkspaceManifest }>(
+    `/api/workflows/${encodeURIComponent(reqId)}/runs/${encodeURIComponent(runId)}/workspace/manifest`,
+  )
+  return payload.manifest
+}
+
+export async function createMergeTask(input: { reqId: string; runId: string; sourceTaskId: string; sourceAttemptId: string; targetTaskId: string; targetAttemptId: string; message?: string }): Promise<MergeTask> {
+  const payload = await apiRequest<{ merge_task: MergeTask }>(
+    `/api/workflows/${encodeURIComponent(input.reqId)}/runs/${encodeURIComponent(input.runId)}/merge-tasks`,
+    jsonRequest('POST', { source_task_id: input.sourceTaskId, source_attempt_id: input.sourceAttemptId, target_task_id: input.targetTaskId, target_attempt_id: input.targetAttemptId, message: input.message || '' }),
+  )
+  return payload.merge_task
+}
+
+export async function previewMergeTask(reqId: string, runId: string, mergeId: string): Promise<MergeTask> {
+  const payload = await apiRequest<{ merge_task: MergeTask }>(`/api/workflows/${encodeURIComponent(reqId)}/runs/${encodeURIComponent(runId)}/merge-tasks/${encodeURIComponent(mergeId)}`)
+  return payload.merge_task
+}
+
+export async function applyMergeTask(reqId: string, runId: string, mergeId: string): Promise<MergeTask> {
+  const payload = await apiRequest<{ merge_task: MergeTask }>(`/api/workflows/${encodeURIComponent(reqId)}/runs/${encodeURIComponent(runId)}/merge-tasks/${encodeURIComponent(mergeId)}/apply`, jsonRequest('POST', {}))
+  return payload.merge_task
 }

@@ -47,6 +47,7 @@ from .workspace_manager import WorkspaceManager
 from .workspace_security import WorkspaceSecurity
 from .workspace_files import WorkspaceFileService
 from .event_journal import EventJournal
+from .workspace_merge import WorkspaceMergeService
 
 log = logging.getLogger("webapi")
 
@@ -68,6 +69,7 @@ class APIHandler(BaseHTTPRequestHandler):
     workspace_manager: WorkspaceManager = None
     workspace_files: WorkspaceFileService = None
     event_journal: EventJournal = None
+    workspace_merge: WorkspaceMergeService = None
     sse_connection_seconds: float = 300.0
 
     def log_message(self, format, *args):
@@ -129,9 +131,16 @@ class APIHandler(BaseHTTPRequestHandler):
     def _handle_api_error(self, error: APIError) -> None:
         self._send_error(error.status, error.code, error.message, dict(error.details))
 
-    def _require(self, context, capability: str, group_id: str | None = None) -> None:
+    def _require(
+        self, context, capability: str, group_id: str | None = None,
+        req_id: str | None = None,
+    ) -> None:
+        if req_id is None:
+            path = urlparse(getattr(self, "path", "")).path.split("/")
+            if len(path) > 3 and path[1] in {"workflow", "workflows"}:
+                req_id = unquote(path[2])
         try:
-            self.authorization.require(context, capability, group_id)
+            self.authorization.require(context, capability, group_id, req_id)
         except PermissionError as exc:
             raise APIError(
                 "FORBIDDEN", "当前用户没有执行此操作的权限", 403,
@@ -254,7 +263,11 @@ class APIHandler(BaseHTTPRequestHandler):
                 query = parse_qs(u.query)
                 group_id = query.get("group_id", [None])[0]
                 return self._send_json(200, self.capabilities.snapshot(
-                    context, group_id=group_id
+                    context,
+                    group_id=group_id,
+                    req_id=query.get("req_id", [None])[0],
+                    run_id=query.get("run_id", [None])[0],
+                    attempt_id=query.get("attempt_id", [None])[0],
                 ))
             if path == "/api/project-groups":
                 context = self._authentication_context()
@@ -304,7 +317,7 @@ class APIHandler(BaseHTTPRequestHandler):
                     workspace = self.workspace_manager.get(unquote(parts[3]))
                     self._require(context, "group:read", workspace["group_id"])
                     return self._send_json(200, {"workspace": workspace})
-                if len(parts) == 5 and parts[4] in {"tree", "file", "search", "changes", "actions"}:
+                if len(parts) == 5 and parts[4] in {"tree", "file", "search", "changes", "diff", "actions"}:
                     workspace_id = unquote(parts[3])
                     call_context = self._workspace_context(u, workspace_id, context)
                     query = parse_qs(u.query)
@@ -330,6 +343,10 @@ class APIHandler(BaseHTTPRequestHandler):
                         return self._send_json(200, {"actions":
                             self.workspace_files.list_actions(**call_context)
                         })
+                    if parts[4] == "diff":
+                        return self._send_json(200, self.workspace_files.diff(
+                            **call_context, path=query.get("path", [""])[0]
+                        ))
                     return self._send_json(200, {"changes":
                         self.workspace_files.changes(**call_context)
                     })
@@ -339,10 +356,21 @@ class APIHandler(BaseHTTPRequestHandler):
                 req_id = unquote(parts[3]) if len(parts) > 3 else ""
                 group_id, _ = self.consul.kv_get(f"workflows/{req_id}/project-group")
                 self._require(context, "group:read", group_id or None)
+                if (len(parts) == 8 and parts[4] == "runs"
+                        and parts[6] == "merge-tasks"):
+                    self._require(context, "workspace:merge", group_id or None, req_id)
+                    return self._send_json(200, {"merge_task": self.workspace_merge.preview(
+                        req_id, unquote(parts[5]), unquote(parts[7])
+                    )})
                 if (len(parts) == 7 and parts[4] == "runs"
                         and parts[6] == "workspace"):
                     return self._send_json(200, {"workspace":
                         self.workspace_manager.get_run_workspace(req_id, unquote(parts[5]))
+                    })
+                if (len(parts) == 8 and parts[4] == "runs"
+                        and parts[6] == "workspace" and parts[7] == "manifest"):
+                    return self._send_json(200, {"manifest":
+                        self.workspace_manager.get_run_manifest(req_id, unquote(parts[5]))
                     })
                 if (len(parts) == 7 and parts[4] == "tasks"
                         and parts[6] == "attempts"):
@@ -543,6 +571,32 @@ class APIHandler(BaseHTTPRequestHandler):
                     "run": self.run_manager.get_run(req_id, run_id),
                     "workspace": workspace,
                 })
+            if (len(parts) == 7 and parts[1:3] == ["api", "workflows"]
+                    and parts[4] == "runs" and parts[6] == "merge-tasks"):
+                context = self._authentication_context()
+                req_id, run_id = unquote(parts[3]), unquote(parts[5])
+                group_id, _ = self.consul.kv_get(f"workflows/{req_id}/project-group")
+                self._require(context, "workspace:merge", group_id or None, req_id)
+                merge = self.workspace_merge.create_task(
+                    req_id=req_id, run_id=run_id,
+                    source_task_id=str(body.get("source_task_id", "")),
+                    source_attempt_id=str(body.get("source_attempt_id", "")),
+                    target_task_id=str(body.get("target_task_id", "")),
+                    target_attempt_id=str(body.get("target_attempt_id", "")),
+                    actor=context.subject, message=str(body.get("message", "")),
+                )
+                return self._send_json(201, {"merge_task": merge})
+            if (len(parts) == 9 and parts[1:3] == ["api", "workflows"]
+                    and parts[4] == "runs" and parts[6] == "merge-tasks"
+                    and parts[8] == "apply"):
+                context = self._authentication_context()
+                req_id, run_id = unquote(parts[3]), unquote(parts[5])
+                group_id, _ = self.consul.kv_get(f"workflows/{req_id}/project-group")
+                self._require(context, "workspace:merge", group_id or None, req_id)
+                merge = self.workspace_merge.apply(
+                    req_id, run_id, unquote(parts[7]), actor=context.subject
+                )
+                return self._send_json(200, {"merge_task": merge})
             if path == "/api/project-groups":
                 context = self._authentication_context()
                 self._require(context, "group:manage")
@@ -701,6 +755,18 @@ class APIHandler(BaseHTTPRequestHandler):
                     changes=changes,
                 )
                 return self._send_json(200, {"project_group": group})
+            if len(parts) == 4 and parts[1:3] == ["api", "workspaces"]:
+                context = self._authentication_context()
+                workspace_id = unquote(parts[3])
+                workspace = self.workspace_manager.get(workspace_id)
+                self._require(context, "workspace:register", workspace["group_id"])
+                if "expected_revision" not in body:
+                    raise APIError("EXPECTED_REVISION_REQUIRED", "expected_revision 不能为空", 422)
+                changes = {key: value for key, value in body.items() if key != "expected_revision"}
+                updated = self.workspace_manager.update(
+                    workspace_id, expected_revision=int(body["expected_revision"]), changes=changes
+                )
+                return self._send_json(200, {"workspace": updated})
             self._send_error(404, "NOT_FOUND", "接口不存在")
         except APIError as error:
             self._handle_api_error(error)
@@ -771,6 +837,13 @@ class APIHandler(BaseHTTPRequestHandler):
         try:
             parts = path.split("/")
             if (len(parts) == 6 and parts[1:3] == ["api", "project-groups"]
+                    and parts[4] == "workflow-references"):
+                context = self._authentication_context()
+                group_id, req_id = unquote(parts[3]), unquote(parts[5])
+                self._require(context, "group:manage", group_id)
+                self.project_groups.delete_reference(group_id, req_id)
+                return self._send_json(200, {"ok": True})
+            if (len(parts) == 6 and parts[1:3] == ["api", "project-groups"]
                     and parts[4] == "members"):
                 context = self._authentication_context()
                 group_id, subject_id = unquote(parts[3]), unquote(parts[5])
@@ -813,7 +886,7 @@ class APIHandler(BaseHTTPRequestHandler):
                     f"workflows/{req_id}/project-group"
                 )
                 if "group:read" not in self.authorization.capabilities_for(
-                    context, group_id or None
+                    context, group_id or None, req_id
                 ):
                     continue
             tasks = w["tasks"]
@@ -977,6 +1050,12 @@ class APIHandler(BaseHTTPRequestHandler):
         result = _coalesce_timeline_events(result)
 
         query = parse_qs(parsed_url.query) if parsed_url is not None else {}
+        requested_run = query.get("run_id", [None])[0]
+        requested_attempt = query.get("attempt_id", [None])[0]
+        if requested_run or requested_attempt:
+            result = [event for event in result
+                      if (not requested_run or event.get("run_id") == requested_run)
+                      and (not requested_attempt or event.get("attempt_id") == requested_attempt)]
         try:
             limit = max(1, min(int(query.get("limit", ["200"])[0]), 500))
             cursor_raw = query.get("cursor", [""])[0]
@@ -1416,6 +1495,8 @@ def _normalize_session_event(event: dict, session_id: str) -> dict | None:
             "message": event.get("message", event.get("type", "Event")),
             "data": event.get("data", {}),
             "session_id": session_id,
+            "run_id": event.get("run_id", ""),
+            "attempt_id": event.get("attempt_id", ""),
         }
 
     payload = event.get("payload", {})
@@ -1446,6 +1527,8 @@ def _normalize_session_event(event: dict, session_id: str) -> dict | None:
             "kind": update.get("kind", ""),
         },
         "session_id": session_id,
+        "run_id": event.get("run_id", ""),
+        "attempt_id": event.get("attempt_id", ""),
     }
 
 
@@ -1502,6 +1585,9 @@ def serve(consul: KVStore, host: str = "0.0.0.0", port: int = 8080,
     APIHandler.event_journal = EventJournal(consul)
     APIHandler.sse_connection_seconds = sse_connection_seconds
     APIHandler.workspace_files = WorkspaceFileService(
+        consul, APIHandler.workspace_manager, APIHandler.event_journal
+    )
+    APIHandler.workspace_merge = WorkspaceMergeService(
         consul, APIHandler.workspace_manager, APIHandler.event_journal
     )
     server = ThreadingHTTPServer((host, port), APIHandler)

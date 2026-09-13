@@ -179,6 +179,42 @@ class WorkspaceManager:
             raise NotFoundError("Project Workspace 不存在", code="WORKSPACE_NOT_FOUND")
         return _decode(raw).to_dict()
 
+    def update(
+        self, workspace_id: str, *, expected_revision: int,
+        changes: dict[str, Any],
+    ) -> dict[str, Any]:
+        key = f"workspaces/projects/{workspace_id}/record"
+        raw, index = self.store.kv_get(key)
+        if not raw:
+            raise NotFoundError("Project Workspace 不存在", code="WORKSPACE_NOT_FOUND")
+        current = _decode(raw)
+        if current.revision != int(expected_revision):
+            raise ConflictError("Workspace 已被其他请求修改", code="WORKSPACE_REVISION_CONFLICT",
+                                details={"current_revision": current.revision})
+        allowed = {"name", "access", "policy", "default_ref"}
+        unknown = set(changes) - allowed
+        if unknown:
+            raise ValidationError("Workspace 包含不支持的字段", code="WORKSPACE_FIELD_INVALID",
+                                  details={"fields": sorted(unknown)})
+        data = current.to_dict()
+        if "name" in changes:
+            if not isinstance(changes["name"], str) or not changes["name"].strip():
+                raise ValidationError("Workspace 名称不能为空", code="WORKSPACE_NAME_REQUIRED")
+            data["name"] = changes["name"].strip()
+        if "access" in changes:
+            try:
+                data["access"] = WorkspaceAccess(str(changes["access"])).value
+            except ValueError as exc:
+                raise ValidationError("无效的 Workspace access") from exc
+        for field in ("policy", "default_ref"):
+            if field in changes:
+                data[field] = changes[field]
+        data["revision"] = current.revision + 1
+        updated = _decode(json.dumps(data))
+        if not self.store.kv_put(key, json.dumps(updated.to_dict()), cas=index):
+            raise ConflictError("Workspace 已被其他请求修改", code="WORKSPACE_REVISION_CONFLICT")
+        return updated.to_dict()
+
     def list_for_group(self, group_id: str) -> list[dict[str, Any]]:
         self.project_groups._require_real_group(group_id)
         indexes, _ = self.store.kv_list(
@@ -293,6 +329,16 @@ class WorkspaceManager:
                     source_path, created_path, symlinks=False,
                     ignore=shutil.ignore_patterns(".git"),
                 )
+                if preflight.get("git"):
+                    subprocess.run(["git", "-C", created_path, "init", "-q"],
+                                   check=False, capture_output=True, text=True)
+                    subprocess.run(["git", "-C", created_path, "add", "-A"],
+                                   check=False, capture_output=True, text=True)
+                    subprocess.run([
+                        "git", "-C", created_path, "-c", "user.name=harness",
+                        "-c", "user.email=harness@localhost", "commit", "-qm",
+                        "baseline",
+                    ], check=False, capture_output=True, text=True)
                 resolved_sha = preflight.get("head_sha") or None
 
             if manifest_id is None:
@@ -634,6 +680,28 @@ class WorkspaceManager:
         record = _decode_run_workspace(raw)
         return record.to_dict() if include_root else self.public_run_workspace(record)
 
+    def get_run_manifest(self, req_id: str, run_id: str) -> dict[str, Any]:
+        workspace = self.get_run_workspace(req_id, run_id, include_root=True)
+        manifest_id = workspace.get("snapshot_manifest_id")
+        if not manifest_id:
+            return {"manifest_id": None, "files": [], "req_id": req_id, "run_id": run_id}
+        raw, _ = self.store.kv_get(
+            f"workflows/{req_id}/runs/{run_id}/workspace/manifests/{manifest_id}"
+        )
+        if not raw:
+            return {"manifest_id": manifest_id, "files": [], "req_id": req_id, "run_id": run_id}
+        try:
+            manifest = json.loads(raw)
+        except (TypeError, json.JSONDecodeError):
+            manifest = {}
+        return {
+            "manifest_id": manifest_id,
+            "files": list(manifest.get("files", [])),
+            "req_id": req_id, "run_id": run_id,
+            "strategy": workspace.get("strategy"),
+            "resolved_commit_sha": workspace.get("resolved_commit_sha"),
+        }
+
     @staticmethod
     def public_run_workspace(record: RunWorkspace) -> dict[str, Any]:
         data = record.to_dict()
@@ -747,6 +815,17 @@ class WorkspaceManager:
         if os.path.lexists(target):
             raise ConflictError("隔离 Workspace 目录已存在", code="ISOLATED_WORKSPACE_EXISTS")
         shutil.copytree(source, target, symlinks=False, ignore=shutil.ignore_patterns(".git"))
+        # Controlled copies are made independently mergeable. The baseline
+        # commit is internal metadata and never escapes through the API.
+        if self._git_ok(source, "rev-parse", "--git-dir"):
+            subprocess.run(["git", "-C", target, "init", "-q"], check=False,
+                           capture_output=True, text=True)
+            subprocess.run(["git", "-C", target, "add", "-A"], check=False,
+                           capture_output=True, text=True)
+            subprocess.run([
+                "git", "-C", target, "-c", "user.name=harness", "-c",
+                "user.email=harness@localhost", "commit", "-qm", "baseline",
+            ], check=False, capture_output=True, text=True)
         record = {
             "workspace_id": isolated_id, "req_id": req_id, "run_id": run_id,
             "task_id": task_id, "attempt_id": attempt_id, "root_ref": root_ref,

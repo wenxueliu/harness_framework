@@ -46,6 +46,7 @@ const route = useRoute()
 const capabilityStore = useCapabilityStore()
 const projectGroupStore = useProjectGroupStore()
 const demoMode = import.meta.env.VITE_DEMO_MODE === 'true'
+const currentGroupId = computed(() => typeof route.params.groupId === 'string' ? route.params.groupId : 'unassigned')
 
 // ─── State ───────────────────────────────────────────────────────────────────
 const workflows = ref<Workflow[]>([])
@@ -673,7 +674,7 @@ function closeTaskDetail() {
 
               <!-- Desktop right task detail -->
               <div v-if="selectedTask" class="hidden md:flex w-64 flex-shrink-0 overflow-hidden border-l border-border">
-                <TaskDrawer :task="selectedTask" :req-id="selectedId ?? undefined" @close="closeTaskDetail" @message-sent="load(true)" />
+                <TaskDrawer :task="selectedTask" :req-id="selectedId ?? undefined" :group-id="currentGroupId" @close="closeTaskDetail" @message-sent="load(true)" />
               </div>
             </div>
           </div>
@@ -732,7 +733,7 @@ function closeTaskDetail() {
           <div class="w-10 h-1 rounded-full bg-border" />
         </div>
         <div class="overflow-y-auto" :style="{ maxHeight: 'calc(75vh - 32px)' }">
-          <TaskDrawer :task="selectedTask" :req-id="selectedId ?? undefined" @close="closeTaskDetail" @message-sent="load(true)" />
+          <TaskDrawer :task="selectedTask" :req-id="selectedId ?? undefined" :group-id="currentGroupId" @close="closeTaskDetail" @message-sent="load(true)" />
         </div>
       </div>
     </Teleport>

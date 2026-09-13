@@ -61,6 +61,7 @@ class ACPDispatcher:
         permission_policy: str = "allow_once",
         client_factory: Callable[..., ACPClient] = ACPClient,
         workspace_manager: WorkspaceManager | None = None,
+        event_journal: EventJournal | None = None,
     ):
         self.store = store
         self.run_manager = run_manager
@@ -74,7 +75,7 @@ class ACPDispatcher:
         self.permission_policy = permission_policy
         self.client_factory = client_factory
         self.workspace_manager = workspace_manager
-        self.event_journal = EventJournal(store)
+        self.event_journal = event_journal or EventJournal(store)
         if max_concurrency < 1:
             raise ValueError("ACP max_concurrency must be positive")
         if task_timeout < 1 or lease_duration < 1:
@@ -297,7 +298,8 @@ class ACPDispatcher:
                     f"workflows/{req_id}/sessions/{task_name}/{session_id}/events/{event_key}",
                     json.dumps({
                         "timestamp": _now_iso(), "type": "ACP_UPDATE",
-                        "provider": provider, "payload": params,
+                        "provider": provider, "run_id": claim["run_id"],
+                        "attempt_id": claim["attempt_id"], "payload": params,
                     }, ensure_ascii=False),
                 )
                 self._task_event(
@@ -306,6 +308,28 @@ class ACPDispatcher:
                                       "event_count": event_count},
                     {"type": "agent", "id": claim["agent_id"]},
                 )
+                self.event_journal.append(
+                    "SESSION_EVENT",
+                    subject={
+                        "req_id": req_id, "run_id": claim["run_id"],
+                        "task_id": task_name, "attempt_id": claim["attempt_id"],
+                    },
+                    actor={"type": "agent", "id": claim["agent_id"]},
+                    data={"session_id": session_id, "payload": params},
+                )
+                update = params.get("update", {}) if isinstance(params, dict) else {}
+                changed_path = ""
+                if isinstance(update, dict):
+                    changed_path = str(update.get("path") or update.get("filePath") or update.get("file_path") or "")
+                if changed_path:
+                    self.event_journal.append(
+                        "WORKSPACE_FILE_CHANGED",
+                        subject={"req_id": req_id, "run_id": claim["run_id"],
+                                 "task_id": task_name, "attempt_id": claim["attempt_id"]},
+                        actor={"type": "agent", "id": claim["agent_id"]},
+                        data={"path": changed_path, "source": "agent",
+                              "session_id": session_id},
+                    )
 
         try:
             provider, config = self._resolve_agent(meta)
@@ -360,7 +384,8 @@ class ACPDispatcher:
             self.store.kv_put(f"{base}/harness_session_id", session_id)
             self.store.kv_put(f"{base}/acp/session_id", session_id)
             self.run_manager.record_session_start(
-                req_id, claim["run_id"], task_name, session_id, claim["agent_id"]
+                req_id, claim["run_id"], task_name, session_id, claim["agent_id"],
+                claim["attempt_id"],
             )
             prompt_text = self._build_prompt(req_id, task_name, meta)
             if resumed_for_human:
@@ -415,7 +440,7 @@ class ACPDispatcher:
             self._complete(req_id, task_name, claim, result)
             self.run_manager.record_session_end(
                 req_id, claim["run_id"], task_name, event_count, 0,
-                "completed", f"ACP {provider} turn completed",
+                "completed", f"ACP {provider} turn completed", claim["attempt_id"],
             )
         except WorkspaceUnavailable as exc:
             if current_message:
@@ -435,7 +460,7 @@ class ACPDispatcher:
             if session_id:
                 self.run_manager.record_session_end(
                     req_id, claim["run_id"], task_name, event_count, 1,
-                    "error", str(exc),
+                    "error", str(exc), claim["attempt_id"],
                 )
             log.error("ACP task %s/%s failed: %s", req_id, task_name, exc)
         finally:

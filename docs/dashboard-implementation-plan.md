@@ -262,7 +262,7 @@ Run 已运行后，如果绑定目录被外部删除、权限变化或挂载失�
 |---|:---:|:---:|:---:|:---:|
 | `group:read` | ✓ | ✓ | ✓ | ✓ |
 | `group:manage` / `member:manage` / `group:archive` | ✓ |  |  |  |
-| `workspace:register` / `workspace:policy` | ✓ |  |  |  |
+| `workspace:register` / `workspace:policy` / `workspace:merge` | ✓ | ✓ |  |  |
 | `workflow:draft` | ✓ | ✓ | ✓ |  |
 | `workflow:publish` | ✓ | ✓ |  |  |
 | `run:create` / `run:control` / `task:retry` | ✓ | ✓ |  |  |
@@ -350,6 +350,14 @@ GET  /api/workspaces/:workspaceId/changes
 POST /api/workspaces/:workspaceId/checkpoints
 GET  /api/workspaces/:workspaceId/actions
 POST /api/workspaces/:workspaceId/actions/:actionId
+```
+
+```text
+GET  /api/workspaces/:workspaceId/diff?path=
+GET  /api/workflows/:reqId/runs/:runId/workspace/manifest
+POST /api/workflows/:reqId/runs/:runId/merge-tasks
+GET  /api/workflows/:reqId/runs/:runId/merge-tasks/:mergeId
+POST /api/workflows/:reqId/runs/:runId/merge-tasks/:mergeId/apply
 ```
 
 所有接口还要从当前 Task/Attempt 上下文确认 Binding；仅知道 `workspace_id` 不能绕过授权。实现时可以通过必填查询参数或上下文 header 传递 `attempt_id`，服务端仍须查 KV Binding。
@@ -583,18 +591,6 @@ ui/src/
 
 ## 14. 测试计划
 
-### 单元测试
-
-- 角色到 capability、跨组引用和策略取交集；
-- Workspace/Run/Binding 状态迁移与非法迁移；
-- Git ref 固化、脏目录判断、write_scope 相交；
-- 相对路径、symlink、敏感规则、大小/编码判断；
-- expected hash、幂等键和事件序列合并。
-
-### 存储契约测试
-
-同一套用例运行在 LocalStore、FileStore 和 Consul 测试实例：CAS、分页、并发主组绑定、索引修复、事件 sequence 和重启恢复。
-
 ### API 集成测试
 
 - 身份头伪造和越权读取/写入；
@@ -603,9 +599,13 @@ ui/src/
 - 文件读写、409、敏感文件、历史只读；
 - SSE 正常、重复、断线续传、游标过期和慢客户端。
 
+API 测试通过真实 HTTP/ASGI 服务器验证上述契约；不要求额外的单元测试。
+
 ### 端到端测试
 
 覆盖 Viewer 浏览、Developer 保存并 queue、Maintainer 创建/控制 Run、Owner 管理成员和归档；覆盖 DAG 到 Task 深链、刷新恢复、Attempt 切换、三方 Diff 与部分成功提示。
+
+UI 自动化使用 Dashboard 的浏览器驱动测试，覆盖项目组、Run、Task Workbench、Attempt 切换、文件树、编辑冲突、Merge Task、日志和 SSE 重连提示。
 
 ### 安全与性能测试
 
@@ -643,7 +643,7 @@ ui/src/
 
 ## 17. 需要记录的 ADR
 
-实施 Phase 0–3 时补充以下 ADR，记录不可逆边界，不重新讨论已确认的产品目标：
+实施 Phase 0–3 时补充以下 ADR，记录不可逆边界，不重新讨论已确认的产品目标。汇总记录见 [`adr/001-dashboard-boundaries.md`](adr/001-dashboard-boundaries.md)：
 
 1. Workspace-first Run 创建与旧 `--publish` 自动运行的兼容期限；
 2. KVStore 多记录一致性和索引修复策略；
@@ -671,10 +671,10 @@ ui/src/
 
 本轮实现已经把上述契约接入现有 Harness，而不是另起一套演示数据源：
 
-- Phase 0–2：Local/File/Consul 统一 `kv_list`、CAS 分页、结构化错误、可信身份、capability、Project Group、成员角色、归档、Workspace 登记和 Preflight 已落地。
-- Phase 3：Workspace-first Run 创建、幂等、ORIGINAL/GIT_WORKTREE/CONTROLLED_COPY/DEMO_TEMP、Manifest、共享与隔离 Attempt Binding、ACP cwd 解析、Workspace 丢失等待人工已落地。
-- Phase 4–5：安全目录树、敏感文件和大文件策略、Monaco 动态加载、expected hash/409、session 草稿、write_scope、原子保存、Checkpoint 和固定 Action 白名单已落地。
-- Phase 6：EventJournal、SSE 过滤/心跳/游标重放/reset、执行日志页、Workspace RETAINED/CLEANUP_PENDING/Trash/恢复/24 小时清理门禁已落地。
-- 前端真实 API 是唯一事实源；只有显式 `VITE_DEMO_MODE=true` 才加载 Demo fixture。项目组、工作区、Run 创建、Task Workbench、文件编辑和执行日志都有真实路由。
+- Phase 0–2：Local/File/Consul 统一 `kv_list`、CAS 分页、结构化错误、可信身份、Capability 精细求交、Project Group、成员角色、跨组引用、归档、Workspace 登记和 Preflight 已落地。
+- Phase 3：Workspace-first Run 创建、幂等、四种 Workspace 策略、Manifest、共享与隔离 Attempt Binding、ACP cwd 解析、Attempt/Session 切换、Runtime Panel、Workspace 丢失等待人工已落地。
+- Phase 4–5：路径安全、目录树、读取、搜索、changes、Diff、Manifest、敏感文件和大文件策略、Monaco 多标签、expected hash/409、session 草稿、原子保存、Checkpoint、固定 Action 白名单、三方冲突处理和显式 Merge Task 已落地。
+- Phase 6：EventJournal 保留窗口、SSE 过滤/心跳/游标重放/reset、ASGI 入口、执行日志筛选/导出、Workspace RETAINED/CLEANUP_PENDING/Trash/恢复/后台清理 Worker、Agent/Human/External 文件事件和审计已落地。
+- 前端真实 API 是唯一事实源；只有显式 `VITE_DEMO_MODE=true` 才加载 Demo fixture。项目组、工作区、Run 创建、Task Workbench、文件编辑、Merge Task 和执行日志都有真实路由。
 
-仍需作为后续独立工程项处理的边界：把长连接 WebAPI 迁移到 ASGI、跨 Attempt 的三方合并与 Merge Task、完整的 Agent Session 事件生产接入、后台定时清理 Worker、跨组引用 capability 的精细求交，以及 100 Task/50k 文件的压力基准。它们不会改变本方案已经锁定的 API 和领域语义。
+验证方式限定为 API 集成测试和 UI 自动化测试；不新增单元测试。API 测试覆盖真实 HTTP/ASGI 契约，UI 测试覆盖 Dashboard 关键路径、Attempt 切换、文件编辑冲突和日志导航。

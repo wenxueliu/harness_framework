@@ -47,6 +47,12 @@ Dashboard 会通过 Harness WebAPI 显示真实工作流。`8080` 是后端 API 
 `GIT_WORKTREE`、`CONTROLLED_COPY` 或明确的 `ORIGINAL`；未选择 Workspace 的 managed Run
 会返回 `WORKSPACE_SELECTION_REQUIRED`。只有显式 `--demo-mode` 才会使用 `/tmp` 临时演示目录。
 
+需要 ASGI 长连接时，将 Step 1 改为：
+
+```bash
+python -m harness_framework.daemon --local --web-server asgi
+```
+
 ## Step 4：查看 API 结果
 
 ```bash
@@ -61,6 +67,13 @@ curl -s http://127.0.0.1:8080/api/health
 ```
 
 你会看到 `hello` 从 `PENDING` 进入 `IN_PROGRESS`，完成后变为 `DONE`。首次运行时 `npx` 下载 adapter 可能稍慢。
+
+API 集成测试和 UI 自动化测试：
+
+```bash
+pytest -q tests/api -m api
+pytest -q tests/e2e -m e2e
+```
 
 端口分工：
 

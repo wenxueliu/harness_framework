@@ -189,9 +189,13 @@ export async function fetchCapabilities(): Promise<CapabilitiesSnapshot> {
 export async function fetchTaskSessionEvents(
   reqId: string,
   taskName: string,
+  scope: { runId?: string; attemptId?: string } = {},
 ): Promise<TaskSessionEvents> {
+  const params = new URLSearchParams({ limit: '200' })
+  if (scope.runId) params.set('run_id', scope.runId)
+  if (scope.attemptId) params.set('attempt_id', scope.attemptId)
   const response = await fetch(
-    `${HARNESS_API}/api/sessions/${encodeURIComponent(reqId)}/${encodeURIComponent(taskName)}?limit=200`,
+    `${HARNESS_API}/api/sessions/${encodeURIComponent(reqId)}/${encodeURIComponent(taskName)}?${params.toString()}`,
   );
   if (response.status === 404) {
     return { req_id: reqId, task: taskName, events: [], sessions: [] };

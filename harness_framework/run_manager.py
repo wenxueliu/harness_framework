@@ -22,6 +22,7 @@ import uuid
 from typing import Any, Optional
 
 from .kv_store_protocol import KVStore
+from .event_journal import EventJournal
 
 log = logging.getLogger("run_manager")
 
@@ -32,9 +33,11 @@ TASK_TERMINAL_STATES = frozenset({
 
 
 class RunManager:
-    def __init__(self, consul: KVStore, workspace_manager=None):
+    def __init__(self, consul: KVStore, workspace_manager=None,
+                 event_journal: EventJournal | None = None):
         self.consul = consul
         self.workspace_manager = workspace_manager
+        self.event_journal = event_journal or EventJournal(consul)
 
     # ── Run 生命周期 ────────────────────────────────────────────────────────
 
@@ -291,7 +294,7 @@ class RunManager:
 
     def record_session_start(
         self, req_id: str, run_id: str, task_name: str,
-        session_id: str, agent_id: str
+        session_id: str, agent_id: str, attempt_id: str = ""
     ) -> None:
         """Agent 开始新 session 时写入索引条目。"""
         now = _now_iso()
@@ -300,12 +303,19 @@ class RunManager:
         self.consul.kv_put(f"{base}/agent_id", agent_id)
         self.consul.kv_put(f"{base}/started_at", now)
         self.consul.kv_put(f"{base}/status", "running")
+        self.event_journal.append(
+            "SESSION_STARTED",
+            subject={"req_id": req_id, "run_id": run_id, "task_id": task_name,
+                     **({"attempt_id": attempt_id} if attempt_id else {})},
+            actor={"type": "agent", "id": agent_id},
+            data={"session_id": session_id},
+        )
         log.debug("session start: run=%s task=%s session=%s", run_id, task_name, session_id)
 
     def record_session_end(
         self, req_id: str, run_id: str, task_name: str,
         event_count: int = 0, error_count: int = 0,
-        status: str = "completed", summary: str = ""
+        status: str = "completed", summary: str = "", attempt_id: str = ""
     ) -> None:
         """Agent 关闭 session 时更新索引条目。"""
         now = _now_iso()
@@ -316,6 +326,17 @@ class RunManager:
         self.consul.kv_put(f"{base}/status", status)
         if summary:
             self.consul.kv_put(f"{base}/summary", summary)
+        agent_id, _ = self.consul.kv_get(f"{base}/agent_id")
+        session_id, _ = self.consul.kv_get(f"{base}/session_id")
+        self.event_journal.append(
+            "SESSION_FINISHED",
+            subject={"req_id": req_id, "run_id": run_id, "task_id": task_name,
+                     **({"attempt_id": attempt_id} if attempt_id else {})},
+            actor={"type": "agent", "id": agent_id or "session"},
+            data={"session_id": session_id or "",
+                  "status": status, "event_count": event_count,
+                  "error_count": error_count},
+        )
         log.debug("session end: run=%s task=%s status=%s events=%d",
                   run_id, task_name, status, event_count)
 

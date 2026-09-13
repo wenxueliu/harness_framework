@@ -63,6 +63,14 @@ python -m harness_framework.daemon --local \
 
 `service_name` 不参与路由。`--demo-mode` 仅用于演示，允许显式 `DEMO_TEMP` 在 `/tmp` 创建临时目录；生产 managed Run 缺少 Workspace 会被拒绝。
 
+长连接部署可将 WebAPI 切换到 ASGI：
+
+```bash
+python -m harness_framework.daemon --local --web-server asgi
+```
+
+它与标准库入口使用同一套 API 和事件协议；SSE 慢客户端不会占用标准库 HTTP 工作线程。
+
 ## 3. 初始化工作流
 
 ```bash
@@ -85,6 +93,13 @@ python scripts/sync_to_consul.py my-first-dag.json \
 浏览器访问 [http://127.0.0.1:3000/](http://127.0.0.1:3000/)。Dashboard 通过
 `http://127.0.0.1:8080` 的 Harness WebAPI 读取真实任务数据；不要把 `8080/`
 当作页面地址。
+
+API 和 UI 自动化验证：
+
+```bash
+pytest -q tests/api -m api
+pytest -q tests/e2e -m e2e
+```
 
 ## 5. 观察 DAG 自动推进
 

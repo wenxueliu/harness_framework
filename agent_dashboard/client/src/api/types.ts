@@ -51,3 +51,11 @@ export interface WorkspaceAction {
 export interface WorkspaceActionResult {
   action_id: string; exit_code: number; stdout: string; stderr: string; event_id: string
 }
+export interface WorkspaceChange { status: string; path: string }
+export interface WorkspaceManifest { manifest_id: string | null; files: Array<Record<string, unknown>>; strategy?: string; resolved_commit_sha?: string | null }
+export interface WorkspaceDiff { path: string; exit_code: number; diff: string; truncated: boolean }
+export interface MergeTask {
+  merge_id: string; req_id: string; run_id: string; source_task_id: string; source_attempt_id: string
+  target_task_id: string; target_attempt_id: string; status: 'PENDING' | 'CONFLICT' | 'DONE'; diff?: string
+  error?: string; created_by: string; created_at: string
+}

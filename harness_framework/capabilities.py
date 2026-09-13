@@ -38,6 +38,9 @@ class CapabilitiesService:
         context: AuthenticationContext,
         *,
         group_id: Optional[str] = None,
+        req_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+        attempt_id: Optional[str] = None,
     ) -> dict:
         feature_values = {
             name: self.features.enabled(name) for name in KNOWN_FEATURES
@@ -47,7 +50,7 @@ class CapabilitiesService:
             for name, enabled in feature_values.items()
             if not enabled
         }
-        permissions = self.authorization.capabilities_for(context, group_id)
+        permissions = self.authorization.capabilities_for(context, group_id, req_id)
         permission_requirements = {
             "workspace_browse": "file:read",
             "workspace_diff": "file:read",
@@ -66,4 +69,8 @@ class CapabilitiesService:
                 "display_name": context.display_name,
             },
             "reasons": reasons,
+            "scope": {
+                "group_id": group_id, "req_id": req_id,
+                "run_id": run_id, "attempt_id": attempt_id,
+            },
         }

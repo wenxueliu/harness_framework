@@ -268,6 +268,10 @@ class WorkspaceFileService:
             if os.path.exists(temporary):
                 os.unlink(temporary)
             raise
+        self.store.kv_put(
+            f"workspace-scans/{workspace_id}/{hashlib.sha256(normalized.encode()).hexdigest()}",
+            hashlib.sha256(encoded).hexdigest(),
+        )
         event = self.event_journal.append(
             "WORKSPACE_FILE_CHANGED",
             subject={
@@ -313,7 +317,71 @@ class WorkspaceFileService:
                 continue
             text = raw.decode("utf-8", errors="replace")
             result.append({"status": text[:2], "path": text[3:]})
+        self._record_external_changes(workspace_id, root, result, req_id, run_id, task_id, attempt_id)
         return result
+
+    def _record_external_changes(
+        self, workspace_id: str, root: str, changes: list[dict[str, str]],
+        req_id: str, run_id: str, task_id: str, attempt_id: str,
+    ) -> None:
+        """Detect changes not already emitted by this WebAPI process.
+
+        A scan is deliberately tied to the changes endpoint so deployments do
+        not need a privileged filesystem watcher. Agent and human writers emit
+        their own events; an unseen hash transition is classified external.
+        """
+        for item in changes:
+            relative = item.get("path", "")
+            if not relative:
+                continue
+            target = os.path.join(root, relative)
+            digest = ""
+            if os.path.isfile(target):
+                try:
+                    with open(target, "rb") as handle:
+                        digest = hashlib.sha256(handle.read()).hexdigest()
+                except OSError:
+                    continue
+            key = f"workspace-scans/{workspace_id}/{hashlib.sha256(relative.encode()).hexdigest()}"
+            previous, _ = self.store.kv_get(key)
+            if previous is not None and previous != digest:
+                event = self.event_journal.append(
+                    "WORKSPACE_FILE_CHANGED",
+                    subject={"group_id": self._group_id(req_id, run_id),
+                             "req_id": req_id, "run_id": run_id,
+                             "task_id": task_id, "attempt_id": attempt_id,
+                             "workspace_id": workspace_id},
+                    actor={"type": "external", "id": "workspace-scan"},
+                    data={"path": relative, "source": "external", "sha256": digest},
+                )
+                self.store.kv_put(f"audit/{event.event_id}", json.dumps({
+                    "type": "WORKSPACE_FILE_CHANGED", "source": "external",
+                    "event_id": event.event_id, "path": relative,
+                }))
+            self.store.kv_put(key, digest)
+
+    def diff(
+        self, *, workspace_id: str, req_id: str, run_id: str,
+        task_id: str, attempt_id: str, path: str = "",
+    ) -> dict[str, Any]:
+        """Return a bounded Git diff for the current Binding."""
+        _, root = self._context(
+            workspace_id=workspace_id, req_id=req_id, run_id=run_id,
+            task_id=task_id, attempt_id=attempt_id,
+        )
+        normalized = self.manager.security.validate_relative_path(path, allow_empty=True) if path else ""
+        args = ["git", "-C", root, "diff", "--no-ext-diff", "--", normalized] if normalized else [
+            "git", "-C", root, "diff", "--no-ext-diff"
+        ]
+        process = subprocess.run(
+            args, capture_output=True, text=True, timeout=30, check=False,
+        )
+        return {
+            "path": normalized,
+            "exit_code": process.returncode,
+            "diff": process.stdout[-512 * 1024:],
+            "truncated": len(process.stdout) > 512 * 1024,
+        }
 
     def list_actions(
         self, *, workspace_id: str, req_id: str, run_id: str,

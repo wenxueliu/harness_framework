@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref, watch } from 'vue'
+import { RouterLink } from 'vue-router'
 import type { Task, SessionEvent } from '@/api/types'
 import {
   fetchTaskMessages,
@@ -25,6 +26,7 @@ import { cn } from '@/lib/utils'
 const props = defineProps<{
   task: Task | null
   reqId?: string
+  groupId?: string
   onClose: () => void
 }>()
 const emit = defineEmits<{ messageSent: [] }>()
@@ -127,6 +129,13 @@ function formatDate(iso: string): string {
           {{ task.name }}
         </h3>
       </div>
+      <RouterLink
+        v-if="groupId && reqId"
+        :to="`/groups/${encodeURIComponent(groupId)}/workflows/${encodeURIComponent(reqId)}/tasks/${encodeURIComponent(task.id)}`"
+        class="mr-2 inline-flex items-center gap-1 rounded border border-blue-400/30 px-2 py-1 text-[10px] text-blue-300 hover:bg-blue-400/10"
+      >
+        打开工作台 <ExternalLink :size="10" />
+      </RouterLink>
       <button
         class="text-muted-foreground hover:text-foreground transition-colors p-1 rounded hover:bg-accent flex-shrink-0"
         @click="onClose"

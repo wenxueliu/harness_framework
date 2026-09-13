@@ -1,0 +1,2 @@
+# Optional production server for `daemon --web-server asgi`.
+uvicorn>=0.30

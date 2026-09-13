@@ -223,9 +223,22 @@ class Page:
     def evaluate(self, code: str, *args: Any) -> Any:
         if args:
             argument = json.dumps(args[0], ensure_ascii=False)
-            code = f"async () => await (({code}))({argument})"
+            code = f"(async () => await (({code})({argument})))()"
+        elif "=>" in code:
+            # The current WebBridge evaluates JavaScript expressions, while
+            # older versions accepted a callback and invoked it implicitly.
+            # Invoke callback-style snippets explicitly for both versions.
+            code = f"({code})()"
         result = self._command("evaluate", {"code": code})
-        return result.get("value")
+        # WebBridge versions have returned both a top-level value and a
+        # CDP-style data.value wrapper. Keep the test adapter compatible with
+        # either response shape so locator visibility/text assertions work.
+        if "value" in result:
+            return result.get("value")
+        data = result.get("data")
+        if isinstance(data, dict):
+            return data.get("value")
+        return None
 
     def wait_for_timeout(self, milliseconds: int) -> None:
         time.sleep(milliseconds / 1000)

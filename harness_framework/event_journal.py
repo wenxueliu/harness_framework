@@ -45,10 +45,13 @@ class EventEnvelope:
 class EventJournal:
     """Append-only global event stream backed by KVStore CAS."""
 
-    def __init__(self, store: KVStore, stream_id: str = "global"):
+    def __init__(
+        self, store: KVStore, stream_id: str = "global", *, retention_events: int = 10000
+    ):
         self.store = store
         self.stream_id = stream_id
         self.base = f"events/{stream_id}"
+        self.retention_events = max(100, int(retention_events))
 
     def append(
         self, event_type: str, *, subject: Mapping[str, str],
@@ -75,7 +78,30 @@ class EventJournal:
         if not self.store.kv_put(key, json.dumps(event.to_dict(), ensure_ascii=False), cas=0):
             raise RuntimeError("event sequence record already exists")
         self.store.kv_put(f"{self.base}/ids/{event.event_id}", str(sequence), cas=0)
+        self._trim(sequence)
         return event
+
+    def _trim(self, head: int) -> None:
+        cutoff = head - self.retention_events
+        if cutoff <= 0:
+            return
+        # KVStore has no range delete; deleting one old record at a time keeps
+        # Local/File/Consul behavior identical and makes cursor expiry explicit.
+        trimmed_raw, _ = self.store.kv_get(f"{self.base}/trimmed_until")
+        trimmed_until = int(trimmed_raw or "0")
+        for sequence in range(trimmed_until + 1, cutoff + 1):
+            key = f"{self.base}/records/{sequence:020d}"
+            raw, _ = self.store.kv_get(key)
+            if not raw:
+                continue
+            try:
+                event_id = json.loads(raw).get("event_id")
+            except (TypeError, json.JSONDecodeError):
+                event_id = None
+            self.store.kv_delete(key)
+            if event_id:
+                self.store.kv_delete(f"{self.base}/ids/{event_id}")
+        self.store.kv_put(f"{self.base}/trimmed_until", str(cutoff))
 
     def replay(
         self, *, after_event_id: str | None = None, limit: int = 500

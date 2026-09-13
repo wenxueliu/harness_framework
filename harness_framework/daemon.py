@@ -34,6 +34,8 @@ from .capabilities import FeatureConfig
 from .workspace_security import WorkspaceSecurity
 from .workspace_manager import WorkspaceManager
 from .project_groups import ProjectGroupService
+from .workspace_cleanup import WorkspaceCleanupWorker
+from .event_journal import EventJournal
 
 
 def setup_logging(level: str, log_dir: str = "",
@@ -74,6 +76,8 @@ def main() -> None:
     p.add_argument("--token", default=os.environ.get("CONSUL_TOKEN", ""))
     p.add_argument("--host", default="0.0.0.0", help="WebAPI 监听地址")
     p.add_argument("--port", type=int, default=8080, help="WebAPI 端口")
+    p.add_argument("--web-server", choices=("stdlib", "asgi"), default="stdlib",
+                   help="WebAPI 服务器实现；ASGI 适合长连接 SSE")
     p.add_argument("--auth-mode", choices=("local", "trusted-proxy"),
                    default=os.environ.get("HARNESS_AUTH_MODE", "local"),
                    help="WebAPI 身份模式")
@@ -95,6 +99,8 @@ def main() -> None:
                    help="允许 GIT_CLONE Workspace 的 HTTPS host，可重复")
     p.add_argument("--aggregator-interval", type=int, default=5)
     p.add_argument("--watchdog-interval", type=int, default=30)
+    p.add_argument("--workspace-cleanup-interval", type=int, default=60,
+                   help="Workspace Trash/清理后台任务轮询间隔（秒）")
     p.add_argument("--task-timeout", type=int, default=120,
                    help="单个任务最长执行时间（秒）")
     p.add_argument("--heartbeat-timeout", type=int, default=120,
@@ -217,6 +223,17 @@ def main() -> None:
     threads: list[threading.Thread] = []
     components = []
 
+    cleanup_worker = WorkspaceCleanupWorker(
+        workspace_manager, interval=args.workspace_cleanup_interval,
+        event_journal=EventJournal(consul),
+    )
+    components.append(cleanup_worker)
+    cleanup_thread = threading.Thread(
+        target=cleanup_worker.run, name="workspace-cleanup", daemon=True
+    )
+    cleanup_thread.start()
+    threads.append(cleanup_thread)
+
     # Aggregator
     if not args.no_aggregator:
         agg = Aggregator(consul, run_manager=run_manager,
@@ -250,6 +267,7 @@ def main() -> None:
             max_concurrency=args.acp_max_concurrency,
             permission_policy=args.acp_permission_policy,
             workspace_manager=workspace_manager,
+            event_journal=EventJournal(consul),
         )
         components.append(acp_dispatcher)
         t = threading.Thread(
@@ -274,6 +292,7 @@ def main() -> None:
 
     # WebAPI
     server = None
+    asgi_server = None
     if not args.no_webapi:
         trusted_proxies = frozenset(args.trusted_proxy or ["127.0.0.1", "::1"])
         auth_config = AuthConfig(
@@ -282,19 +301,36 @@ def main() -> None:
             trusted_proxy_addresses=trusted_proxies,
             platform_owners=frozenset(args.platform_owner or []),
         )
-        server = webapi_serve(consul, host=args.host, port=args.port,
-                              run_manager=run_manager,
-                              auth_config=auth_config,
-                              features=FeatureConfig({
-                                  "project_groups": True,
-                                  "workspace_browse": True,
-                                  "workspace_write": True,
-                                  "workspace_diff": True,
-                                  "sse_events": True,
-                              }),
-                              workspace_security=workspace_security,
-                              workspace_manager=workspace_manager)
-        t = threading.Thread(target=server.serve_forever, name="webapi", daemon=True)
+        web_features = FeatureConfig({
+            "project_groups": True,
+            "workspace_browse": True,
+            "workspace_write": True,
+            "workspace_diff": True,
+            "sse_events": True,
+        })
+        if args.web_server == "asgi":
+            try:
+                import uvicorn
+                from .asgi import create_asgi_app
+            except ImportError as exc:
+                p.error(f"--web-server asgi 需要安装 uvicorn: {exc}")
+            app = create_asgi_app(
+                consul, run_manager=run_manager, auth_config=auth_config,
+                features=web_features, workspace_security=workspace_security,
+                workspace_manager=workspace_manager,
+            )
+            asgi_server = uvicorn.Server(uvicorn.Config(
+                app, host=args.host, port=args.port, log_level="info",
+            ))
+            t = threading.Thread(target=asgi_server.run, name="webapi-asgi", daemon=True)
+        else:
+            server = webapi_serve(
+                consul, host=args.host, port=args.port,
+                run_manager=run_manager, auth_config=auth_config,
+                features=web_features, workspace_security=workspace_security,
+                workspace_manager=workspace_manager,
+            )
+            t = threading.Thread(target=server.serve_forever, name="webapi", daemon=True)
         t.start()
         threads.append(t)
 
@@ -311,6 +347,8 @@ def main() -> None:
                 pass
         if server:
             threading.Thread(target=server.shutdown, daemon=True).start()
+        if asgi_server:
+            asgi_server.should_exit = True
         if local_store:
             try:
                 local_store.flush()
