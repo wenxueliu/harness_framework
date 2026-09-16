@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, ref } from 'vue'
 import { useRouter } from 'vue-router'
+import { createWorkflow, type CreateWorkflowTask } from '@/lib/harnessApi'
 import {
   ArrowLeft,
   Bot,
@@ -49,6 +50,8 @@ const showPublish = ref(false)
 const saved = ref(true)
 const planProgress = ref(0)
 const publishedWillRun = ref(true)
+const publishError = ref('')
+const publishing = ref(false)
 
 const tasks = ref<PlanTask[]>([])
 const messages = ref<ChatMessage[]>([
@@ -198,11 +201,30 @@ function toggleDependency(id: string) {
   markDirty()
 }
 
-function publish(startRun: boolean) {
-  showPublish.value = false
-  publishedWillRun.value = startRun
-  step.value = 'published'
-  if (startRun) window.setTimeout(() => router.push('/'), 900)
+async function publish(startRun: boolean) {
+  if (!tasks.value.length || publishing.value) return
+  publishing.value = true
+  publishError.value = ''
+  try {
+    const title = requirement.value.trim().split(/\r?\n/, 1)[0].slice(0, 80) || '未命名工作流'
+    const workflow = await createWorkflow({
+      title,
+      requirement: requirement.value.trim(),
+      tasks: tasks.value.map((task): CreateWorkflowTask => ({ ...task })),
+      published: startRun,
+    })
+    showPublish.value = false
+    publishedWillRun.value = startRun
+    step.value = 'published'
+    window.setTimeout(() => router.push({
+      name: 'workflow-dashboard',
+      params: { groupId: 'unassigned', workflowId: workflow.req_id },
+    }), startRun ? 900 : 300)
+  } catch (cause) {
+    publishError.value = cause instanceof Error ? cause.message : 'Workflow 创建失败'
+  } finally {
+    publishing.value = false
+  }
 }
 
 function startPublishedRun() {
@@ -409,6 +431,9 @@ const typeLabel: Record<PlanTask['type'], string> = {
             <button aria-label="关闭" class="ml-auto text-muted-foreground" @click="showPublish = false"><X :size="16" /></button>
           </div>
           <div class="p-5 space-y-4">
+            <div v-if="publishError" role="alert" class="rounded-lg border border-red-400/30 bg-red-400/10 px-3 py-2 text-xs text-red-200">
+              {{ publishError }}
+            </div>
             <div class="grid grid-cols-3 gap-2">
               <div class="summary-card"><strong>{{ tasks.length }}</strong><span>任务</span></div>
               <div class="summary-card"><strong>{{ Math.max(...levels.map((items) => items.length), 0) }}</strong><span>最大并行</span></div>
@@ -419,9 +444,9 @@ const typeLabel: Record<PlanTask['type'], string> = {
               <div class="flex p-3"><Bot :size="14" class="text-violet-400 mr-2" />Agent 分配<span class="ml-auto text-muted-foreground">Claude {{ agentStats.claude }} · Codex {{ agentStats.codex }}</span></div>
               <div class="flex p-3"><Clock3 :size="14" class="text-amber-400 mr-2" />执行策略<span class="ml-auto text-muted-foreground">依赖就绪后自动启动</span></div>
             </div>
-            <div class="flex gap-2 text-[11px] text-amber-300 bg-amber-500/10 border border-amber-500/20 p-3 rounded-lg leading-5"><CircleAlert :size="14" class="shrink-0 mt-0.5" />原型将演示发布跳转；接入草稿与发布 API 后才会实际启动 ACP Agent。</div>
+            <div class="flex gap-2 text-[11px] text-amber-300 bg-amber-500/10 border border-amber-500/20 p-3 rounded-lg leading-5"><CircleAlert :size="14" class="shrink-0 mt-0.5" />发布后任务会写入 Harness；选择“发布并执行”后，根任务将进入执行队列。</div>
           </div>
-          <div class="p-4 border-t border-border flex flex-wrap justify-end gap-2"><button class="px-4 py-2 text-xs border border-border rounded-md hover:bg-accent" @click="showPublish = false">返回检查</button><button class="px-4 py-2 text-xs border border-blue-500/40 text-blue-300 rounded-md hover:bg-blue-500/10" @click="publish(false)">仅发布</button><button class="px-4 py-2 text-xs bg-blue-500 text-white rounded-md hover:bg-blue-400" @click="publish(true)">发布并执行</button></div>
+            <div class="p-4 border-t border-border flex flex-wrap justify-end gap-2"><button class="px-4 py-2 text-xs border border-border rounded-md hover:bg-accent" :disabled="publishing" @click="showPublish = false">返回检查</button><button class="px-4 py-2 text-xs border border-blue-500/40 text-blue-300 rounded-md hover:bg-blue-500/10 disabled:opacity-50" :disabled="publishing" @click="publish(false)">{{ publishing ? '保存中…' : '仅发布' }}</button><button class="px-4 py-2 text-xs bg-blue-500 text-white rounded-md hover:bg-blue-400 disabled:opacity-50" :disabled="publishing" @click="publish(true)">{{ publishing ? '发布中…' : '发布并执行' }}</button></div>
         </section>
       </div>
     </Teleport>

@@ -25,6 +25,37 @@ class WorkspaceSecurity:
         relative = WorkspaceSecurity.validate_relative_path(relative_path, allow_empty=True)
         return f"{alias}:{relative}"
 
+    def make_root_ref_from_path(self, path: str) -> str:
+        """Convert an allowed absolute directory into its canonical root_ref."""
+        if not isinstance(path, str) or "\x00" in path or not os.path.isabs(path):
+            raise ValidationError(
+                "绝对路径必须是服务端文件系统中的绝对目录",
+                code="INVALID_ABSOLUTE_PATH",
+            )
+        candidate = os.path.realpath(path)
+        matches: list[tuple[str, str]] = []
+        for alias, root in self.allowed_roots.items():
+            try:
+                if os.path.commonpath([root, candidate]) != root:
+                    continue
+            except ValueError:
+                continue
+            relative = os.path.relpath(candidate, root)
+            matches.append((alias, "" if relative == "." else relative))
+        if not matches:
+            raise ValidationError(
+                "Workspace 路径未落在允许的根目录内",
+                code="WORKSPACE_ROOT_NOT_ALLOWED",
+            )
+        if not os.path.isdir(candidate):
+            raise ValidationError("Workspace 目录不存在", code="WORKSPACE_NOT_FOUND")
+
+        # Prefer the most specific configured root when roots overlap.
+        alias, relative = max(
+            matches, key=lambda item: len(self.allowed_roots[item[0]])
+        )
+        return self.make_root_ref(alias, relative)
+
     @staticmethod
     def validate_relative_path(path: str, *, allow_empty: bool = False) -> str:
         if not isinstance(path, str) or "\x00" in path or os.path.isabs(path):

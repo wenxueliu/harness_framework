@@ -54,6 +54,16 @@ export interface HumanMessage {
   error?: string;
 }
 
+export interface CreateWorkflowTask {
+  id: string;
+  name: string;
+  description: string;
+  type: string;
+  agent: "claude" | "codex";
+  dependsOn: string[];
+  acceptance: string;
+}
+
 async function getJson<T>(path: string): Promise<T> {
   return apiRequest<T>(path)
 }
@@ -114,7 +124,7 @@ function toWorkflow(summary: WorkflowSummary, detail: WorkflowDetail): Workflow 
     const definition = definitions[name] ?? {};
     tasks[name] = {
       id: name,
-      name: fields.description || name,
+      name: fields.name || fields.description || name,
       status: normalizeStatus(fields.status || "PENDING"),
       raw_status: fields.status || "",
       assigned_agent: fields.assigned_agent || "",
@@ -162,6 +172,20 @@ export async function fetchWorkflowsFromHarness(): Promise<Workflow[]> {
     }),
   );
   return workflows.sort((a, b) => a.id.localeCompare(b.id));
+}
+
+export async function createWorkflow(input: {
+  title: string;
+  requirement: string;
+  tasks: CreateWorkflowTask[];
+  published: boolean;
+}): Promise<{ req_id: string; title: string; published: boolean; task_count: number }> {
+  const reqId = `wf-${crypto.randomUUID()}`
+  const payload = await apiRequest<{ workflow: { req_id: string; title: string; published: boolean; task_count: number } }>(
+    '/api/workflows',
+    jsonRequest('POST', { ...input, req_id: reqId }, { 'Idempotency-Key': crypto.randomUUID() }),
+  )
+  return payload.workflow
 }
 
 export async function sendControlSignalToHarness(

@@ -48,6 +48,7 @@ from .workspace_security import WorkspaceSecurity
 from .workspace_files import WorkspaceFileService
 from .event_journal import EventJournal
 from .workspace_merge import WorkspaceMergeService
+from .versioning import VersionedResourceStore
 
 log = logging.getLogger("webapi")
 
@@ -597,6 +598,10 @@ class APIHandler(BaseHTTPRequestHandler):
                     req_id, run_id, unquote(parts[7]), actor=context.subject
                 )
                 return self._send_json(200, {"merge_task": merge})
+            if path == "/api/workflows":
+                context = self._authentication_context()
+                result = self._create_workflow(body, context)
+                return self._send_json(201, result)
             if path == "/api/project-groups":
                 context = self._authentication_context()
                 self._require(context, "group:manage")
@@ -631,11 +636,18 @@ class APIHandler(BaseHTTPRequestHandler):
                         policy=body.get("policy", {}),
                     )
                 else:
+                    path_type = body.get("path_type", "RELATIVE_PATH")
+                    if path_type not in {"RELATIVE_PATH", "ABSOLUTE_PATH"}:
+                        raise ValidationError("无效的 Workspace 路径类型", code="WORKSPACE_PATH_TYPE_INVALID")
                     workspace = self.workspace_manager.register_local(
                         group_id=group_id,
                         name=str(body.get("name", "")),
                         root_alias=str(body.get("root_alias", "")),
                         relative_path=str(body.get("relative_path", "")),
+                        absolute_path=(
+                            str(body.get("absolute_path", ""))
+                            if path_type == "ABSOLUTE_PATH" else None
+                        ),
                         access=str(body.get("access", "READ_WRITE")),
                         policy=body.get("policy", {}),
                     )
@@ -1132,6 +1144,133 @@ class APIHandler(BaseHTTPRequestHandler):
         )
         self._send_json(202, {"ok": True, "message": item, "reopened": reopened,
                               "event_id": event.event_id})
+
+    def _create_workflow(self, body: dict, context) -> dict:
+        """Create a workflow and project its task graph into the legacy KV view."""
+        req_id = str(body.get("req_id", "")).strip() or f"wf-{uuid.uuid4().hex[:12]}"
+        if not req_id or any(char in req_id for char in "/\\"):
+            raise APIError("INVALID_WORKFLOW_ID", "req_id 不能包含路径分隔符", 422)
+
+        existing, _ = self.consul.kv_get(f"workflows/{req_id}/dependencies")
+        if existing is not None:
+            raise APIError("WORKFLOW_ALREADY_EXISTS", "Workflow 已存在", 409,
+                           {"req_id": req_id})
+
+        raw_tasks = body.get("tasks")
+        if not isinstance(raw_tasks, list) or not raw_tasks:
+            raise APIError("TASKS_REQUIRED", "至少需要创建一个任务", 422)
+
+        dependencies: dict[str, dict] = {}
+        task_records: list[tuple[str, dict, list[str]]] = []
+        for raw_task in raw_tasks:
+            if not isinstance(raw_task, dict):
+                raise APIError("INVALID_TASK", "任务必须是对象", 422)
+            task_id = str(raw_task.get("id", "")).strip()
+            if not task_id or any(char in task_id for char in "/\\"):
+                raise APIError("INVALID_TASK_ID", "任务 ID 不能为空且不能包含路径分隔符", 422)
+            if task_id in dependencies:
+                raise APIError("DUPLICATE_TASK_ID", f"任务 ID 重复: {task_id}", 422)
+            depends_on = raw_task.get("dependsOn", raw_task.get("depends_on", []))
+            if not isinstance(depends_on, list):
+                raise APIError("INVALID_DEPENDENCIES", f"任务 {task_id} 的依赖必须是数组", 422)
+            upstream = [str(item).strip() for item in depends_on if str(item).strip()]
+            task_type = str(raw_task.get("type", "backend")).strip() or "backend"
+            description = str(raw_task.get("description", "")).strip()
+            definition = {"type": task_type, "depends_on": upstream}
+            if description:
+                definition["description"] = description
+            agent = str(raw_task.get("agent", "")).strip().lower()
+            if agent:
+                if agent not in {"claude", "codex"}:
+                    raise APIError("INVALID_AGENT", f"不支持的 Agent: {agent}", 422)
+                definition["acp"] = {"agent": agent}
+            dependencies[task_id] = definition
+            task_records.append((task_id, raw_task, upstream))
+
+        unknown = sorted({dependency for definition in dependencies.values()
+                          for dependency in definition["depends_on"]
+                          if dependency not in dependencies})
+        if unknown:
+            raise APIError("UNKNOWN_DEPENDENCY", "依赖任务不存在", 422,
+                           {"tasks": unknown})
+
+        visiting: set[str] = set()
+        visited: set[str] = set()
+
+        def visit(task_id: str) -> None:
+            if task_id in visiting:
+                raise APIError("TASK_GRAPH_CYCLE", "任务依赖不能形成环", 422)
+            if task_id in visited:
+                return
+            visiting.add(task_id)
+            for dependency in dependencies[task_id]["depends_on"]:
+                visit(dependency)
+            visiting.remove(task_id)
+            visited.add(task_id)
+
+        for task_id in dependencies:
+            visit(task_id)
+
+        group_id = str(body.get("group_id", "")).strip() or None
+        self._require(context, "workflow:draft", group_id)
+        published = bool(body.get("published", False))
+        if published:
+            self._require(context, "workflow:publish", group_id)
+        if group_id:
+            self.project_groups._require_active(group_id)
+
+        created_at = _now_iso()
+        for task_id, raw_task, upstream in task_records:
+            task_base = f"workflows/{req_id}/tasks/{task_id}"
+            self.consul.kv_put(f"{task_base}/status", "PENDING" if not upstream else "BLOCKED")
+            self.consul.kv_put(f"{task_base}/validity", "UNKNOWN")
+            self.consul.kv_put(f"{task_base}/type", dependencies[task_id]["type"])
+            if dependencies[task_id].get("acp"):
+                self.consul.kv_put(
+                    f"{task_base}/acp",
+                    json.dumps(dependencies[task_id]["acp"], ensure_ascii=False),
+                )
+            if dependencies[task_id].get("description"):
+                self.consul.kv_put(f"{task_base}/description", dependencies[task_id]["description"])
+            if raw_task.get("name"):
+                self.consul.kv_put(f"{task_base}/name", str(raw_task["name"]))
+            if raw_task.get("acceptance"):
+                self.consul.kv_put(f"{task_base}/acceptance", str(raw_task["acceptance"]))
+            if upstream:
+                self.consul.kv_put(f"{task_base}/depends_on", ",".join(upstream))
+            self.consul.kv_put(f"{task_base}/created_at", created_at)
+
+        title = str(body.get("title", "")).strip() or req_id
+        requirement = str(body.get("requirement", "")).strip()
+        self.consul.kv_put(f"workflows/{req_id}/dependencies", json.dumps(dependencies, ensure_ascii=False))
+        self.consul.kv_put(f"workflows/{req_id}/title", title)
+        self.consul.kv_put(f"workflows/{req_id}/published", "true" if published else "false")
+        self.consul.kv_put(f"workflows/{req_id}/status", "IN_PROGRESS" if published else "CONFIRMED")
+        self.consul.kv_put(f"workflows/{req_id}/created_at", created_at)
+        if requirement:
+            self.consul.kv_put(f"workflows/{req_id}/requirement", requirement)
+        if group_id:
+            self.project_groups.assign_primary_workflow(group_id, req_id)
+
+        versions = VersionedResourceStore(self.consul)
+        versions.publish(req_id, "requirement", {
+            "req_id": req_id, "title": title, "text": requirement,
+        }, actor=context.subject)
+        versions.publish(req_id, "workflow_spec", raw_tasks, actor=context.subject)
+        versions.publish(req_id, "dag", dependencies, actor=context.subject)
+        versions.publish(req_id, "plan", {"tasks": list(dependencies)}, actor=context.subject)
+        group_id = group_id or UNASSIGNED_GROUP_ID
+        event = self._append_event(
+            "WORKFLOW_CREATED",
+            subject={"group_id": group_id, "req_id": req_id},
+            actor={"type": "human", "id": context.subject},
+            data={"title": title, "task_count": len(task_records), "published": published},
+        )
+        return {
+            "workflow": {"req_id": req_id, "title": title,
+                         "published": published, "task_count": len(task_records)},
+            "event_id": event.event_id,
+        }
 
     def _list_agents(self):
         services = self.consul.list_services("agent-worker")

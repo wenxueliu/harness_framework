@@ -33,6 +33,7 @@ import {
   LayoutList,
   GitBranch,
   BarChart3,
+  FolderPlus,
   Settings,
 } from 'lucide-vue-next'
 import { cn } from '@/lib/utils'
@@ -314,6 +315,14 @@ function closeTaskDetail() {
           @click="router.push('/settings')"
         >
           <Settings :size="12" /><span class="hidden lg:inline">配置</span>
+        </button>
+        <button
+          v-if="capabilityStore.permitted('group:manage')"
+          aria-label="新建项目"
+          class="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors px-2 py-1.5 rounded hover:bg-accent"
+          @click="router.push('/settings')"
+        >
+          <FolderPlus :size="12" /><span class="hidden sm:inline">新建项目</span>
         </button>
         <button
           class="flex items-center gap-1.5 text-xs bg-blue-500 hover:bg-blue-400 text-white transition-colors px-3 py-1.5 rounded-md"

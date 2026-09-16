@@ -47,10 +47,11 @@ export async function listProjectWorkspaces(groupId: string): Promise<ProjectWor
   return payload.workspaces
 }
 
-export async function registerProjectWorkspace(groupId: string, input: { name: string; sourceType: 'LOCAL_PATH' | 'GIT_CLONE'; rootAlias: string; relativePath: string; gitUrl?: string; defaultRef?: string; access: 'READ_ONLY' | 'READ_WRITE' }): Promise<ProjectWorkspace> {
+export async function registerProjectWorkspace(groupId: string, input: { name: string; sourceType: 'LOCAL_PATH' | 'GIT_CLONE'; pathType?: 'RELATIVE_PATH' | 'ABSOLUTE_PATH'; rootAlias?: string; relativePath?: string; absolutePath?: string; gitUrl?: string; defaultRef?: string; access: 'READ_ONLY' | 'READ_WRITE' }): Promise<ProjectWorkspace> {
   const payload = await apiRequest<{ workspace: ProjectWorkspace }>(`/api/project-groups/${encodeURIComponent(groupId)}/workspaces`, jsonRequest('POST', {
     name: input.name, source_type: input.sourceType, root_alias: input.rootAlias,
-    relative_path: input.relativePath, git_url: input.gitUrl, default_ref: input.defaultRef,
+    path_type: input.pathType, relative_path: input.relativePath, absolute_path: input.absolutePath,
+    git_url: input.gitUrl, default_ref: input.defaultRef,
     access: input.access,
   }))
   return payload.workspace

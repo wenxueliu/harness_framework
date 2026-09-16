@@ -20,12 +20,25 @@ const memberSubject = ref('')
 const memberRole = ref<ProjectGroupMember['role']>('DEVELOPER')
 const workspaceName = ref('')
 const workspaceSource = ref<'LOCAL_PATH' | 'GIT_CLONE'>('LOCAL_PATH')
+const workspacePathType = ref<'RELATIVE_PATH' | 'ABSOLUTE_PATH'>('RELATIVE_PATH')
 const rootAlias = ref('default')
 const relativePath = ref('')
+const absolutePath = ref('')
 const gitUrl = ref('')
 const defaultRef = ref('main')
 const workspaceAccess = ref<'READ_ONLY' | 'READ_WRITE'>('READ_WRITE')
 const selectedGroup = computed(() => groups.value.find((item) => item.group_id === selectedId.value))
+const workspaceFormValid = computed(() => {
+  if (workspaceSource.value === 'GIT_CLONE') {
+    return Boolean(workspaceName.value.trim() && gitUrl.value.trim() && defaultRef.value.trim())
+  }
+  return Boolean(
+    workspaceName.value.trim()
+    && (workspacePathType.value === 'ABSOLUTE_PATH'
+      ? absolutePath.value.trim()
+      : rootAlias.value.trim() && relativePath.value.trim()),
+  )
+})
 
 async function load() {
   error.value = ''
@@ -69,10 +82,20 @@ async function removeMember(subject: string) {
 }
 
 async function registerWorkspace() {
-  if (!selectedId.value || !workspaceName.value.trim() || !relativePath.value.trim()) return
+  if (!selectedId.value || !workspaceFormValid.value) {
+    error.value = '请填写完整的 Workspace 配置，并确认目录路径有效'
+    return
+  }
   try {
-    await registerProjectWorkspace(selectedId.value, { name: workspaceName.value.trim(), sourceType: workspaceSource.value, rootAlias: rootAlias.value.trim(), relativePath: relativePath.value.trim(), gitUrl: gitUrl.value.trim(), defaultRef: defaultRef.value.trim(), access: workspaceAccess.value })
-    workspaceName.value = ''; relativePath.value = ''; gitUrl.value = ''; workspaces.value = await listProjectWorkspaces(selectedId.value)
+    await registerProjectWorkspace(selectedId.value, {
+      name: workspaceName.value.trim(), sourceType: workspaceSource.value,
+      pathType: workspacePathType.value,
+      rootAlias: workspacePathType.value === 'RELATIVE_PATH' ? rootAlias.value.trim() : undefined,
+      relativePath: workspacePathType.value === 'RELATIVE_PATH' ? relativePath.value.trim() : undefined,
+      absolutePath: workspacePathType.value === 'ABSOLUTE_PATH' ? absolutePath.value.trim() : undefined,
+      gitUrl: gitUrl.value.trim(), defaultRef: defaultRef.value.trim(), access: workspaceAccess.value,
+    })
+    workspaceName.value = ''; relativePath.value = ''; absolutePath.value = ''; gitUrl.value = ''; workspaces.value = await listProjectWorkspaces(selectedId.value)
   } catch (cause) { error.value = cause instanceof Error ? cause.message : 'Workspace 登记失败' }
 }
 
@@ -104,7 +127,7 @@ onMounted(() => load().catch((cause) => { error.value = cause instanceof Error ?
         <div class="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-card p-4"><ShieldCheck :size="16" class="text-emerald-300" /><strong class="text-sm">{{ capabilities.snapshot?.actor.display_name || '未知身份' }}</strong><span class="text-xs text-muted-foreground">{{ capabilities.snapshot?.mode }}</span><button v-if="selectedGroup?.status === 'ACTIVE' && capabilities.permitted('group:archive')" class="ml-auto flex items-center gap-1 rounded border border-red-400/30 px-2 py-1 text-xs text-red-300" @click="archive"><Archive :size="12" />归档</button></div>
         <p v-if="error" role="alert" class="rounded border border-red-400/30 bg-red-400/10 p-3 text-xs text-red-200">{{ error }}</p>
         <article class="rounded-lg border border-border bg-card p-4"><h2 class="mb-3 font-display text-sm font-semibold">成员与角色</h2><div v-for="member in members" :key="member.subject_id" class="flex items-center gap-2 border-b border-border/60 py-2 text-xs"><span class="min-w-0 flex-1 truncate font-mono">{{ member.subject_id }}</span><span class="text-blue-300">{{ member.role }}</span><button v-if="capabilities.permitted('member:manage')" class="text-red-300" @click="removeMember(member.subject_id)">移除</button></div><form v-if="capabilities.permitted('member:manage') && selectedGroup?.status === 'ACTIVE'" class="mt-3 flex flex-wrap gap-2" @submit.prevent="addMember"><input v-model="memberSubject" required class="min-w-48 flex-1 rounded border border-border bg-background p-2 text-xs" placeholder="subject ID" /><select v-model="memberRole" class="rounded border border-border bg-background p-2 text-xs"><option>OWNER</option><option>MAINTAINER</option><option>DEVELOPER</option><option>VIEWER</option></select><button class="rounded bg-blue-500 px-3 text-xs text-white"><UserPlus :size="12" class="mr-1 inline" />添加</button></form></article>
-        <article class="rounded-lg border border-border bg-card p-4"><h2 class="mb-3 font-display text-sm font-semibold">Project Workspaces</h2><div v-for="workspace in workspaces" :key="workspace.workspace_id" class="mb-2 rounded border border-border p-3 text-xs"><div class="flex gap-2"><strong>{{ workspace.name }}</strong><span class="font-mono text-muted-foreground">{{ workspace.root_ref }}</span><button class="ml-auto text-blue-300" @click="preflight(workspace.workspace_id)">Preflight</button></div><p v-if="preflights[workspace.workspace_id]" class="mt-2 font-mono text-muted-foreground">read={{ preflights[workspace.workspace_id].readable }} · write={{ preflights[workspace.workspace_id].writable }} · git={{ preflights[workspace.workspace_id].git }} · dirty={{ preflights[workspace.workspace_id].dirty ?? 'n/a' }}</p></div><form v-if="capabilities.permitted('workspace:register') && selectedGroup?.status === 'ACTIVE'" class="mt-3 grid gap-2 border-t border-border pt-3 sm:grid-cols-2" @submit.prevent="registerWorkspace"><input v-model="workspaceName" required class="rounded border border-border bg-background p-2 text-xs" placeholder="Workspace 名称" /><select v-model="workspaceSource" class="rounded border border-border bg-background p-2 text-xs"><option value="LOCAL_PATH">本地目录</option><option value="GIT_CLONE">Git Clone</option></select><select v-model="workspaceAccess" class="rounded border border-border bg-background p-2 text-xs"><option value="READ_WRITE">读写</option><option value="READ_ONLY">只读</option></select><template v-if="workspaceSource === 'LOCAL_PATH'"><input v-model="rootAlias" required class="rounded border border-border bg-background p-2 font-mono text-xs" placeholder="服务端 root alias" /><input v-model="relativePath" required class="rounded border border-border bg-background p-2 font-mono text-xs" placeholder="相对目录，例如 harness" /></template><template v-else><input v-model="gitUrl" required class="rounded border border-border bg-background p-2 font-mono text-xs sm:col-span-2" placeholder="https://git.example.com/org/repo.git" /><input v-model="defaultRef" required class="rounded border border-border bg-background p-2 font-mono text-xs" placeholder="默认 ref" /></template><button class="rounded bg-blue-500 px-3 py-2 text-xs text-white sm:col-span-2">登记 Workspace</button></form></article>
+        <article class="rounded-lg border border-border bg-card p-4"><h2 class="mb-3 font-display text-sm font-semibold">Project Workspaces</h2><div v-for="workspace in workspaces" :key="workspace.workspace_id" class="mb-2 rounded border border-border p-3 text-xs"><div class="flex gap-2"><strong>{{ workspace.name }}</strong><span class="font-mono text-muted-foreground">{{ workspace.root_ref }}</span><button class="ml-auto text-blue-300" @click="preflight(workspace.workspace_id)">Preflight</button></div><p v-if="preflights[workspace.workspace_id]" class="mt-2 font-mono text-muted-foreground">read={{ preflights[workspace.workspace_id].readable }} · write={{ preflights[workspace.workspace_id].writable }} · git={{ preflights[workspace.workspace_id].git }} · dirty={{ preflights[workspace.workspace_id].dirty ?? 'n/a' }}</p></div><form v-if="capabilities.permitted('workspace:register') && selectedGroup?.status === 'ACTIVE'" class="mt-3 grid gap-2 border-t border-border pt-3 sm:grid-cols-2" @submit.prevent="registerWorkspace"><input v-model="workspaceName" required class="rounded border border-border bg-background p-2 text-xs" placeholder="Workspace 名称" /><select v-model="workspaceSource" class="rounded border border-border bg-background p-2 text-xs"><option value="LOCAL_PATH">本地目录</option><option value="GIT_CLONE">Git Clone</option></select><select v-model="workspaceAccess" class="rounded border border-border bg-background p-2 text-xs"><option value="READ_WRITE">读写</option><option value="READ_ONLY">只读</option></select><template v-if="workspaceSource === 'LOCAL_PATH'"><select v-model="workspacePathType" class="rounded border border-border bg-background p-2 text-xs"><option value="RELATIVE_PATH">相对路径（使用服务端根目录）</option><option value="ABSOLUTE_PATH">绝对路径（服务端目录）</option></select><template v-if="workspacePathType === 'RELATIVE_PATH'"><input v-model="rootAlias" required class="rounded border border-border bg-background p-2 font-mono text-xs" placeholder="服务端 root alias" /><input v-model="relativePath" required class="rounded border border-border bg-background p-2 font-mono text-xs" placeholder="相对目录，例如 harness" /></template><input v-else v-model="absolutePath" required class="rounded border border-border bg-background p-2 font-mono text-xs sm:col-span-2" placeholder="服务端绝对目录，例如 /srv/projects/my-app" /></template><template v-else><input v-model="gitUrl" required class="rounded border border-border bg-background p-2 font-mono text-xs sm:col-span-2" placeholder="https://git.example.com/org/repo.git" /><input v-model="defaultRef" required class="rounded border border-border bg-background p-2 font-mono text-xs" placeholder="默认 ref" /></template><p class="text-[11px] text-muted-foreground sm:col-span-2">本地目录必须存在，并且位于 Harness 服务端配置的允许根目录内。</p><button class="rounded bg-blue-500 px-3 py-2 text-xs text-white disabled:cursor-not-allowed disabled:opacity-50 sm:col-span-2" :disabled="!workspaceFormValid">登记 Workspace</button></form></article>
       </div>
     </section>
   </AppShell>

@@ -82,7 +82,8 @@ class WorkspaceManager:
 
     def register_local(
         self, *, group_id: str, name: str, root_alias: str,
-        relative_path: str, access: str = "READ_WRITE",
+        relative_path: str = "", absolute_path: Optional[str] = None,
+        access: str = "READ_WRITE",
         policy: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         self.project_groups._require_active(group_id)
@@ -92,7 +93,11 @@ class WorkspaceManager:
             access_value = WorkspaceAccess(access)
         except ValueError as exc:
             raise ValidationError("无效的 Workspace access") from exc
-        root_ref = self.security.make_root_ref(root_alias, relative_path)
+        root_ref = (
+            self.security.make_root_ref_from_path(absolute_path)
+            if absolute_path is not None
+            else self.security.make_root_ref(root_alias, relative_path)
+        )
         self.security.resolve_root_ref(root_ref)
         workspace = ProjectWorkspace(
             workspace_id=f"pws_{uuid.uuid4().hex}", group_id=group_id,

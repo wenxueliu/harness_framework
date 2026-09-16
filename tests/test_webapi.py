@@ -272,6 +272,41 @@ class TestWebAPI:
         assert preflight["code"] == 200
         assert preflight["body"]["preflight"]["exists"] is True
 
+    def test_project_workspace_absolute_path_requires_allowed_existing_directory(self, tmp_path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        outside = tmp_path.parent / f"outside-{tmp_path.name}"
+        outside.mkdir()
+        try:
+            handler, _, _, _ = make_handler({}, str(tmp_path))
+            created_group = call_do_method(
+                handler, "POST", "/api/project-groups",
+                json.dumps({"name": "Core"}).encode(),
+            )
+            group_id = created_group["body"]["project_group"]["group_id"]
+
+            created = call_do_method(
+                handler, "POST", f"/api/project-groups/{group_id}/workspaces",
+                json.dumps({
+                    "name": "Repo", "path_type": "ABSOLUTE_PATH",
+                    "absolute_path": str(repo),
+                }).encode(),
+            )
+            assert created["code"] == 201
+            assert created["body"]["workspace"]["root_ref"] == "test:repo"
+
+            rejected = call_do_method(
+                handler, "POST", f"/api/project-groups/{group_id}/workspaces",
+                json.dumps({
+                    "name": "Outside", "path_type": "ABSOLUTE_PATH",
+                    "absolute_path": str(outside),
+                }).encode(),
+            )
+            assert rejected["code"] == 422
+            assert rejected["body"]["error"]["code"] == "WORKSPACE_ROOT_NOT_ALLOWED"
+        finally:
+            outside.rmdir()
+
     def test_project_group_crud_uses_authenticated_actor(self):
         handler, _, _, _ = make_handler({})
         created = call_do_method(

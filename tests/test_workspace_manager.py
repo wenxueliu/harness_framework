@@ -47,6 +47,26 @@ def test_register_local_uses_root_alias_and_preflight(manager):
     assert service.preflight(workspace["workspace_id"])["readable"] is True
 
 
+def test_register_local_accepts_absolute_path_inside_allowed_root(manager):
+    service, group, repo = manager
+    workspace = service.register_local(
+        group_id=group["group_id"], name="Repo", root_alias="unused",
+        absolute_path=str(repo),
+    )
+    assert workspace["root_ref"] == "projects:repo"
+
+
+def test_register_local_rejects_absolute_path_outside_allowed_roots(manager, tmp_path):
+    service, group, _ = manager
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    with pytest.raises(ValidationError, match="允许的根目录"):
+        service.register_local(
+            group_id=group["group_id"], name="Bad", root_alias="unused",
+            absolute_path=str(outside),
+        )
+
+
 def test_root_alias_rejects_traversal_and_symlink_escape(manager, tmp_path):
     service, group, repo = manager
     outside = tmp_path / "outside"

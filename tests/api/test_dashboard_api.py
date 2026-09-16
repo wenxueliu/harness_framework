@@ -167,6 +167,52 @@ def test_dashboard_run_workspace_file_api(tmp_path: Path):
 
 
 @pytest.mark.api
+def test_dashboard_create_workflow_persists_task_list():
+    store = MockConsulStore()
+    server = serve(
+        store, host="127.0.0.1", port=0,
+        auth_config=AuthConfig(mode="local", local_user="api"),
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    port = server.server_address[1]
+    try:
+        status, created = _request(
+            port, "POST", "/api/workflows",
+            {
+                "req_id": "created-from-dashboard",
+                "title": "Dashboard 创建的工作流",
+                "requirement": "创建并展示任务列表",
+                "published": False,
+                "tasks": [
+                    {"id": "design", "name": "设计", "type": "design",
+                     "agent": "claude", "dependsOn": [],
+                     "description": "完成设计", "acceptance": "设计通过"},
+                    {"id": "test", "name": "测试", "type": "test",
+                     "agent": "codex", "dependsOn": ["design"],
+                     "description": "完成测试", "acceptance": "测试通过"},
+                ],
+            },
+        )
+        assert status == 201
+        assert created["workflow"]["task_count"] == 2
+
+        status, listing = _request(port, "GET", "/api/workflows")
+        assert status == 200
+        assert any(item["req_id"] == "created-from-dashboard"
+                   and item["total_tasks"] == 2 for item in listing["workflows"])
+
+        status, detail = _request(port, "GET", "/api/workflow/created-from-dashboard")
+        assert status == 200
+        assert detail["tasks"]["design"]["status"] == "PENDING"
+        assert detail["tasks"]["test"]["status"] == "BLOCKED"
+        assert detail["dependencies"]["test"]["depends_on"] == ["design"]
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+@pytest.mark.api
 def test_dashboard_asgi_capabilities_contract():
     store = MockConsulStore()
     app = create_asgi_app(
