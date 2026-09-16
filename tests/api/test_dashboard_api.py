@@ -213,6 +213,51 @@ def test_dashboard_create_workflow_persists_task_list():
 
 
 @pytest.mark.api
+def test_dashboard_create_workflow_assigns_selected_project():
+    store = MockConsulStore()
+    groups = ProjectGroupService(store)
+    group = groups.create(name="Selected project", description="", actor="local:api")
+    server = serve(
+        store, host="127.0.0.1", port=0,
+        auth_config=AuthConfig(mode="local", local_user="api"),
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    port = server.server_address[1]
+    req_id = "created-in-selected-project"
+    try:
+        status, created = _request(
+            port, "POST", "/api/workflows",
+            {
+                "req_id": req_id,
+                "group_id": group["group_id"],
+                "title": "Selected project workflow",
+                "published": False,
+                "tasks": [{
+                    "id": "design", "name": "设计", "type": "design",
+                    "agent": "claude", "dependsOn": [],
+                }],
+            },
+        )
+        assert status == 201
+
+        status, project_workflows = _request(
+            port, "GET", f"/api/project-groups/{group['group_id']}/workflows",
+        )
+        assert status == 200
+        assert any(item["req_id"] == req_id for item in project_workflows["workflows"])
+
+        status, unassigned_workflows = _request(
+            port, "GET", "/api/project-groups/unassigned/workflows",
+        )
+        assert status == 200
+        assert all(item["req_id"] != req_id for item in unassigned_workflows["workflows"])
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+@pytest.mark.api
 def test_dashboard_asgi_capabilities_contract():
     store = MockConsulStore()
     app = create_asgi_app(

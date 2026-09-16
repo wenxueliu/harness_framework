@@ -179,11 +179,19 @@ export async function createWorkflow(input: {
   requirement: string;
   tasks: CreateWorkflowTask[];
   published: boolean;
+  groupId?: string;
 }): Promise<{ req_id: string; title: string; published: boolean; task_count: number }> {
   const reqId = `wf-${crypto.randomUUID()}`
   const payload = await apiRequest<{ workflow: { req_id: string; title: string; published: boolean; task_count: number } }>(
     '/api/workflows',
-    jsonRequest('POST', { ...input, req_id: reqId }, { 'Idempotency-Key': crypto.randomUUID() }),
+    jsonRequest('POST', {
+      title: input.title,
+      requirement: input.requirement,
+      tasks: input.tasks,
+      published: input.published,
+      group_id: input.groupId,
+      req_id: reqId,
+    }, { 'Idempotency-Key': crypto.randomUUID() }),
   )
   return payload.workflow
 }

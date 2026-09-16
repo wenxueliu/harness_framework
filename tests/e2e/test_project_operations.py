@@ -50,6 +50,16 @@ def _cleanup_workflow(req_id: str) -> None:
         pass
 
 
+def _create_group_via_api(name: str) -> str:
+    response = requests.post(
+        f"{WEBAPI_URL}/api/project-groups",
+        json={"name": name, "description": "UI workflow assignment"},
+        timeout=10,
+    )
+    response.raise_for_status()
+    return response.json()["project_group"]["group_id"]
+
+
 @pytest.mark.e2e
 def test_project_group_member_workspace_lifecycle(page: Page, dashboard_url: str) -> None:
     """A user can create a group, add a member, register a workspace and preflight it."""
@@ -133,3 +143,44 @@ def test_workflow_builder_publish_shows_created_task_list(page: Page, dashboard_
     finally:
         if req_id:
             _cleanup_workflow(req_id)
+
+
+@pytest.mark.e2e
+def test_selected_project_workflow_is_not_created_under_unassigned(page: Page, dashboard_url: str) -> None:
+    """Creating a workflow from a selected project keeps that project ownership."""
+    group_name = f"UI Workflow Project {time.time_ns()}"
+    group_id = _create_group_via_api(group_name)
+    req_id = ""
+    page.goto(dashboard_url + "/#/")
+    wait_for_network_idle(page)
+    try:
+        group_item = page.get_by_text(group_name)
+        expect(group_item).to_be_visible(timeout=10000)
+        group_item.click()
+        page.get_by_text("新建任务").click()
+        expect(page.get_by_text(f"项目组：{group_id}")).to_be_visible(timeout=10000)
+        page.locator('textarea[placeholder*="例如：为现有系统增加"]').fill(
+            "创建一个归属于当前项目的工作流"
+        )
+        page.get_by_text("生成任务图").click()
+        expect(page.get_by_text("已生成 6 个任务")).to_be_visible(timeout=10000)
+        page.get_by_text("进入发布").click()
+        expect(page.get_by_text("发布 v1 并开始执行？")).to_be_visible(timeout=5000)
+        page.get_by_text("仅发布").click()
+
+        page.wait_for_timeout(1000)
+        current_url = str(page.evaluate("() => window.location.href"))
+        match = re.search(r"/groups/([^/]+)/workflows/(wf-[^/?#]+)", current_url)
+        assert match, f"发布后应保留项目组上下文，实际 URL: {current_url}"
+        assert match.group(1) == group_id
+        req_id = match.group(2)
+
+        project_workflows = requests.get(
+            f"{WEBAPI_URL}/api/project-groups/{quote(group_id, safe='')}/workflows",
+            timeout=10,
+        ).json()["workflows"]
+        assert any(item["req_id"] == req_id for item in project_workflows)
+    finally:
+        if req_id:
+            _cleanup_workflow(req_id)
+        _cleanup_group(group_name)

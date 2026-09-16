@@ -228,6 +228,13 @@ function selectWorkflow(id: string) {
   }
 }
 
+function openWorkflowBuilder() {
+  const groupId = projectGroupStore.selectedId !== 'unassigned'
+    ? projectGroupStore.selectedId
+    : currentGroupId.value !== 'unassigned' ? currentGroupId.value : undefined
+  router.push({ name: 'workflow-builder', query: groupId ? { groupId } : undefined })
+}
+
 async function selectProjectGroup(groupId: string) {
   await projectGroupStore.select(groupId)
   await capabilityStore.load(groupId)
@@ -326,7 +333,7 @@ function closeTaskDetail() {
         </button>
         <button
           class="flex items-center gap-1.5 text-xs bg-blue-500 hover:bg-blue-400 text-white transition-colors px-3 py-1.5 rounded-md"
-          @click="router.push('/workflows/new')"
+          @click="openWorkflowBuilder"
         >
           <span class="text-sm leading-none">+</span>
           <span class="hidden sm:inline">新建任务</span>

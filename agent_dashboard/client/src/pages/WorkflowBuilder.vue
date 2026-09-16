@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { createWorkflow, type CreateWorkflowTask } from '@/lib/harnessApi'
 import {
   ArrowLeft,
@@ -42,6 +42,7 @@ interface ChatMessage {
 }
 
 const router = useRouter()
+const route = useRoute()
 const step = ref<BuilderStep>('describe')
 const requirement = ref('为 Harness 增加工作流创建能力：用户输入自然语言需求，AI 自动拆分为 DAG；用户可以多轮调整任务、依赖和 Agent，确认后发布并通过 ACP 执行。')
 const selectedId = ref<string | null>(null)
@@ -52,6 +53,10 @@ const planProgress = ref(0)
 const publishedWillRun = ref(true)
 const publishError = ref('')
 const publishing = ref(false)
+const selectedGroupId = computed(() => {
+  const groupId = route.query.groupId
+  return typeof groupId === 'string' && groupId && groupId !== 'unassigned' ? groupId : undefined
+})
 
 const tasks = ref<PlanTask[]>([])
 const messages = ref<ChatMessage[]>([
@@ -212,13 +217,14 @@ async function publish(startRun: boolean) {
       requirement: requirement.value.trim(),
       tasks: tasks.value.map((task): CreateWorkflowTask => ({ ...task })),
       published: startRun,
+      groupId: selectedGroupId.value,
     })
     showPublish.value = false
     publishedWillRun.value = startRun
     step.value = 'published'
     window.setTimeout(() => router.push({
       name: 'workflow-dashboard',
-      params: { groupId: 'unassigned', workflowId: workflow.req_id },
+      params: { groupId: selectedGroupId.value || 'unassigned', workflowId: workflow.req_id },
     }), startRun ? 900 : 300)
   } catch (cause) {
     publishError.value = cause instanceof Error ? cause.message : 'Workflow 创建失败'
@@ -254,6 +260,9 @@ const typeLabel: Record<PlanTask['type'], string> = {
         <Check v-if="saved" :size="12" class="text-emerald-400" />
         <LoaderCircle v-else :size="12" class="animate-spin text-blue-400" />
         {{ saved ? '草稿已保存' : '正在保存' }}
+      </div>
+      <div v-if="selectedGroupId" class="hidden lg:block text-xs text-blue-300">
+        项目组：{{ selectedGroupId }}
       </div>
       <div class="ml-auto flex items-center gap-2">
         <div v-if="step === 'review'" class="hidden sm:flex items-center gap-1.5 text-xs text-emerald-400 mr-2">
