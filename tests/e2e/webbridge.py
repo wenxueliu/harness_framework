@@ -47,6 +47,18 @@ class Keyboard:
         self.page = page
 
     def press(self, key: str) -> None:
+        if key == "Tab":
+            self.page.evaluate("""() => {
+              const selectors = 'button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+              const elements = Array.from(document.querySelectorAll(selectors)).filter((el) => {
+                const style = getComputedStyle(el);
+                return style.display !== 'none' && style.visibility !== 'hidden';
+              });
+              const current = elements.indexOf(document.activeElement);
+              elements[(current + 1) % elements.length]?.focus();
+              return document.activeElement?.tagName || 'none';
+            }""")
+            return
         escaped = json.dumps(key)
         self.page.evaluate(
             f"() => document.activeElement?.dispatchEvent(new KeyboardEvent("
@@ -83,6 +95,7 @@ class Locator:
         self.page = page
         self.selector = selector
         self.text = text
+        self._resolved_selector: str | None = None
 
     @property
     def first(self) -> "Locator":
@@ -91,6 +104,8 @@ class Locator:
     def _css(self) -> str:
         if not self.text:
             return self.selector
+        if self._resolved_selector:
+            return self._resolved_selector
         token = "kimi-" + uuid.uuid4().hex
         code = """(args) => {
           const visible = el => !!(el.offsetWidth || el.offsetHeight ||
@@ -102,11 +117,20 @@ class Locator:
           if (!match) return false;
           match.setAttribute('data-kimi-e2e', args.token); return true;
         }"""
-        if not self.page.evaluate(code, {"text": self.selector, "token": token}):
-            return f'[data-kimi-e2e="{token}"]'
-        return f'[data-kimi-e2e="{token}"]'
+        for attempt in range(50):
+            if self.page.evaluate(code, {"text": self.selector, "token": token}):
+                break
+            if attempt < 49:
+                time.sleep(0.1)
+        self._resolved_selector = f'[data-kimi-e2e="{token}"]'
+        return self._resolved_selector
 
     def locator(self, selector: str) -> "Locator":
+        # Keep the YAML scenario syntax compatible with Playwright's
+        # ``text=...`` selector while still using the lightweight WebBridge
+        # adapter underneath.
+        if selector.startswith("text="):
+            return Locator(self, selector[5:], text=True)
         parent = self._css()
         if selector == "..":
             token = "kimi-" + uuid.uuid4().hex
@@ -119,7 +143,27 @@ class Locator:
         return Locator(self.page, f"{parent} {selector}")
 
     def click(self) -> None:
-        self.page._command("click", {"selector": self._css()})
+        selector = self._css()
+        try:
+            self.page._command("click", {"selector": selector})
+        except WebBridgeError:
+            if not self.text:
+                raise
+            for _ in range(10):
+                clicked = self.page.evaluate("""(args) => {
+                  const visible = el => !!(el.offsetWidth || el.offsetHeight ||
+                    el.getClientRects().length);
+                  const element = Array.from(document.querySelectorAll('body *')).find(
+                    el => visible(el) && (el.textContent || '').includes(args.text) &&
+                      !Array.from(el.children).some(c => (c.textContent || '').includes(args.text))
+                  );
+                  element?.click();
+                  return Boolean(element);
+                }""", {"text": self.selector})
+                if clicked:
+                    return
+                time.sleep(0.2)
+            raise
 
     def fill(self, value: str) -> None:
         self.page._command("fill", {"selector": self._css(), "value": value})
@@ -138,11 +182,24 @@ class Locator:
     def _wait_visibility(self, expected: bool, timeout: int) -> bool:
         deadline = time.time() + timeout / 1000 if timeout else time.time()
         while True:
-            visible = bool(self.page.evaluate("""s => {
-              const e=document.querySelector(s); if(!e)return false;
-              const c=getComputedStyle(e); return c.display!=='none' &&
-                c.visibility!=='hidden' && !!(e.offsetWidth||e.offsetHeight||e.getClientRects().length);
-            }""", self._css()))
+            if self.text:
+                visible = bool(self.page.evaluate("""(args) => {
+                  const visible = el => {
+                    const c = getComputedStyle(el);
+                    return c.display !== 'none' && c.visibility !== 'hidden' &&
+                      !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+                  };
+                  return Array.from(document.querySelectorAll('body *')).some(
+                    el => visible(el) && (el.textContent || '').includes(args.text) &&
+                      !Array.from(el.children).some(c => (c.textContent || '').includes(args.text))
+                  );
+                }""", {"text": self.selector}))
+            else:
+                visible = bool(self.page.evaluate("""s => {
+                  const e=document.querySelector(s); if(!e)return false;
+                  const c=getComputedStyle(e); return c.display!=='none' &&
+                    c.visibility!=='hidden' && e.isConnected;
+                }""", self._css()))
             if visible == expected:
                 return True
             if time.time() >= deadline:
@@ -230,6 +287,8 @@ class Page:
         return str(self.evaluate("() => document.body?.innerText || ''"))
 
     def locator(self, selector: str) -> Locator:
+        if selector.startswith("text="):
+            return Locator(self, selector[5:], text=True)
         return Locator(self, selector)
 
     def get_by_text(self, text: str) -> Locator:
@@ -270,13 +329,27 @@ class Page:
         raise TimeoutError(f"page did not reach {state}")
 
     def set_viewport_size(self, size: dict[str, int]) -> None:
-        self._command("cdp", {
+        command = {
             "method": "Emulation.setDeviceMetricsOverride",
             "params": {
                 "width": size["width"], "height": size["height"],
                 "deviceScaleFactor": 1, "mobile": size["width"] < 600,
             },
-        })
+        }
+        # WebBridge may briefly return 502 while its extension reconnects to
+        # Chrome between isolated sessions. Retry this idempotent CDP command
+        # so a transport blip does not fail the responsive-layout assertion.
+        last_error: Exception | None = None
+        for attempt in range(3):
+            try:
+                self._command("cdp", command)
+                return
+            except Exception as exc:
+                last_error = exc
+                if attempt < 2:
+                    time.sleep(0.3)
+        assert last_error is not None
+        raise last_error
 
     def screenshot(self, path: str, full_page: bool = False) -> None:
         Path(path).parent.mkdir(parents=True, exist_ok=True)

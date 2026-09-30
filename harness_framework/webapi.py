@@ -49,6 +49,7 @@ from .workspace_files import WorkspaceFileService
 from .event_journal import EventJournal
 from .workspace_merge import WorkspaceMergeService
 from .versioning import VersionedResourceStore
+from .job_flows import JobFlowService
 
 log = logging.getLogger("webapi")
 
@@ -71,6 +72,7 @@ class APIHandler(BaseHTTPRequestHandler):
     workspace_files: WorkspaceFileService = None
     event_journal: EventJournal = None
     workspace_merge: WorkspaceMergeService = None
+    job_flows: JobFlowService = None
     sse_connection_seconds: float = 300.0
 
     def log_message(self, format, *args):
@@ -257,6 +259,11 @@ class APIHandler(BaseHTTPRequestHandler):
         path = u.path.rstrip("/")
         self.request_id = self.headers.get("X-Request-ID") or f"http_{uuid.uuid4().hex}"
         try:
+            if (path == "/api/templates" or path.startswith("/api/templates/")
+                    or path == "/api/instances" or path.startswith("/api/instances/")):
+                return self._send_json(200, self._jobflow_get(
+                    path, u, self._authentication_context()
+                ))
             if path == "/api/events":
                 return self._send_event_stream(u)
             if path == "/api/capabilities":
@@ -468,6 +475,10 @@ class APIHandler(BaseHTTPRequestHandler):
             body = self._read_json_body()
 
             parts = path.split("/")
+            if (path == "/api/templates" or path.startswith("/api/templates/")
+                    or path == "/api/instances" or path.startswith("/api/instances/")):
+                result = self._jobflow_post(path, body, self._authentication_context())
+                return self._send_json(201 if path in {"/api/templates", "/api/instances"} else 200, result)
             if (len(parts) == 8 and parts[1:3] == ["api", "workflows"]
                     and parts[4] == "runs" and parts[6] == "workspace"
                     and parts[7] in {"cleanup", "trash", "restore", "purge"}):
@@ -752,6 +763,14 @@ class APIHandler(BaseHTTPRequestHandler):
         try:
             body = self._read_json_body()
             parts = path.split("/")
+            if path.startswith("/api/templates/") and len(parts) == 5 and parts[4] == "draft":
+                context = self._authentication_context()
+                template = self.job_flows.get_template(unquote(parts[3]))
+                self._jobflow_require(context, "workflow:draft", template)
+                self._jobflow_require_active_group(template)
+                return self._send_json(200, {"template": self.job_flows.update_draft(
+                    unquote(parts[3]), body, context.subject
+                )})
             if len(parts) == 4 and parts[1:3] == ["api", "project-groups"]:
                 context = self._authentication_context()
                 group_id = unquote(parts[3])
@@ -848,6 +867,23 @@ class APIHandler(BaseHTTPRequestHandler):
         self.request_id = self.headers.get("X-Request-ID") or f"http_{uuid.uuid4().hex}"
         try:
             parts = path.split("/")
+            if len(parts) == 4 and parts[1:3] == ["api", "templates"]:
+                context = self._authentication_context()
+                template_id = unquote(parts[3])
+                template = self.job_flows.get_template(template_id)
+                self._jobflow_require(context, "workflow:draft", template)
+                return self._send_json(200, self.job_flows.delete_template(
+                    template_id, context.subject
+                ))
+            if len(parts) == 4 and parts[1:3] == ["api", "instances"]:
+                context = self._authentication_context()
+                instance_id = unquote(parts[3])
+                instance = self.job_flows.get_instance(instance_id)
+                template = self.job_flows.get_template(instance["template_id"])
+                self._jobflow_require(context, "run:control", template)
+                return self._send_json(200, self.job_flows.delete_instance(
+                    instance_id, context.subject
+                ))
             if (len(parts) == 6 and parts[1:3] == ["api", "project-groups"]
                     and parts[4] == "workflow-references"):
                 context = self._authentication_context()
@@ -870,6 +906,184 @@ class APIHandler(BaseHTTPRequestHandler):
         except Exception:
             log.exception("DELETE %s failed", self.path)
             self._send_error(500, "INTERNAL_ERROR", "服务器内部错误")
+
+    def _jobflow_group(self, resource: dict) -> str | None:
+        return resource.get("group_id") or resource.get("template", {}).get("group_id")
+
+    def _jobflow_require(self, context, capability: str, resource: dict | None = None) -> None:
+        self._require(context, capability, self._jobflow_group(resource or {}))
+
+    def _jobflow_require_active_group(self, resource: dict) -> None:
+        group_id = self._jobflow_group(resource)
+        if group_id and group_id != UNASSIGNED_GROUP_ID:
+            self.project_groups._require_active(group_id)
+
+    def _jobflow_get(self, path: str, parsed_url, context) -> dict:
+        service = self.job_flows or JobFlowService(self.consul)
+        parts = path.split("/")
+        if path == "/api/templates":
+            query = parse_qs(parsed_url.query)
+            group_id = query.get("group_id", [None])[0]
+            if group_id:
+                self._require(context, "group:read", group_id)
+            elif context.mode != "local":
+                raise APIError(
+                    "PROJECT_GROUP_REQUIRED",
+                    "查询模板必须指定项目组",
+                    422,
+                )
+            return {"templates": service.list_templates(group_id)}
+        if path == "/api/instances":
+            query = parse_qs(parsed_url.query)
+            template_id = query.get("template_id", [None])[0]
+            group_id = query.get("group_id", [None])[0]
+            if template_id:
+                template = service.get_template(template_id)
+                self._jobflow_require(context, "group:read", template)
+                if group_id and group_id != template.get("group_id"):
+                    raise APIError(
+                        "GROUP_SCOPE_MISMATCH",
+                        "模板与查询项目组不一致",
+                        422,
+                        {
+                            "template_group_id": template.get("group_id"),
+                            "requested_group_id": group_id,
+                        },
+                    )
+                return {"instances": service.list_instances(template_id)}
+            if group_id:
+                self._require(context, "group:read", group_id)
+            elif context.mode != "local":
+                raise APIError(
+                    "PROJECT_GROUP_REQUIRED",
+                    "查询实例必须指定项目组或模板",
+                    422,
+                )
+            return {"instances": service.list_instances(group_id=group_id)}
+        if path.startswith("/api/templates/"):
+            template_id = unquote(parts[3])
+            template = service.get_template(template_id)
+            self._jobflow_require(context, "group:read", template)
+            if len(parts) == 4:
+                return {"template": template}
+            if len(parts) == 5 and parts[4] == "versions":
+                return {"versions": service.list_versions(template_id)}
+            if len(parts) == 6 and parts[4] == "versions":
+                versions = service.list_versions(template_id)
+                version = next((item for item in versions if item["version_id"] == unquote(parts[5])), None)
+                if version is None:
+                    raise APIError("VERSION_NOT_FOUND", "模板版本不存在", 404)
+                manifest, _ = self.consul.kv_get(
+                    f"jobflows/templates/{template_id}/versions/{version['version_id']}/manifest"
+                )
+                return {"version": version, "manifest": json.loads(manifest) if manifest else {}}
+        if path.startswith("/api/instances/"):
+            instance_id = unquote(parts[3])
+            instance = service.get_instance(instance_id)
+            template = service.get_template(instance["template_id"])
+            self._jobflow_require(context, "group:read", template)
+            if len(parts) == 4:
+                return {"instance": instance}
+            if len(parts) == 5 and parts[4] == "tasks":
+                return {"tasks": instance["tasks"]}
+            if len(parts) == 5 and parts[4] == "events":
+                return {"events": service.list_events(instance_id)}
+        raise APIError("NOT_FOUND", "接口不存在", 404)
+
+    def _jobflow_post(self, path: str, body: dict, context) -> dict:
+        service = self.job_flows or JobFlowService(self.consul)
+        parts = path.split("/")
+        actor = context.subject
+        key = self.headers.get("Idempotency-Key")
+        if path == "/api/templates":
+            group_id = str(body.get("group_id") or UNASSIGNED_GROUP_ID).strip()
+            if group_id != UNASSIGNED_GROUP_ID:
+                self.project_groups._require_active(group_id)
+            self._require(
+                context, "workflow:draft",
+                None if group_id == UNASSIGNED_GROUP_ID else group_id,
+            )
+            template = service.create_template({**body, "group_id": group_id}, actor)
+            self._jobflow_require(context, "group:read", template)
+            return {"template": template}
+        if path.startswith("/api/templates/"):
+            template_id = unquote(parts[3])
+            template = service.get_template(template_id)
+            self._jobflow_require(context, "group:read", template)
+            if len(parts) == 5 and parts[4] == "validate":
+                self._jobflow_require_active_group(template)
+                self._require(context, "workflow:draft", template["group_id"])
+                return {"validation": service.validate_template(template_id)}
+            if len(parts) == 5 and parts[4] == "publish":
+                self._jobflow_require_active_group(template)
+                self._require(context, "workflow:publish", template["group_id"])
+                if not key:
+                    raise APIError("IDEMPOTENCY_KEY_REQUIRED", "Idempotency-Key 不能为空", 422)
+                return service.publish_template(template_id, body, actor, key)
+            if len(parts) == 5 and parts[4] in {"publish-and-instantiate", "publish-and-execute"}:
+                self._jobflow_require_active_group(template)
+                self._require(context, "workflow:publish", template["group_id"])
+                if not key:
+                    raise APIError("IDEMPOTENCY_KEY_REQUIRED", "Idempotency-Key 不能为空", 422)
+                cached = service._idempotent(key)
+                if cached:
+                    return cached
+                published = service.publish_template(template_id, body, actor, key + ":version")
+                instance_body = dict(body.get("instance") or {})
+                instance_body.update({
+                    "template_id": template_id,
+                    "version_id": published["version"]["version_id"],
+                })
+                created = service.create_instance(instance_body, actor, key + ":instance")
+                result = {**published, "instance": created["instance"]}
+                if parts[4] == "publish-and-execute":
+                    started = service.start_instance(created["instance"]["instance_id"], actor)
+                    result.update({"instance": started["instance"], "run": started["run"]})
+                service._remember(key, result)
+                return result
+            if len(parts) == 7 and parts[4] == "versions" and parts[6] in {"disable", "archive"}:
+                self._require(context, "workflow:publish", template["group_id"])
+                status = "DISABLED" if parts[6] == "disable" else "ARCHIVED"
+                return {"version": service.set_version_status(
+                    template_id, unquote(parts[5]), status, actor
+                )}
+        if path == "/api/instances":
+            if not key:
+                raise APIError("IDEMPOTENCY_KEY_REQUIRED", "Idempotency-Key 不能为空", 422)
+            template = service.get_template(str(body.get("template_id", "")))
+            self._jobflow_require(context, "run:create", template)
+            self._jobflow_require_active_group(template)
+            return service.create_instance(body, actor, key)
+        if path.startswith("/api/instances/"):
+            instance_id = unquote(parts[3])
+            instance = service.get_instance(instance_id)
+            template = service.get_template(instance["template_id"])
+            self._jobflow_require(context, "group:read", template)
+            if len(parts) == 5 and parts[4] in {"start", "pause", "abort", "drain", "archive"}:
+                capability = "run:create" if parts[4] == "start" else "run:control"
+                self._require(context, capability, template["group_id"])
+                if parts[4] == "start":
+                    return service.start_instance(instance_id, actor)
+                if parts[4] == "archive":
+                    return service.archive_instance(instance_id, actor)
+                return service.control_instance(instance_id, parts[4], actor)
+            if len(parts) == 5 and parts[4] == "rerun":
+                self._require(context, "run:create", template["group_id"])
+                if not key:
+                    raise APIError("IDEMPOTENCY_KEY_REQUIRED", "Idempotency-Key 不能为空", 422)
+                return service.rerun_instance(instance_id, body, actor, key)
+            if len(parts) == 7 and parts[4] == "tasks" and parts[6] == "retry":
+                self._require(context, "task:retry", template["group_id"])
+                return service.retry_task(instance_id, unquote(parts[5]), actor)
+            if len(parts) == 5 and parts[4] == "changesets":
+                self._require(context, "workflow:draft", template["group_id"])
+                return service.create_changeset(instance_id, body, actor)
+            if len(parts) == 7 and parts[4] == "changesets" and parts[6] == "apply":
+                self._require(context, "run:control", template["group_id"])
+                return service.apply_changeset(
+                    instance_id, unquote(parts[5]), body, actor, key
+                )
+        raise APIError("NOT_FOUND", "接口不存在", 404)
 
     def _list_workflows(self, context=None):
         items, _ = self.consul.kv_get("workflows/", recurse=True)
@@ -1729,6 +1943,7 @@ def serve(consul: KVStore, host: str = "0.0.0.0", port: int = 8080,
     APIHandler.workspace_merge = WorkspaceMergeService(
         consul, APIHandler.workspace_manager, APIHandler.event_journal
     )
+    APIHandler.job_flows = JobFlowService(consul)
     server = ThreadingHTTPServer((host, port), APIHandler)
     log.info("WebAPI serving on http://%s:%d/", host, port)
     return server

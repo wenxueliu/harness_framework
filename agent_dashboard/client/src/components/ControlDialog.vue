@@ -40,7 +40,7 @@ const SIGNAL_CONFIG: Record<ControlSignal, { title: string; description: string;
 <template>
   <dialog
     :open="open"
-    class="fixed inset-0 z-50 bg-black/60"
+    class="fixed inset-0 z-50 m-0 h-screen w-screen max-h-none max-w-none border-0 bg-black/60 p-0"
     @click.self="onCancel"
   >
     <div

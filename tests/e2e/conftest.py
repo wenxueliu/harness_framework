@@ -32,6 +32,7 @@ E2E_DIR = Path(__file__).parent
 BASELINE_DIR = E2E_DIR / "baselines"
 SCREENSHOT_DIR = BASELINE_DIR / "screenshots"
 REPORT_DIR = E2E_DIR / "reports"
+SEEDED_DASHBOARD_IDS: list[str] = []
 
 # ---- 环境变量配置 ----
 E2E_BASE_URL = os.environ.get("E2E_BASE_URL", "http://localhost:3000")
@@ -128,6 +129,74 @@ def cleanup_test_workflow(req_id: str) -> None:
         consul_delete(f"workflows/{req_id}", recurse=True)
     except Exception:
         pass  # 清理失败不阻断测试
+
+
+def seed_dashboard_workflows(*, reset: bool = False) -> None:
+    """Seed the fixed dashboard fixtures expected by the legacy UI journeys."""
+    fixtures = {
+        "REQ-2026-001": {
+            "title": "用户订单中心 v2.0",
+            "tasks": {
+                "design-api-doc": ("API 契约设计", "design", "DONE", []),
+                "backend-user-service": ("用户服务", "backend", "DONE", ["design-api-doc"]),
+                "backend-order-service": ("订单服务", "backend", "IN_PROGRESS", ["design-api-doc"]),
+                "frontend-checkout": ("结算页面", "frontend", "IN_PROGRESS", ["design-api-doc"]),
+                "test-e2e": ("E2E 集成测试", "test", "PENDING", ["backend-order-service", "frontend-checkout"]),
+            },
+        },
+        "REQ-2026-002": {
+            "title": "支付网关集成",
+            "tasks": {
+                "design-api-doc": ("API 契约设计", "design", "DONE", []),
+                "backend-payment-service": ("支付服务", "backend", "DONE", ["design-api-doc"]),
+                "frontend-payment": ("支付页面", "frontend", "DONE", ["design-api-doc"]),
+                "test-e2e": ("E2E 集成测试", "test", "IN_PROGRESS", ["backend-payment-service", "frontend-payment"]),
+            },
+        },
+        "REQ-2026-003": {
+            "title": "消息通知中心",
+            "tasks": {
+                "design-api-doc": ("API 契约设计", "design", "DONE", []),
+                "backend-notification-service": ("通知服务", "backend", "FAILED", ["design-api-doc"]),
+                "frontend-notification": ("通知组件", "frontend", "PENDING", ["design-api-doc"]),
+                "test-e2e": ("E2E 集成测试", "test", "PENDING", ["backend-notification-service", "frontend-notification"]),
+            },
+        },
+        "REQ-2026-004": {
+            "title": "数据报表模块",
+            "tasks": {
+                "design-api-doc": ("API 契约设计", "design", "DONE", []),
+                "backend-report-service": ("报表服务", "backend", "DONE", ["design-api-doc"]),
+                "test-e2e": ("E2E 集成测试", "test", "DONE", ["backend-report-service"]),
+            },
+        },
+    }
+    for req_id, fixture in fixtures.items():
+        if reset:
+            # The legacy dashboard tests intentionally mutate these fixed IDs
+            # (pause, retry, etc.). Rebuild the known test fixtures before each
+            # test so execution order cannot leak state into the next journey.
+            cleanup_test_workflow(req_id)
+        if consul_get(f"workflows/{req_id}/dependencies") is not None:
+            continue
+        dependencies = {}
+        for task_id, (_, task_type, _, depends_on) in fixture["tasks"].items():
+            dependencies[task_id] = {"type": task_type, "depends_on": depends_on}
+        consul_put(f"workflows/{req_id}/title", fixture["title"])
+        # These are read-only dashboard fixtures. Keeping them unpublished
+        # prevents any concurrently running ACP dispatcher from claiming the
+        # synthetic PENDING tasks and changing the expected phase.
+        consul_put(f"workflows/{req_id}/published", "false")
+        consul_put(f"workflows/{req_id}/dependencies", json.dumps(dependencies))
+        for task_id, (name, task_type, status, depends_on) in fixture["tasks"].items():
+            base = f"workflows/{req_id}/tasks/{task_id}"
+            consul_put(f"{base}/name", name)
+            consul_put(f"{base}/type", task_type)
+            consul_put(f"{base}/status", status)
+            if depends_on:
+                consul_put(f"{base}/depends_on", ",".join(depends_on))
+        if req_id not in SEEDED_DASHBOARD_IDS:
+            SEEDED_DASHBOARD_IDS.append(req_id)
 
 
 def api_json(method: str, path: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -381,6 +450,15 @@ def screenshot_on_failure(request: pytest.FixtureRequest, page: Page) -> None:
     # 这里简单处理：如果 page 仍然 open，说明测试可能失败了
 
 
+@pytest.fixture(autouse=True)
+def reset_dashboard_fixture_state() -> None:
+    """Reset shared fixed dashboard fixtures before every browser journey."""
+    try:
+        seed_dashboard_workflows(reset=True)
+    except Exception as exc:
+        pytest.skip(f"Dashboard fixture setup unavailable: {exc}")
+
+
 # ---- pytest 配置 hook ----
 
 @pytest.hookimpl(tryfirst=True, hookwrapper=True)
@@ -426,6 +504,15 @@ def pytest_sessionstart(session: pytest.Session) -> None:
             print(f"[E2E] WARNING: Consul 响应异常: {resp.status_code}")
     except Exception as e:
         print(f"[E2E] WARNING: Consul 不可达 ({e}) — 看板将使用 mock 模式")
+    try:
+        seed_dashboard_workflows()
+    except Exception as e:
+        print(f"[E2E] WARNING: dashboard fixtures seed failed ({e})")
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    for req_id in SEEDED_DASHBOARD_IDS:
+        cleanup_test_workflow(req_id)
 
 
 def pytest_configure(config: pytest.Config) -> None:

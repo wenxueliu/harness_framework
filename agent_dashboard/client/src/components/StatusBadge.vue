@@ -17,7 +17,7 @@ defineProps<{ status: TaskStatus; class?: string }>()
   >
     <span
       :class="cn(
-        'w-1.5 h-1.5 rounded-full',
+        'status-dot w-1.5 h-1.5 rounded-full',
         STATUS_CONFIG[status].dotColor,
         status === 'IN_PROGRESS' && 'animate-pulse',
       )"

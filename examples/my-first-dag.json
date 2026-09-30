@@ -1,0 +1,20 @@
+{
+  "design": {
+    "type": "design",
+    "depends_on": [],                                                                                                                                                                                                 "acp": {"agent": "claude"},
+    "description": "设计 REST API 端点：GET /api/tasks、POST /api/tasks"
+  },
+  "backend": {
+    "type": "backend",
+    "depends_on": ["design"],
+    "acp": {"agent": "codex"},
+    "description": "实现 /api/tasks 端点的 CRUD 逻辑"
+  },
+  "test": {
+    "type": "test",
+    "depends_on": ["backend"],
+    "acp": {"agent": "codex"},
+    "description": "对 /api/tasks 做集成测试：CRUD 四条路径 + 错误场景"
+  }
+}
+

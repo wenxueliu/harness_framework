@@ -1,6 +1,8 @@
 # 配置参考
 
 > **初次接触？** 先看 [quickstart.md](quickstart.md)。本文是 CLI 参数和环境变量的速查参考。
+>
+> 当前实现以 [ACP 执行设计](acp-execution.md) 和 [实现设计](../DESIGN.md) 为准。本文中旧 Worker、`agent_name`、`--no-acp-dispatcher` 和 stage-bridge 相关段落仅用于识别待清理配置，不应在新作业流中使用。
 
 ## 启动参数
 
@@ -38,7 +40,7 @@
 | `--no-aggregator` | 禁用 Aggregator |
 | `--no-watchdog` | 禁用 Watchdog |
 | `--no-webapi` | 禁用 WebAPI |
-| `--no-acp-dispatcher` | 禁用默认 ACP 主动分派，使用旧 Worker 兼容模式 |
+| `--no-acp-dispatcher` | 已废弃；新实现不提供旧 Worker / stage-bridge 回退路径 |
 
 ### ACP 执行
 
@@ -74,7 +76,7 @@
 | 字段 | 用途 | 关键约束 |
 |------|------|----------|
 | `acp` | 指定 `claude`/`codex`、cwd、权限和 session 策略 | 可选；缺省按任务类型路由 |
-| `agent_name` | 旧 Worker 的逻辑 Agent Name | 仅兼容模式使用，不再必填 |
+| `agent_name` | 历史逻辑 Agent 名称 | 新模型不作为调度键；使用 capability requirements + Agent Runtime |
 | `service_name` | 标记业务或代码仓库归属 | 可选；不参与 Agent 匹配 |
 | `agent_contract` | 输入、输出、职责、排除项、权限、上下文预算 | 列表字段必须为非空字符串列表 |
 | `completion_contract` | required artifacts 与 verifier gates | 未满足时拒绝 `DONE` |
@@ -99,7 +101,7 @@
 默认 `design/review → claude`，其他可执行类型 → `codex`。任务用
 `"acp":{"agent":"claude"}` 覆盖；完整说明见 [ACP Agent 执行](acp-execution.md)。
 
-### 旧 Worker 名称匹配（兼容模式）
+### 历史 Worker 名称匹配（不再用于新模型）
 
 `agent_name` 是调度键，`service_name` 不是。Agent 注册时同时提供：
 

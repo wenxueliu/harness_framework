@@ -49,6 +49,7 @@ class TestDashboardScreenshots:
         wait_for_network_idle(page)
 
         header = page.locator("header")
+        header.wait_for(timeout=10000)
         expect(header).to_have_screenshot(
             path="tests/e2e/baselines/screenshots/dashboard_header.png",
             max_diff_pixel_ratio=MAX_DIFF_PIXEL_RATIO,

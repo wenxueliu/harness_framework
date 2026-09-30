@@ -4,6 +4,8 @@
 >
 > 存储后端与 Agent 通信协议彼此独立：三种模式默认都由 ACPDispatcher 通过 stdio ACP 创建 Claude/Codex Agent。下文的注册、心跳和主动抢占命令只适用于 `--no-acp-dispatcher` 兼容模式。
 
+> **当前基线提示**：本文保留的是旧存储/Worker 运行说明。当前目标架构不保留 stage-bridge 或 `--no-acp-dispatcher` 回退路径，实施以 [系统架构](architecture.md) 和 [ACP 执行设计](acp-execution.md) 为准。
+
 ## 目录
 
 - [一、架构总览](#一架构总览)

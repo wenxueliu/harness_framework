@@ -9,7 +9,8 @@ PID_DIR="$LOG_DIR/pids"
 echo "停止所有服务..."
 
 # 读取 PID 文件并停止
-for pid_file in "$PID_DIR"/*.pid 2>/dev/null; do
+shopt -s nullglob
+for pid_file in "$PID_DIR"/*.pid; do
     if [[ -f "$pid_file" ]]; then
         name=$(basename "$pid_file" .pid)
         pid=$(cat "$pid_file")

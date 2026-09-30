@@ -5,6 +5,8 @@
 > 产品与交互基线：[`dashboard-ui-design.md`](dashboard-ui-design.md)
 > 领域语言：[`../CONTEXT.md`](../CONTEXT.md)
 
+> **当前基线提示**：本文保留早期 Dashboard 的拆分计划，部分 API 仍使用旧 Workflow 语义。新实施应先遵循 [实现设计](../DESIGN.md)、[系统架构](architecture.md) 和 [用户旅程图](user-journey-map.md)，本文只作为 UI 组件和迁移背景参考。
+
 ## 1. 目的与实施边界
 
 本文把已经确认的 Dashboard 产品设计落实为后端模型、状态机、API、权限、前端状态管理、迁移步骤和验收门槛。实现者可以按本文拆分 Issue 和提交，不需要再次决定 Project Group、Run Workspace、Attempt Workspace Binding 的基本语义。

@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
-import { Activity, GitBranch, ListTree, Settings } from 'lucide-vue-next'
+import { Activity, GitBranch, ListTree, Settings, Sun, Moon, Monitor, Layers, PlayCircle } from 'lucide-vue-next'
+import { applyTheme, readThemeMode, type ThemeMode } from '@/lib/theme'
 
 const props = defineProps<{
   groupId?: string
@@ -11,6 +12,15 @@ const props = defineProps<{
 }>()
 
 const route = useRoute()
+const themeMode = ref<ThemeMode>('system')
+onMounted(() => {
+  themeMode.value = readThemeMode()
+  applyTheme(themeMode.value)
+})
+function changeTheme(event: Event) {
+  themeMode.value = (event.target as HTMLSelectElement).value as ThemeMode
+  applyTheme(themeMode.value)
+}
 const workflowBase = computed(() => props.groupId && props.workflowId
   ? `/groups/${encodeURIComponent(props.groupId)}/workflows/${encodeURIComponent(props.workflowId)}`
   : null)
@@ -20,6 +30,8 @@ const navItems = computed(() => [
     { label: 'DAG', to: workflowBase.value, icon: GitBranch, active: route.path === workflowBase.value },
     { label: '执行日志', to: `${workflowBase.value}/logs`, icon: ListTree, active: route.path.endsWith('/logs') },
   ] : []),
+  { label: '模板', to: '/templates', icon: Layers, active: route.path.startsWith('/templates') },
+  { label: '实例', to: '/instances', icon: PlayCircle, active: route.path.startsWith('/instances') },
   { label: '全局配置', to: '/settings', icon: Settings, active: route.path === '/settings' },
 ])
 </script>
@@ -53,6 +65,14 @@ const navItems = computed(() => [
           <span class="hidden sm:inline">{{ item.label }}</span>
         </RouterLink>
       </nav>
+      <label class="flex items-center gap-1.5 text-muted-foreground" title="界面主题">
+        <Sun v-if="themeMode === 'light'" :size="13" />
+        <Moon v-else-if="themeMode === 'dark'" :size="13" />
+        <Monitor v-else :size="13" />
+        <select aria-label="主题" class="max-w-20 rounded border border-border bg-background px-1.5 py-1 text-[11px]" :value="themeMode" @change="changeTheme">
+          <option value="system">系统</option><option value="light">Light</option><option value="dark">Dark</option>
+        </select>
+      </label>
       <slot name="actions" />
     </header>
 

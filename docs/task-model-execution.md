@@ -1,5 +1,7 @@
 # 按任务选择模型与会话
 
+> **当前基线提示**：本文描述的是旧 Worker 的 profile/model 语义。新模型请使用 Task Capability Requirements、Execution Profile、Agent Runtime 和 Execution Manifest，详见 [实现设计](../DESIGN.md)。
+
 Worker 可以在任务分派时选择执行 profile、模型和 provider 原生会话策略。
 任务未配置 `execution` 时，Worker 默认延续唯一一个带原生会话的直接上游任务，
 并继承它的 profile/model。没有可续接上游（例如根任务）时使用全局 `--executor`；

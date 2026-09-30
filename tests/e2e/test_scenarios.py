@@ -141,7 +141,12 @@ class TestFromYAML:
         # 应用 viewport 配置
         if "viewport" in scenario:
             vp = scenario["viewport"]
-            page.set_viewport_size({"width": vp["width"], height: vp["height"]})
+            # WebBridge's CDP viewport command needs an attached tab. Open the
+            # target once before applying metrics when the scenario starts
+            # with a viewport declaration.
+            if not page.url:
+                page.goto(dashboard_url)
+            page.set_viewport_size({"width": vp["width"], "height": vp["height"]})
 
         # 执行步骤
         for i, step in enumerate(scenario.get("steps", [])):

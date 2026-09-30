@@ -181,12 +181,10 @@ class WorkflowSkills:
 
     def reject_proposal(self, req_id: str) -> dict:
         """人工拒绝 Proposal，恢复到 CONFIRMED 状态"""
-        status, idx = self.consul.kv_get(f"workflows/{req_id}/status")
-        if status != "Proposal":
-            return {"success": False, "reason": f"not in proposal state: {status}"}
-
-        self.consul.kv_put(f"workflows/{req_id}/status", "CONFIRMED", cas=idx)
-        return {"success": True, "status": "CONFIRMED"}
+        proposals = self.list_pending_proposals(req_id)
+        return self.confirm_proposal(
+            req_id, rejected_tasks=[item["task_name"] for item in proposals]
+        )
 
 
 def _now_iso() -> str:

@@ -2,6 +2,8 @@
 
 > **初次接触？** 先看 [quickstart.md](quickstart.md) 和 [getting-started.md](getting-started.md)。本文是核心概念的完整说明。
 
+> **当前基线提示**：本文包含旧 Workflow/Worker 概念。当前产品以 Template/Version/Instance/Run/Attempt 为准，执行以 [系统架构](architecture.md) 和 [ACP 执行设计](acp-execution.md) 为准。
+
 ## 整体架构
 
 ```

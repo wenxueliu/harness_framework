@@ -1,13 +1,14 @@
 # Harness Dashboard 页面设计
 
-> 状态：已澄清的最终设计方案
-> 更新日期：2026-09-13
+> 版本：v1.1
+> 状态：当前产品 UI 设计基线
+> 更新日期：2026-09-21
 > 参考：`ui/stitch_dag/dag`、`ui/stitch_dag/ai`、`ui/stitch_dag/kinetic_obsidian/DESIGN.md`
 > 技术实施计划：[`dashboard-implementation-plan.md`](dashboard-implementation-plan.md)
 
 ## 1. 目标与范围
 
-Dashboard 将从单页运行看板升级为面向多 Agent 工作流的高密度操作台，覆盖：
+Dashboard 将从单页运行看板升级为面向作业流模板、作业流实例和 ACP Agent 执行的高密度操作台，覆盖：
 
 1. 用项目组组织工作流、成员和默认工作区；
 2. 在可交互 DAG 画布中观察和控制工作流；
@@ -18,7 +19,7 @@ Dashboard 将从单页运行看板升级为面向多 Agent 工作流的高密度
 
 本文同时描述目标架构和当前里程碑。目标部署环境是内网服务器上的可信团队；本地模式是简化部署，不以多租户 SaaS 为首期目标。尚无后端能力的内容必须显示为不可用状态；样例数据只能在显式 Demo 模式出现，并持续标记为模拟数据。
 
-界面统一使用“工作流 / 任务节点”，API 和诊断信息使用 `Workflow / Task`。Pipeline 不是新的领域对象，“节点”只表示 Task 在 DAG 中的视觉形态。
+产品界面统一使用“作业流模板 / 模板版本 / 作业流实例 / 任务节点”，API 和诊断信息使用 `WorkflowTemplate / TemplateVersion / WorkflowInstance / Task`。Pipeline 不是新的领域对象，“节点”只表示 Task 在 DAG 中的视觉形态。
 
 ### 1.1 目标架构与当前里程碑
 
@@ -56,7 +57,7 @@ Workflow、Task、Attempt、Session 和文件状态均由 Harness WebAPI 提供�
 
 ### Project Group
 
-面向人的所有权与授权边界，包含 Workflow、成员、Project Workspace 和默认策略。项目组可以提供默认 Workspace、Provider 策略和权限，但不参与 Task 的 Agent 路由。
+面向人的所有权与授权边界，包含 Workflow Template、Workflow Instance、成员、Project Workspace 和默认执行策略。项目组可以提供默认 Workspace、Execution Profile 和权限，但不参与 Task 的 Agent 路由。
 
 建议字段：
 
@@ -70,7 +71,7 @@ Workflow、Task、Attempt、Session 和文件状态均由 Harness WebAPI 提供�
 | `status` | active / archived |
 | `created_at` / `updated_at` | 审计时间 |
 
-一个 Workflow 有且只有一个主 Project Group，并可被其他项目组引用。权限、Workspace 和默认策略始终取自主项目组；跨组引用默认只读，主项目组可以显式授予运行或人工介入能力。
+一个 Workflow Template 有且只有一个主 Project Group。Workflow Instance 继承该项目组且不能跨组移动；权限、Workspace 和默认策略始终取自主项目组，不在当前版本引入跨组模板引用。
 
 项目组使用 Owner、Maintainer、Developer、Viewer 四级角色：
 
@@ -81,7 +82,7 @@ Workflow、Task、Attempt、Session 和文件状态均由 Harness WebAPI 提供�
 | Developer | 草稿编辑、代码编辑和 queue 消息 |
 | Viewer | 只读查看 |
 
-权限检查按 capability 实现，项目组可加严但不能绕过平台强制规则。旧 Workflow 放入虚拟“未分组”；它不是可配置项目组。项目组只允许归档：归档后禁止新建 Workflow 和 Run，已有 Run 可以完成，历史保持只读，不级联删除任何执行记录。
+权限检查按 capability 实现，项目组可加严但不能绕过平台强制规则。归档项目组后禁止新建 Template、Version 和 Instance，已有 Run 可以完成，历史保持只读，不级联删除任何执行记录。
 
 ### Project Workspace
 
@@ -116,7 +117,7 @@ Project Workspace
 
 隔离任务产出 commit 或 Patch，由显式 Merge Task 合并到 Run Workspace，不能在 Task 变为 DONE 时隐式合并。
 
-旧 `acp.cwd` 继续兼容读取，但新 UI 使用 `workspace_id`。生产模式中的绝对路径必须匹配已登记 Workspace；`--acp-workspace-root` 只作为兼容候选和本地模式默认值。生产任务无法解析 Workspace 时进入 `WAITING_FOR_HUMAN`，而不是以无效目录直接启动。`service_name` 始终只是业务标签，不参与目录解析。
+新 UI 使用 `workspace_id`。生产模式中的绝对路径必须匹配已登记 Workspace；`--acp-workspace-root` 只作为本地模式默认值。生产任务无法解析 Workspace 时进入 `WAITING_FOR_CAPABILITY`，而不是以无效目录直接启动。`service_name` 始终只是业务标签，不参与目录解析。
 
 显式 Demo/local 模式可以按 Run 在 `/tmp` 创建带 Run ID 的临时目录，页面必须持续显示“临时演示工作区”。
 
@@ -124,36 +125,60 @@ Project Workspace
 
 通过 Attempt Workspace Binding 在对应 Workspace 中寻址的文件。浏览器永远不提交服务器绝对路径作为写入目标。
 
+### Execution Capability
+
+实例和节点详情页必须把“为什么能执行/为什么不能执行”作为一等信息展示：
+
+| UI 区域 | 展示内容 | 可执行操作 |
+|---|---|---|
+| Capability Summary | Preflight 状态、阻塞数量、最近检查时间 | 重新预检、查看修复建议 |
+| Agent Runtime | Runtime、Adapter、版本、ACP 能力协商结果 | 仅在权限允许时切换 Profile |
+| Skill Bundles | 名称、来源、版本、校验摘要、注入方式 | 查看来源和不兼容原因 |
+| MCP Grants | Server、工具暴露范围、调用权限、健康状态 | 查看授权、跳转治理入口 |
+| Execution Manifest | Attempt 实际使用的完整快照 | 只读查看、复制摘要、审计跳转 |
+
+缺失能力显示为 `WAITING_FOR_CAPABILITY` 或 `UNROUTABLE`，不能显示成普通 `PENDING`。Manifest 生成后只读，重试/重新执行必须显示新旧 Manifest 差异。
+
 ## 4. 总体信息架构
 
 ```text
 Global Header
-├── DAG 流程编排
-│   ├── Project Group Sidebar
-│   ├── Workflow / Task Panel
-│   └── DAG Workspace
+├── 作业流模板
+│   ├── Template List
+│   ├── Template Detail（只读 DAG）
+│   └── Template Editor（JSON + DAG）
+├── 作业流实例
+│   ├── Instance List
+│   ├── Instance Create
+│   └── Instance Detail（运行 DAG）
 ├── 节点协作详情
 │   ├── Project Group Sidebar
 │   ├── Agent Collaboration
 │   ├── Workspace File Tree
 │   └── Code Editor / Runtime Panel
 ├── 执行日志
-│   ├── Project Group Sidebar
-│   └── Run / Attempt / Session Event Explorer
+│   └── Instance / Run / Attempt / Session Event Explorer
 └── 全局配置
-    └── Provider、工作区、权限、预算和运行策略
+    └── Agent Runtime、Skill、MCP、Workspace、权限、预算和运行策略
 ```
 
 主路由建议：
 
 | 路由 | 页面 |
 |---|---|
-| `/groups/:groupId/workflows/:workflowId` | DAG 流程编排 |
-| `/groups/:groupId/workflows/:workflowId/tasks/:taskId` | 节点协作详情 |
-| `/groups/:groupId/workflows/:workflowId/logs` | 执行日志 |
+| `/templates` | 模板列表 |
+| `/templates/:templateId` | 模板详情与只读 DAG |
+| `/templates/:templateId/edit` | 模板草稿编辑、JSON 和 DAG 预览 |
+| `/templates/:templateId/versions/:versionId` | 指定版本详情 |
+| `/templates/:templateId/instances/new` | 实例创建 |
+| `/instances` | 实例列表 |
+| `/instances/:instanceId` | 实例详情与运行 DAG |
+| `/instances/:instanceId/tasks/:taskId` | 节点详情/协作工作台 |
+| `/instances/:instanceId/attempts/:attemptId/manifest` | Execution Manifest |
+| `/instances/:instanceId/logs` | 执行日志 |
 | `/settings` | 全局配置 |
 
-URL 保存当前项目组、Workflow、Task、Attempt 和打开文件，刷新后可以恢复上下文。
+URL 保存当前项目组、Template/Version、Instance、Task、Attempt 和打开文件，刷新后可以恢复上下文。节点详情记录来源路由，返回时优先回到来源页；无来源时回实例详情。
 
 ## 5. 全局顶栏
 
@@ -162,10 +187,10 @@ URL 保存当前项目组、Workflow、Task、Attempt 和打开文件，刷新�
 从左到右：
 
 1. Harness 品牌与当前部署环境；
-2. 面包屑：项目组 / Workflow / Task；
-3. 工作流状态和完成进度；
-4. 主导航：DAG、节点协作、执行日志、全局配置；
-5. Harness API 和 Provider 可用状态；
+2. 面包屑：项目组 / 模板 / 版本 / 实例 / Task；
+3. 当前对象状态和完成进度；
+4. 主导航：模板、实例、执行日志、全局配置；
+5. Harness API、Execution Gateway、Agent Runtime 和能力预检状态；
 6. 刷新、通知和用户入口；
 7. 当前上下文允许的主操作，如运行、暂停、恢复、中止或重试。
 
@@ -180,36 +205,86 @@ URL 保存当前项目组、Workflow、Task、Attempt 和打开文件，刷新�
 - 项目组搜索和新增入口；
 - 项目组列表、Workflow 数量和活跃状态；
 - 当前项目组摘要；
-- 当前项目组下的 Workflow 列表；
-- “未分组”和“已归档”固定入口；
+- 当前项目组下的模板和实例入口；
+- “已归档”固定入口；
 - 侧栏底部显示默认工作区及连接状态。
 
 ### 交互
 
-- 切换项目组后保留用户最近打开的 Workflow；
+- 切换项目组后保留用户最近打开的模板或实例；
 - 支持折叠到 48px 图标栏；
 - 创建、重命名、归档项目组使用弹窗或右侧检查器；
 - 无管理权限时隐藏写操作，但保留浏览能力；
-- 跨组引用显示来源项目组和当前 capability，不复制 Workflow；
-- 项目组不可作为 Agent 调度键，UI 中不得出现“项目组 Agent”概念。
+- 项目组不可作为 Agent 调度键，UI 中不得出现“项目组 Agent”概念；
+- Execution Profile、Skill 和 MCP 只显示项目组允许范围，不显示未授权资源。
 
-## 7. DAG 流程编排页
+## 7. 模板与实例页面
 
-### 7.1 Workflow / Task 面板
+### 7.1 模板列表
+
+以 Project Group 为上下文展示模板名称、描述、草稿修订、最新发布版本、实例数量、更新时间和状态。行级操作：查看详情、编辑草稿、创建实例、归档；只有从未绑定实例的模板显示删除。
+
+### 7.2 模板详情
+
+模板详情是只读页面，首屏包含：
+
+- 名称、描述、Project Group、模板状态和最近更新时间；
+- 最新发布版本、历史版本、版本可用性和发布说明；
+- 只读 DAG、节点/边数量、根叶节点和校验摘要；
+- 活跃实例、历史实例和“创建实例”入口；
+- 根据权限显示编辑草稿、发布、归档和删除。
+
+点击节点打开节点说明抽屉或节点详情，但不能在详情页直接修改已发布版本。返回入口回到模板列表或来源页面。
+
+### 7.3 模板编辑
+
+采用左右分栏：左侧 JSON 编辑器，右侧实时 DAG；顶部显示“草稿 / 最近保存 / revision / 校验状态”。
+
+- JSON 编辑器提供格式化、Schema 提示、错误行定位和节点定位；
+- DAG 只反映当前草稿，节点点击可以回到 JSON 对应位置；
+- 底部操作固定为“保存草稿”和“发布”；
+- 发布弹窗明确提供“保存为草稿、仅发布、发布并创建实例、发布并执行”；
+- 已发布版本只读，编辑动作必须创建或更新草稿。
+
+### 7.4 实例创建
+
+实例创建页先展示只读的模板、版本和 DAG 摘要，再填写本次实例配置：输入参数、Git 分支/Commit、Workspace、Execution Profile 以及稍后启动/立即执行。
+
+提交前展示参数校验、Git 解析、Workspace 可用性和预期能力范围。实例创建成功后进入实例详情；如果选择立即执行，先展示 Capability Preflight，不直接跳过预检。
+
+### 7.5 实例详情
+
+实例详情顶部展示来源模板/版本、实例状态、参数摘要、Git commit、Workspace、Run 和主要控制动作；中部展示运行 DAG；右侧或底部展示 Preflight、Manifest、日志、证据和 ChangeSet。
+
+实例详情的 DAG 是模板 DAG 的运行投影，节点颜色、文字和图标由 Task/Attempt 状态驱动。实例详情支持“修改并重新执行”，但不允许原地覆盖模板版本或历史实例。
+
+## 8. DAG 流程编排页
+
+页面必须根据上下文明确区分两类 DAG：
+
+| 页面 | DAG 来源 | 是否可编辑 | 状态 |
+|---|---|---|---|
+| 模板详情 | 已发布 Template Version | 否 | 版本校验结果 |
+| 模板编辑 | Template Draft | 是 JSON；DAG 为实时预览 | 草稿校验结果 |
+| 实例详情 | Instance 绑定的 Version | 否 | Task/Attempt 运行状态 |
+
+模板详情和实例详情可以共享画布组件，但不能共享状态 store。实例 DAG 的节点状态、日志和控制操作不能回写模板定义。
+
+### 8.1 Template / Instance / Task 面板
 
 位于项目组侧栏和画布之间，宽度 340–380px。
 
 包含：
 
-- Workflow 标题、版本和 Run 状态；
+- Template/Version 或 Instance/Run 标题和状态；
 - 新建任务入口；
 - Task 搜索；
 - 全部、运行中、完成、失败、等待人工和跳过筛选；
 - Task 紧凑列表；
-- 每个 Task 显示状态、类型、Agent、Attempt、时长和重试次数；
+- 每个 Task 显示状态、类型、Agent Runtime、Attempt、时长和重试次数；
 - 面板可折叠，为画布释放空间。
 
-### 7.2 DAG 画布
+### 8.2 DAG 画布
 
 使用深蓝黑底和 24px 点阵网格，填满剩余空间。
 
@@ -228,7 +303,7 @@ URL 保存当前项目组、Workflow、Task、Attempt 和打开文件，刷新�
 
 交互层使用 `@vue-flow/core`，节点外观保持自定义。首期以 100 个 Task 下的平移、缩放、筛选和选择保持流畅为目标；超过阈值时启用节点简化和局部渲染，不承诺首期支持 500 个以上节点全量展开。
 
-### 7.3 DAG 节点卡
+### 8.3 DAG 节点卡
 
 建议尺寸约 240 × 132px，展示：
 
@@ -248,19 +323,22 @@ URL 保存当前项目组、Workflow、Task、Attempt 和打开文件，刷新�
 | `DONE` | 绿色实线 |
 | `PENDING` / `BLOCKED` | 琥珀或灰色 |
 | `WAITING_FOR_HUMAN` | 紫色脉冲 |
+| `WAITING_FOR_CAPABILITY` / `UNROUTABLE` | 橙色告警，显示阻塞能力和修复入口 |
 | `FAILED` | 玫红边框和错误摘要 |
 | `SKIPPED_UPSTREAM_FAILED` | 灰红虚线并标明上游失败 |
 | `ABORTED` | 灰色终止标记 |
 
 前端使用后端 phase 和原始 Task 状态，不再把未知状态降级为 `PENDING`。
 
-## 8. 节点协作详情页
+## 9. 节点协作详情页
 
 参考 `ui/stitch_dag/ai`，采用“对话 + 文件树 + 编辑器”的三栏主工作区。
 
-页面顶部显示：返回 DAG、Workflow/Task 面包屑、Task 状态、Provider、Worker、Attempt、执行时长和操作按钮。
+页面顶部显示：返回来源页面、Template/Version/Instance/Task 面包屑、Task 状态、Agent Runtime、Attempt、执行时长和操作按钮。返回按钮必须始终可见。
 
-### 8.1 Agent Collaboration
+节点详情的首屏增加 Capability 状态条：展示 Preflight、Execution Manifest、Skill Bundle 和 MCP Grant 的摘要；阻塞时提供结构化原因和修复入口。
+
+### 9.1 Agent Collaboration
 
 建议占可用宽度的 36%–42%。
 
@@ -273,7 +351,7 @@ URL 保存当前项目组、Workflow、Task、Attempt 和打开文件，刷新�
 - interrupt、恢复终态 Task 时明确展示会创建新 Turn 或 Attempt；
 - Agent 正在输出时提供跟随、暂停滚动和未读提示。
 
-### 8.2 Workspace File Tree
+### 9.2 Workspace File Tree
 
 建议占可用宽度的 20%–25%。
 
@@ -291,7 +369,7 @@ URL 保存当前项目组、Workflow、Task、Attempt 和打开文件，刷新�
 
 文件内容按类型和大小分级：UTF-8 文本不超过 2 MB 时可编辑，2–10 MB 时只读，超过 10 MB 或属于二进制时只展示元数据。限制允许管理员加严。
 
-### 8.3 Code Editor
+### 9.3 Code Editor
 
 建议使用 Monaco Editor，约占 35%–44%，窄屏时成为独立标签页。
 
@@ -323,7 +401,7 @@ Monaco Editor 仅在第一次打开代码文件时动态加载，不进入 DAG �
 
 客户端草稿按 user/workspace/path 隔离，只在当前浏览器会话保存；退出登录、Workspace 归档或策略要求时立即清除。项目组可以完全禁用客户端代码草稿。
 
-### 8.4 Runtime Panel
+### 9.4 Runtime Panel
 
 编辑器下方提供可折叠面板：
 
@@ -339,18 +417,18 @@ Monaco Editor 仅在第一次打开代码文件时动态加载，不进入 DAG �
 
 格式化、测试和验证通过服务端登记的受控 Tool Action 执行。每个 Action 声明固定 ID、参数 schema、cwd、超时和权限，不接收浏览器提交的任意命令字符串。
 
-## 9. 执行日志页
+## 10. 执行日志页
 
-提供 Workflow、Run、Task、Attempt、Session 五级过滤：
+提供 Template/Version、Instance、Run、Task、Attempt、Session 六级过滤：
 
 - 时间线和流式日志两种视图；
-- 按事件类型、状态、Provider 和 actor 筛选；
+- 按事件类型、状态、Agent Runtime、能力状态和 actor 筛选；
 - 错误事件可跳转到对应 Task 和文件；
 - 展示人工消息、文件写入和危险控制操作；
 - 支持导出 Run Session；
 - 使用 SSE 推送运行、Session 和 Workspace 事件，写操作继续使用 HTTP；客户端通过 `Last-Event-ID` 断线续传，游标过期后重新拉取当前快照。
 
-## 10. 后端 API 设计
+## 11. 后端 API 设计
 
 浏览器只能发送 `workspace_id + relative_path`，服务端负责路径规范化和授权。
 
@@ -364,13 +442,18 @@ Project Group 首期沿用现有 `KVStore` Protocol，保持 Consul、Local 和 
 | `POST` | `/api/project-groups` | 创建项目组 |
 | `PATCH` | `/api/project-groups/:id` | 更新或归档项目组 |
 | `GET` | `/api/project-groups/:id/members` | 成员与角色 |
-| `GET` | `/api/project-groups/:id/workflows` | 项目组下的 Workflow |
-| `POST` | `/api/project-groups/:id/workflow-references` | 创建跨组引用 |
+| `GET` | `/api/project-groups/:id/templates` | 项目组下的模板 |
+| `GET` | `/api/project-groups/:id/instances` | 项目组下的实例 |
 | `POST` | `/api/workspaces` | 登记本地目录或 Git URL |
-| `POST` | `/api/workflow/:id/runs` | 选择 Workspace 和 Git 基线并创建 Run |
-| `GET` | `/api/workflow/:id/runs/:run/workspace` | Run Workspace 信息 |
-| `GET` | `/api/workflow/:id/task/:task/attempts` | Task Attempt 列表 |
-| `GET` | `/api/workflow/:id/task/:task/attempts/:attempt/workspace-binding` | Attempt Workspace Binding |
+| `POST` | `/api/instances` | 选择版本、参数、Workspace 并创建实例 |
+| `GET` | `/api/instances/:id/runs/:run/workspace` | Run Workspace 信息 |
+| `GET` | `/api/instances/:id/tasks/:task/attempts` | Task Attempt 列表 |
+| `GET` | `/api/attempts/:attempt/workspace-binding` | Attempt Workspace Binding |
+| `GET` | `/api/attempts/:attempt/execution-manifest` | Execution Manifest |
+| `POST` | `/api/instances/:id/preflight` | 能力预检 |
+| `GET` | `/api/execution-profiles` | 可用 Execution Profile |
+| `GET` | `/api/skill-bundles` | 可用 Skill Bundle |
+| `GET` | `/api/mcp-servers` | 已注册 MCP Server 和授权摘要 |
 | `GET` | `/api/workspaces/:id/tree?path=` | 获取目录树 |
 | `GET` | `/api/workspaces/:id/file?path=` | 读取文件及版本摘要 |
 | `PUT` | `/api/workspaces/:id/file` | 带版本条件保存文件 |
@@ -413,7 +496,7 @@ Project Group 首期沿用现有 `KVStore` Protocol，保持 Consul、Local 和 
 
 正常模式 API 不可用时，页面保留最后一次明确标记的只读快照，并显示离线状态和重试入口。不得静默切换 Mock；Mock 只由显式 Demo 模式启用。
 
-## 11. 安全边界
+## 12. 安全边界
 
 - Workspace 必须登记在允许根目录内；
 - 规范化路径后再次检查边界，禁止 `..` 和符号链接逃逸；
@@ -431,9 +514,9 @@ Project Group 首期沿用现有 `KVStore` Protocol，保持 Consul、Local 和 
 
 审计元数据长期保留，包括身份、动作、时间、目标、摘要和结果；可能包含源代码或秘密的文件正文、Patch 和 Diff 按项目组策略加密、过期和清理。Workspace 清理进入 24 小时 Trash，但恢复能力不代替 Git、Artifact 或 Patch。
 
-## 12. 响应式布局
+## 13. 响应式布局
 
-首发严格对齐参考 `screen.png` 的深色 Obsidian 操作台，但所有颜色使用语义 Token，为后续浅色主题保留能力。核心路径以 WCAG 2.1 AA 为目标，状态同时使用文字、图标和颜色。
+首发提供深色 Obsidian、浅色和跟随系统三种主题；所有颜色使用语义 Token，核心路径以 WCAG 2.1 AA 为目标，状态同时使用文字、图标和颜色。主题选择持久化，不影响运行上下文。
 
 ### ≥ 1440px
 
@@ -458,13 +541,13 @@ Project Group 首期沿用现有 `KVStore` Protocol，保持 Consul、Local 和 
 
 键盘操作至少覆盖项目组和任务导航、DAG 节点选择、打开文件、保存、发送消息及确认弹窗；画布操作必须提供非指针替代方式。
 
-## 13. 前端组件规划
+## 14. 前端组件规划
 
 ```text
 AppShell
 ├── GlobalHeader
 ├── ProjectGroupSidebar
-├── WorkflowTaskPanel
+├── TemplateInstancePanel
 ├── DagWorkspace
 │   ├── DagCanvas
 │   ├── DagNodeCard
@@ -472,32 +555,40 @@ AppShell
 │   └── DagMinimap
 ├── NodeWorkbench
 │   ├── AgentCollaborationPanel
+│   ├── CapabilitySummaryPanel
+│   ├── ExecutionManifestPanel
 │   ├── WorkspaceFileTree
 │   ├── CodeEditorPanel
 │   └── RuntimePanel
-└── ExecutionLogExplorer
+├── ExecutionLogExplorer
+└── TemplateEditor
+    ├── JsonDefinitionEditor
+    └── DraftDagPreview
 ```
 
-现有 `ControlDialog`、`ExecutionTimeline`、Human Message API 和 Session API 应复用并重构样式。DAG 使用 `@vue-flow/core`，节点外观保持自定义；Monaco Editor 动态加载，避免拖慢 DAG 首屏。WorkflowBuilder 保留路由并统一 App Shell，但在规划与发布 API 完成前持续标记为原型。
+现有 `ControlDialog`、`ExecutionTimeline`、Human Message API 和 Session API 应复用并重构样式。DAG 使用 `@vue-flow/core`，节点外观保持自定义；Monaco Editor 动态加载，避免拖慢 DAG 首屏。模板编辑器使用服务端 draft/validation API；没有后端发布能力时显示为不可用，不将浏览器本地 JSON 伪装成已发布版本。
 
-## 14. 分阶段实施
+## 15. 分阶段实施
 
-### Phase 1：运行看板重构
+### Phase 1：模板/实例页面与运行看板
 
 - 深色语义主题、顶栏、项目组侧栏静态结构；
-- Workflow/Task 导航；
+- Template/Version/Instance/Task 导航；
+- 模板列表、模板详情只读 DAG、模板编辑 JSON+DAG 预览；
+- 实例创建、实例详情和节点来源返回；
 - 基于 Vue Flow 的 DAG 画布、状态节点和控制操作；
 - 修复完整状态映射和错误展示；
 - 保持现有 WebAPI 可运行；
 - 未实现能力由 `/api/capabilities` 控制，显示清晰的禁用状态。
 
-### Phase 2：项目组
+### Phase 2：能力状态和项目组
 
 - Project Group 数据模型和 CRUD；
-- Workflow 主归属、跨组引用、未分组和归档；
+- Workflow Template 主归属和归档；
 - OIDC/可信代理身份和固定角色 capability；
 - Project Workspace 登记；
-- 项目组权限与审计。
+- 项目组权限与审计；
+- Execution Profile、Capability Preflight、Skill/MCP 摘要和 Manifest 只读展示。
 
 ### Phase 3：Run Workspace 与节点协作工作台
 
@@ -534,10 +625,10 @@ AppShell
 - 超过 100 个 Task 的 DAG 简化和局部渲染；
 - 无障碍和端到端测试。
 
-## 15. 验收标准
+## 16. 验收标准
 
-1. 用户能按主项目组或跨组引用找到 Workflow，并能识别未分组工作流；
-2. DAG 页面在 1440px 宽度下同时展示项目组、Task 列表和有效画布；
+1. 用户能按主项目组找到模板和实例，并能区分草稿、版本和实例；
+2. 模板详情、模板编辑和实例详情能分别展示只读 DAG、JSON+DAG 预览和运行 DAG；
 3. 所有后端 Task 状态在页面中无损显示；
 4. 点击任意 DAG 节点可进入稳定 URL 的节点工作台；
 5. 用户能查看完整 Attempt/Session 历史并发送 queue/interrupt 消息；
@@ -551,10 +642,11 @@ AppShell
 13. SSE 断线后可以续传，游标过期时能从一致快照恢复；
 14. API 不可用时明确展示离线状态，Demo 数据始终标记为模拟；
 15. 100 个 Task 的 DAG 主要交互保持流畅；
-16. 核心路径可通过键盘完成并达到 WCAG 2.1 AA 目标；
-17. `npm run check`、生产构建、组件测试和关键 E2E 全部通过。
+16. 节点详情显示 Capability Preflight 和 Execution Manifest，缺失能力不会被显示为普通 Pending；
+17. Light/Dark/System 主题刷新后保持，核心路径可通过键盘完成并达到 WCAG 2.1 AA 目标；
+18. `npm run check`、生产构建、组件测试和关键 E2E 全部通过。
 
-## 16. 明确非目标
+## 17. 明确非目标
 
 - Dashboard 不取代完整桌面 IDE；
 - 首期不实现任意终端命令执行，只提供受控 Tool Action；
@@ -565,4 +657,5 @@ AppShell
 - 文件树不是 Artifact 存储的替代品；
 - 代码编辑器中的未保存内容不会自动作为 Agent 上下文；
 - 回收站不是 Git、Artifact 或 Patch 的替代品；
-- UI 改版不改变现有 Workflow、Task、Attempt 和 Session 的状态所有权。
+- UI 改版不改变 Template、Version、Instance、Task、Attempt 和 Session 的状态所有权。
+- UI 不直接启动 Agent，不绕过 Execution Gateway，也不直接访问 Consul 或 MCP Server。

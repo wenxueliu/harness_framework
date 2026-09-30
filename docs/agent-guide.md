@@ -2,6 +2,8 @@
 
 > **初次接触？** 先看 [quickstart.md](quickstart.md) 和 [concepts.md](concepts.md)。本文是 Agent 接入的完整指南。
 
+> **当前基线提示**：本文的 stage-bridge、Skill 安装和旧 Worker 注册内容属于历史实现。新作业流统一使用 [ACP 执行设计](acp-execution.md)，由 Execution Gateway 按 Attempt 解析 Skill、MCP Grant 和 Agent Runtime；请勿按本文启动旧兼容模式。
+
 默认无需常驻接入 Agent：框架会通过 ACP 按任务创建 Claude/Codex。先阅读
 [ACP Agent 执行](acp-execution.md)。本文以下内容仅适用于使用
 `--no-acp-dispatcher` 的旧注册/抢占兼容模式。

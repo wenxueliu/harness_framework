@@ -67,7 +67,8 @@ class TestDashboardLoad:
         # Mock 模式文字
         mock_text = page.get_by_text("Mock · 演示数据")
         consul_text = page.get_by_text("Consul · 已连接")
-        assert mock_text.is_visible() or consul_text.is_visible(), (
+        api_text = page.get_by_text("Harness API · 已连接")
+        assert mock_text.is_visible() or consul_text.is_visible() or api_text.is_visible(), (
             "数据源指示器应显示 Mock 或 Consul"
         )
 
@@ -338,8 +339,11 @@ class TestResponsiveLayout:
 
     def test_mobile_viewport_still_loads(self, page: Page, dashboard_url: str) -> None:
         """375px 视口下页面正常加载。"""
-        page.set_viewport_size({"width": 375, "height": 812})
+        # WebBridge's CDP command needs an attached tab; navigate once before
+        # applying the mobile metrics, then reload under the new viewport.
         page.goto(dashboard_url)
+        page.set_viewport_size({"width": 375, "height": 812})
+        page.reload()
         wait_for_network_idle(page)
 
         # 标题仍然可见
@@ -349,3 +353,6 @@ class TestResponsiveLayout:
         # 移动端不显示桌面端侧边栏
         desktop_sidebar = page.locator("aside.hidden.md\\:flex")
         expect(desktop_sidebar).to_be_hidden()
+        # Restore the shared browser's desktop metrics for later isolated
+        # sessions; WebBridge applies CDP metrics at browser level.
+        page.set_viewport_size({"width": 1280, "height": 900})

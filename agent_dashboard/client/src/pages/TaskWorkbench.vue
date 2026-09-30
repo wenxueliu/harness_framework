@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, onMounted, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
-import { ChevronRight, File, Folder, LoaderCircle, Play, Save, GitCommit, Search, GitBranch, RefreshCw } from 'lucide-vue-next'
+import { useRoute, useRouter } from 'vue-router'
+import { ArrowLeft, ChevronRight, File, Folder, LoaderCircle, Play, Save, GitCommit, Search, GitBranch, RefreshCw } from 'lucide-vue-next'
 import AppShell from '@/layouts/AppShell.vue'
 import ExecutionTimeline from '@/components/ExecutionTimeline.vue'
 import { fetchTaskMessages, fetchTaskSessionEvents, sendTaskMessage, type HumanMessage } from '@/lib/harnessApi'
@@ -14,6 +14,7 @@ const MonacoEditor = defineAsyncComponent(async () => {
   return module.VueMonacoEditor
 })
 const route = useRoute()
+const router = useRouter()
 const groupId = computed(() => String(route.params.groupId || 'unassigned'))
 const reqId = computed(() => String(route.params.workflowId || ''))
 const taskId = computed(() => String(route.params.taskId || ''))
@@ -46,6 +47,11 @@ const manifest = ref<WorkspaceManifest | null>(null)
 const diffText = ref('')
 const mergeSourceAttempt = ref('')
 const mergeTask = ref<{ merge_id: string; status: string; diff?: string } | null>(null)
+
+function goBack() {
+  if (window.history.length > 1) router.back()
+  else router.push('/groups/' + encodeURIComponent(groupId.value) + '/workflows/' + encodeURIComponent(reqId.value))
+}
 
 function draftKey(item: WorkspaceFile) {
   return `harness-draft:${binding.value?.binding_id}:${item.path}:${item.sha256 || 'new'}`
@@ -208,6 +214,11 @@ onMounted(load)
 
 <template>
   <AppShell :group-id="groupId" :workflow-id="reqId" :title="taskId" eyebrow="Task Workbench">
+    <template #actions>
+      <button data-testid="legacy-task-detail-back" class="flex items-center gap-1 rounded border border-border px-3 py-2 text-xs" @click="goBack">
+        <ArrowLeft :size="13" />返回节点列表
+      </button>
+    </template>
     <div v-if="loading" class="grid min-h-[60vh] place-items-center"><LoaderCircle class="animate-spin text-blue-300" /></div>
     <div v-else-if="error && !binding" role="alert" class="m-6 rounded border border-amber-400/30 bg-amber-400/10 p-4 text-sm text-amber-200">{{ error }}</div>
     <div v-else class="grid min-h-[calc(100vh-8rem)] grid-cols-1 xl:grid-cols-[minmax(18rem,0.8fr)_18rem_minmax(28rem,1.2fr)]">

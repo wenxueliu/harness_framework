@@ -14,6 +14,8 @@ python tests/ui/test_proposals.py
 from __future__ import annotations
 
 import json
+import base64
+import os
 import time
 from datetime import datetime
 
@@ -21,7 +23,7 @@ import pytest
 from tests.e2e.webbridge import Page
 
 
-BASE_URL = "http://localhost:8080"
+BASE_URL = os.environ.get("WEBAPI_URL", "http://localhost:8080")
 REQ_ID = f"ui-test-{datetime.now().strftime('%Y%m%d%H%M%S')}"
 
 
@@ -67,7 +69,7 @@ class TestProposalWorkflow:
         import requests
         resp = requests.get(f"{self.consul_url}/v1/kv/workflows/{REQ_ID}/status")
         if resp.status_code == 200 and resp.json():
-            return resp.json()[0]["Value"]
+            return base64.b64decode(resp.json()[0]["Value"]).decode()
         return ""
 
     def _set_proposal(self, task_name: str):
@@ -260,7 +262,7 @@ class TestProposalAgentIntegration:
         )
 
         deps_resp = requests.get(f"http://localhost:8500/v1/kv/workflows/{req_id}/dependencies")
-        deps = json.loads(deps_resp.json()[0]["Value"])
+        deps = json.loads(base64.b64decode(deps_resp.json()[0]["Value"]).decode())
         deps["sec-fix"] = {
             "type": "task",
             "depends_on": ["design"],

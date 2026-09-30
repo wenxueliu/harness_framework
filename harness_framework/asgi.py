@@ -27,6 +27,7 @@ from .workspace_files import WorkspaceFileService
 from .workspace_manager import WorkspaceManager
 from .workspace_merge import WorkspaceMergeService
 from .workspace_security import WorkspaceSecurity
+from .job_flows import JobFlowService
 
 
 class _ASGIHandler(APIHandler):
@@ -79,6 +80,7 @@ def _configure(
     APIHandler.workspace_merge = WorkspaceMergeService(
         consul, APIHandler.workspace_manager, APIHandler.event_journal
     )
+    APIHandler.job_flows = JobFlowService(consul)
 
 
 def create_asgi_app(

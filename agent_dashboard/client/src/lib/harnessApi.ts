@@ -146,11 +146,20 @@ function toWorkflow(summary: WorkflowSummary, detail: WorkflowDetail): Workflow 
     .sort()[0] || "";
   const control = detail.control || summary.control;
   const context = detail.context ?? {};
+  const normalizedSummaryPhase = normalizePhase(summary.phase);
+  // The legacy summary endpoint only exposes coarse RUNNING/PENDING phases.
+  // Keep the task-derived phase for those values so the dashboard can still
+  // distinguish DEVELOPMENT, TESTING, and TEST_READY.
+  const phase = normalizedSummaryPhase === "FAILED"
+    ? "BLOCKED"
+    : normalizedSummaryPhase === "RUNNING" || normalizedSummaryPhase === "PENDING"
+      ? derivePhase(tasks, control)
+      : normalizedSummaryPhase || derivePhase(tasks, control);
 
   return {
     id: detail.req_id,
     title: summary.title || detail.req_id,
-    phase: normalizePhase(summary.phase) || derivePhase(tasks, control),
+    phase,
     raw_phase: summary.phase,
     created_at: createdAt,
     tasks,
