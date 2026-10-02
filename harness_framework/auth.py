@@ -15,32 +15,45 @@ class AuthenticationError(RuntimeError):
 
 
 class Role(str, Enum):
-    OWNER = "OWNER"
-    MAINTAINER = "MAINTAINER"
-    DEVELOPER = "DEVELOPER"
+    ADMIN = "ADMIN"
+    EDITOR = "EDITOR"
     VIEWER = "VIEWER"
+
+_LEGACY_ROLE_MAP: dict[str, str] = {
+    "OWNER": "ADMIN",
+    "MAINTAINER": "EDITOR",
+    "DEVELOPER": "EDITOR",
+}
 
 
 ROLE_CAPABILITIES: dict[Role, frozenset[str]] = {
-    Role.OWNER: frozenset({
+    Role.ADMIN: frozenset({
         "group:read", "group:manage", "member:manage", "group:archive",
         "workspace:register", "workspace:policy", "workspace:path:diagnose",
         "workflow:draft", "workflow:publish", "run:create", "run:control",
         "task:retry", "task:message:queue", "task:message:interrupt",
         "file:read", "file:write", "checkpoint:create", "workspace:merge",
+        "profile:manage", "mcp:manage", "runtime:manage",
     }),
-    Role.MAINTAINER: frozenset({
+    Role.EDITOR: frozenset({
         "group:read", "workflow:draft", "workflow:publish", "run:create",
         "run:control", "task:retry", "task:message:queue",
         "task:message:interrupt", "file:read", "file:write",
         "checkpoint:create", "workspace:path:diagnose", "workspace:merge",
+        "changeset:create", "instance:create",
     }),
-    Role.DEVELOPER: frozenset({
-        "group:read", "workflow:draft", "task:message:queue", "file:read",
-        "file:write", "checkpoint:create",
+    Role.VIEWER: frozenset({
+        "group:read", "file:read", "manifest:read", "artifact:read",
+        "workflow:read", "instance:read", "log:read",
     }),
-    Role.VIEWER: frozenset({"group:read", "file:read"}),
 }
+
+
+def resolve_role(raw_role: str) -> Role:
+    """Map a stored role string (including legacy values) to a Role."""
+    normalized = raw_role.strip().upper()
+    normalized = _LEGACY_ROLE_MAP.get(normalized, normalized)
+    return Role(normalized)
 
 
 def member_key_segment(subject: str) -> str:
@@ -110,9 +123,9 @@ class AuthorizationService:
     ) -> Optional[Role]:
         # Local mode is deliberately a clearly-labelled single-user owner mode.
         if context.mode == "local":
-            return Role.OWNER
+            return Role.ADMIN
         if context.subject in self.auth_config.platform_owners:
-            return Role.OWNER
+            return Role.ADMIN
         if not group_id:
             return None
         raw, _ = self.store.kv_get(
@@ -128,7 +141,7 @@ class AuthorizationService:
             return None
         try:
             record = json.loads(raw)
-            return Role(str(record.get("role", "")).upper())
+            return resolve_role(str(record.get("role", "")))
         except (json.JSONDecodeError, ValueError, AttributeError):
             return None
 

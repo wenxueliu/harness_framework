@@ -80,7 +80,7 @@ class ProjectGroupService:
         if not self.store.kv_put(key, json.dumps(record.to_dict()), cas=0):
             raise ConflictError("项目组 ID 冲突", code="GROUP_ID_CONFLICT")
         member = {
-            "subject_id": actor, "role": Role.OWNER.value,
+            "subject_id": actor, "role": Role.ADMIN.value,
             "created_at": now, "updated_at": now, "revision": 1,
         }
         if not self.store.kv_put(
@@ -195,7 +195,8 @@ class ProjectGroupService:
         if not subject_id.strip():
             raise ValidationError("成员 subject 不能为空", code="MEMBER_SUBJECT_REQUIRED")
         try:
-            normalized_role = Role(role.upper())
+            from harness_framework.auth import resolve_role
+            normalized_role = resolve_role(role)
         except ValueError as exc:
             raise ValidationError("无效的项目组角色", code="INVALID_GROUP_ROLE") from exc
         key = f"project-groups/{group_id}/members/{member_key_segment(subject_id)}"
@@ -222,10 +223,10 @@ class ProjectGroupService:
         if not raw:
             raise NotFoundError("项目组成员不存在", code="MEMBER_NOT_FOUND")
         member = json.loads(raw)
-        if member.get("role") == Role.OWNER.value:
+        if member.get("role") == Role.ADMIN.value:
             owners = [
                 item for item in self.list_members(group_id)
-                if item.get("role") == Role.OWNER.value
+                if item.get("role") == Role.ADMIN.value
             ]
             if len(owners) <= 1:
                 raise ConflictError(

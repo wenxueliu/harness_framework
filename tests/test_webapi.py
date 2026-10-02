@@ -340,7 +340,7 @@ class TestWebAPI:
             json.dumps({"role": "developer"}).encode(),
         )
         assert member["code"] == 200
-        assert member["body"]["member"]["role"] == "DEVELOPER"
+        assert member["body"]["member"]["role"] == "EDITOR"
 
         conflict = call_do_method(
             handler, "DELETE", f"/api/project-groups/{group_id}/members/local%3Atest-user",

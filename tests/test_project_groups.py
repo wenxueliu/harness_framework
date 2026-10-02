@@ -17,7 +17,7 @@ def test_create_group_establishes_owner_and_lists_virtual_unassigned(service):
     members = service.list_members(group["group_id"])
     listed = service.list()["project_groups"]
 
-    assert members[0]["role"] == "OWNER"
+    assert members[0]["role"] == "ADMIN"
     assert members[0]["subject_id"] == "user:alice"
     assert listed[0]["group_id"] == UNASSIGNED_GROUP_ID
     assert any(item["group_id"] == group["group_id"] for item in listed)
