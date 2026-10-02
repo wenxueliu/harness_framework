@@ -1,1 +1,363 @@
-@CLAUDE
+> This file is the canonical instruction file for AI coding agents (Codex, Claude Code, ...)
+> working in this repository. Claude Code imports it from `CLAUDE.md` via `@AGENTS.md`.
+
+This file provides guidance to AI coding agents when working with code in this repository.
+
+> **人类读者**：这是 AI 助手的参考指南。如果你是第一次使用，请从 [README.md](README.md) 开始。
+
+## 工作原则
+
+- **尽量使用 subagent**: 执行复杂的、多步骤的、需要跨文件搜索或分析的任务时，优先通过 Agent 工具启动 subagent 来并行处理，减少主上下文窗口的消耗。
+
+## 文档导航
+
+用户文档在 `docs/` 目录，按学习路径组织：
+
+| 文档 | 用途 |
+|------|------|
+| `README.md` | 项目首页，一句话介绍 + 导航 |
+| `docs/quickstart.md` | 1 分钟快速上手 |
+| `docs/getting-started.md` | 5 分钟入门教程 |
+| `docs/concepts.md` | 核心概念：DAG、状态机、三大组件 |
+| `docs/architecture.md` | 架构设计深度文档 |
+| `docs/configuration.md` | 配置参考（CLI 参数 + 环境变量） |
+| `docs/agent-guide.md` | Agent 接入指南（三种模式） |
+| `docs/usage-guide.md` | 常见操作命令参考 |
+| `docs/change-requirement.md` | 开发中修改需求并局部重跑 |
+| `docs/adaptive-control.md` | 证据驱动路由、原子动作、人工反馈与等待状态 |
+| `docs/task-model-execution.md` | 按任务选择模型与原生会话 |
+| `docs/storage-modes.md` | 三种存储后端深度对比 |
+| `docs/faq.md` | 常见设计决策问答 |
+
+## 概述
+
+`harness-framework` 是多 Agent 协作的**核心引擎**，解决分布式 Agent 之间的流程控制、状态管理与反馈闭环问题。核心能力：
+
+- **流程控制**：基于 DAG 拓扑的任务依赖调度，依赖满足自动激活下游任务
+- **状态管理**：统一的任务状态机（BLOCKED → PENDING → IN_PROGRESS → DONE/FAILED），支持人工干预（PAUSE/RESUME/ABORT）
+- **反馈闭环**：test 失败时通过 Message Bus 通知相关服务修复，收到修复完成消息后自动重测，形成"失败→修复→验证"的完整闭环
+- **容错恢复**：Agent 死亡或任务超时时自动回滚重试，保障任务最终完成
+- **人工接管**：任何时刻可人工介入（重分配任务、强制状态变更），实现人机协同
+
+## 架构
+
+```
+harness_framework/
+├── daemon.py          # 主进程入口，启动 ACPDispatcher + Aggregator + Watchdog + WebAPI
+├── acp_client.py      # ACP v1 stdio JSON-RPC 客户端
+├── acp_dispatcher.py  # DAG 就绪后创建 Claude/Codex Agent 并执行任务
+├── aggregator.py      # 监听 DAG 状态变更，依赖满足时激活下游任务
+├── watchdog.py        # 检测 IN_PROGRESS 任务的 Agent 存活和超时，自动恢复
+├── webapi.py          # HTTP API 为业务看板提供聚合查询与控制信号写入
+├── message_bus.py     # 任务间消息通信（发送、轮询、完成）
+├── run_manager.py     # 任务生命周期编排（认领 → 执行 → 日志 → 完成/失败）
+├── requirement_changes.py # 同 workflow 发布需求新版本并局部重跑
+├── model_execution.py # 任务级模型命令和原生会话策略解析
+├── consul_client.py   # Consul HTTP 客户端（仅标准库，无外部依赖）
+├── kv_store_protocol.py  # KVStore Protocol — 存储层抽象接口
+├── local_store.py        # LocalStore — 内存存储 + 内嵌 Consul HTTP 服务器
+└── file_store.py         # FileStore — JSON 文件存储（纯本地，无 HTTP）
+```
+
+**五个核心组件：**
+- **ACPDispatcher**：默认执行入口；CAS 认领 `PENDING` 任务，按任务类型或 `acp.agent` 创建 Claude/Codex ACP 进程，驱动会话并回写结果。
+- **Aggregator**：仅处理 `published=true` 的 workflow，轮询任务状态，当依赖全部 DONE 时将下游任务设为 PENDING。**重测逻辑由 Test Agent 通过 Message Bus 自行管理**。
+- **Watchdog**：仅处理 `published=true` 的 workflow；ACP 任务依据租约和硬截止时间恢复，旧 Worker 兼容模式仍检查注册健康状态。
+- **WebAPI**：基于标准库 `http.server` 的 ThreadingHTTPServer，提供 `/api/workflows`、`/api/workflow/<req_id>`、`/api/agents` 等端点。
+- **RunManager**：记录运行、状态迁移和原生会话；由 ACPDispatcher 或旧 stage-bridge Worker 调用。
+
+**三种存储后端：**
+
+| 模式 | 启动参数 | 外部依赖 | 状态存储 |
+|------|---------|---------|--------------|
+| Consul | (默认) | Consul 服务 | HTTP → Consul |
+| Local + HTTP | `--local` | 无 | 内嵌 Consul API 服务器 |
+| 纯文件 | `--local-file` | 无 | JSON 文件 |
+
+三种存储后端均使用同一 ACP stdio 通信链路；`--no-acp-dispatcher` 才进入旧的注册/抢占兼容模式。
+
+## 使用步骤
+
+> 面向人类用户的完整教程见 [README.md](README.md) → [docs/quickstart.md](docs/quickstart.md)。
+
+**本地模式（零依赖，无需 Consul）：**
+
+```bash
+# 内存模式（含内嵌 HTTP 服务器，Agent 通过 HTTP 连接）
+python -m harness_framework.daemon --local
+
+# 纯文件模式（无 HTTP 服务器，Agent 通过 CLI 读写 JSON 文件）
+# 注意：--local-file 自动启用单机模式，Agent 无需注册/心跳
+python -m harness_framework.daemon --local-file
+
+# 纯文件模式 + 自定义数据文件
+python -m harness_framework.daemon --local-file --local-data-file /path/to/store.json
+
+# 单机模式：Agent 无需注册/心跳/注销，使用默认 ID
+python -m harness_framework.daemon --local --standalone
+python -m harness_framework.daemon --local-file   # 自动单机
+
+# 自定义单机 Agent ID
+python -m harness_framework.daemon --local-file --standalone-agent-id my-agent
+
+# Agent 在纯文件模式下操作 KV（单机模式无需 register/heartbeat/deregister）：
+python scripts/file_kv.py --data-file ~/.harness/file_store.json put workflows/req-001/tasks/design/status PENDING
+python scripts/file_kv.py --data-file ~/.harness/file_store.json get workflows/ --recurse
+```
+
+## 执行流程
+
+框架内部自动执行的核心逻辑：
+
+1. **任务激活**：Aggregator 检测所有依赖 DONE → 激活下游任务为 PENDING
+2. **任务执行**：ACPDispatcher CAS 认领 PENDING 任务 → 创建 Claude/Codex ACP Agent → 执行完成写入 DONE
+3. **故障恢复**：Watchdog 检测租约/硬截止时间 → 回滚任务为 PENDING（≤5次重试）
+4. **质量门禁**：test 失败 → 发送 FIX 消息到相关服务 → 轮询消息状态 → 所有修复完成后重测（≤3次重试）
+5. **流程终止**：所有任务 DONE → 流程结束；超过重试上限 → FAILED
+
+## Consul KV 结构
+
+```
+workflows/<req_id>/
+├── published               # true | false（草稿模式，默认 false），仅发布后 watchdog/aggregator 才会处理
+├── title                   # 需求标题
+├── priority                # 整数优先级，越大越优先，默认 0
+├── control                 # 控制信号：PAUSE | RESUME | ABORT
+├── dependencies            # JSON，任务依赖拓扑
+├── created_at
+├── requirement / requirement_version
+├── requirement_changes/<change_id>/record
+├── tasks/<task_name>/
+│   ├── status              # PENDING | BLOCKED | IN_PROGRESS | WAITING_FOR_HUMAN | DONE | FAILED | ABORTED | AWAITING_REVIEW
+│   ├── validity            # UNKNOWN | VALID | STALE | INVALIDATED
+│   ├── type                # design | review | backend | test | deploy
+│   ├── agent_name          # 目标逻辑 Agent Name（任务匹配键）
+│   ├── service_name        # 关联的服务名（可选）
+│   ├── description
+│   ├── assigned_agent       # 实际抢占实例的 Agent ID
+│   ├── harness_session_id / native_session_id
+│   ├── started_at / activated_at / retry_count / error_message
+│   └── last_recovery_reason / last_recovery_at
+└── context/...             # 任意上下文键值
+```
+
+> **注**：旧版 `feedback/<service>/status` 字段已废弃，重测逻辑由 Message Bus 取代。
+
+## 任务类型与状态流转
+
+**任务类型**（`type` 字段）：`design`、`review`、`backend`、`test`、`deploy`
+
+**核心状态**：空白/已终止任务初始为 `BLOCKED`（叶子任务直接 `PENDING`）；`IN_PROGRESS` 由 Agent 手动写入；所有依赖 DONE 时由 Aggregator 激活为 `PENDING`。
+
+**Task Agent 重测逻辑**（由 Test Agent 自己管理）：
+- test 任务 FAILED → 通过 MessageBus 发送 FIX 消息到相关服务
+- 轮询消息状态，等待所有消息 DONE
+- 重测成功写入 DONE，失败则重试（上限 3 次）
+- 重试 3 次仍失败则写入 FAILED
+
+**Watchdog 恢复逻辑**：Agent 死亡或任务超时 → retry_count++ → retry_count >= 5 则 FAILED，否则回滚为 PENDING（Watchdog 上限 5 次）
+
+## 任务间消息通信
+
+详见 [docs/message-bus.md](docs/message-bus.md)。
+
+## 常用命令
+
+```bash
+# consul 安装在 consul_server
+
+# 启动 consul server
+consul_server/consul agent -server -ui -bootstrap-expect=1 --node harness_framework_master -data-dir="consul_server/data" -bind="127.0.0.1" -client="0.0.0.0"
+
+# 启动 Consul dev mode
+./scripts/start_consul_dev.sh
+
+# 启动框架主进程（默认 8080 端口，连接 Consul）
+python -m harness_framework.daemon
+
+# 指定端口和其他参数
+python -m harness_framework.daemon --port 9000 --consul 127.0.0.1:8500 --task-timeout 1800
+
+# 本地内存模式（含内嵌 HTTP，Agent 通过 CONSUL_ADDR=127.0.0.1:8500 连接）
+python -m harness_framework.daemon --local
+
+# 纯文件模式（零网络，Agent 通过 file_kv.py CLI 操作）
+python -m harness_framework.daemon --local-file --local-data-file /tmp/store.json
+
+# 初始化一个需求（写入存储）
+python scripts/sync_to_consul.py req-001 examples/dependencies.example.json --title "用户登录功能"
+
+# 带日志级别启动
+python -m harness_framework.daemon --log-level DEBUG
+```
+
+**配置方式**：命令行参数 > 环境变量 `CONSUL_ADDR` / `CONSUL_TOKEN`
+
+## Skills
+
+框架内置 7 个 skill，按用途分组：
+
+| Skill | 用途 | 适用模式 |
+|-------|------|---------|
+| `stage-bridge` | 旧 Worker 生命周期兼容；ACP 任务的 artifact/evidence/log 辅助写入 | Consul / Local |
+| `task-executor` | 按任务类型（backend/test/design/review/deploy）执行 TDD 工作流 | Consul / Local |
+| `harness-sync` | 将 dependencies.json 同步到 Consul，初始化 workflow | Consul / Local |
+| `design-pipeline` | 设计文档 → dependencies.json 转换 + 同步 Consul | Consul / Local |
+| `doc-to-deps` | 任意文档（md/txt/json/yaml）→ dependencies.json 提取 | Consul / Local |
+| `file-kv` | local-file 模式下 Agent 通过 CLI 读写 KV、注册、心跳 | Local-file |
+| `add-task` | 向已有 workflow 增量添加单个任务（含约束验证） | Consul / Local |
+
+各 skill 详情见 `skills/<name>/SKILL.md`。
+
+## 代码风格
+
+- 仅使用 Python 标准库
+- 类型注解使用 `from __future__ import annotations`
+- 日志格式：`%(asctime)s [%(name)s] %(levelname)s %(message)s`
+
+## 测试
+
+### 测试文件结构
+
+```
+tests/
+├── __init__.py
+├── conftest.py              # 公共 fixtures（MockConsulStore, mock_consul）
+├── test_consul_client.py    # ConsulClient 单元测试
+├── test_aggregator.py       # Aggregator 单元测试
+├── test_watchdog.py         # Watchdog 单元测试
+├── test_webapi.py           # WebAPI 单元测试
+├── test_message_bus.py      # MessageBus 单元测试
+├── test_run_manager.py      # RunManager 单元测试
+├── test_local_store.py      # LocalStore + HTTP 服务器测试
+├── test_file_store.py       # FileStore + CLI 测试
+├── test_sync_to_consul.py   # sync_to_consul 脚本测试
+└── e2e/                     # E2E 测试套件
+    ├── conftest.py          # E2E fixtures（真实 Consul + daemon）
+    ├── helpers.py           # E2E 辅助函数
+    ├── test_dashboard.py    # 看板 UI 测试
+    ├── test_performance.py  # 性能回归测试
+    ├── test_visual.py       # 视觉回归测试
+    ├── test_a11y.py         # 无障碍测试
+    └── test_scenarios.py    # 场景化 E2E（dashboard.yaml drive）
+```
+
+### 运行测试
+
+```bash
+# 运行所有测试
+python -m pytest tests/ -v
+
+# 运行指定模块
+python -m pytest tests/test_aggregator.py -v
+
+# 带覆盖率
+python -m pytest tests/ --cov=harness_framework
+```
+
+### 测试数据构造
+
+**MockConsulStore**：内存 KV 模拟，接受初始字典 `{"key": "value"}`。
+通过 `conftest.py` 中的 `mock_consul` fixture 注入到各模块。
+
+**Aggregator 测试数据示例**：
+
+```python
+store = {
+    "workflows/req-001/dependencies": json.dumps({
+        "design": {"type": "design", "depends_on": []},
+        "backend": {"type": "backend", "depends_on": ["design"]},
+        "test": {"type": "test", "depends_on": ["backend"]},
+    }),
+    "workflows/req-001/tasks/design/status": "DONE",
+    "workflows/req-001/tasks/backend/status": "BLOCKED",
+    "workflows/req-001/tasks/test/status": "BLOCKED",
+}
+```
+
+**Watchdog 测试数据示例**：
+
+```python
+# Agent 死亡场景
+alive_agents = {"agent-001"}
+task = {
+    "status": "IN_PROGRESS",
+    "assigned_agent": "agent-002",  # 不在 alive list
+    "started_at": "2025-04-22T10:00:00",
+    "retry_count": "1",
+}
+
+# 超时场景（started_at 3小时前）
+old_time = (datetime.utcnow() - timedelta(hours=3)).isoformat() + "Z"
+task = {
+    "status": "IN_PROGRESS",
+    "assigned_agent": "agent-001",
+    "started_at": old_time,
+    "retry_count": "0",
+}
+```
+
+**WebAPI 测试数据示例**：
+
+```python
+# GET /api/workflows
+store = {
+    "workflows/req-001/title": "登录功能",
+    "workflows/req-001/tasks/design/status": "DONE",
+    "workflows/req-001/tasks/backend/status": "IN_PROGRESS",
+    "workflows/req-002/tasks/design/status": "DONE",
+    "workflows/req-002/tasks/backend/status": "DONE",
+}
+# 预期: req-001 phase=RUNNING progress=50.0
+#       req-002 phase=DONE progress=100.0
+
+# POST /api/workflow/req-001/control
+{"action": "PAUSE"}     # → kv_put("workflows/req-001/control", "PAUSE")
+{"action": "RESUME"}   # → kv_delete("workflows/req-001/control")
+{"action": "RETRY", "task_name": "backend"}  # → backend 重置为 PENDING
+{"action": "INVALID"}  # → 400
+```
+
+### 测试策略
+
+- **UT**：mock ConsulClient，用 `MockConsulStore` 模拟 KV 读写，验证状态流转逻辑
+- **E2E**：启动真实 Consul + daemon，构造 workflow 后验证 Consul KV 状态变更
+
+## 安装脚本
+
+`install.py` 用于将框架 skills 安装到其他项目：
+
+```bash
+# 安装到当前目录（Claude Code 模式）
+python install.py
+
+# 安装到指定项目
+python install.py --target /path/to/project
+
+# 安装到用户全局目录
+python install.py --user
+
+# 安装到 Codex 平台
+python install.py --codex
+
+# 只安装核心 skill（stage-bridge, task-executor, file-kv, harness-sync）
+python install.py --minimal
+
+# 预览安装效果（不实际写入）
+python install.py --target /path/to/project --dry-run
+
+# 同时安装到 Claude Code + Codex
+python install.py --claude --codex
+```
+
+参数说明：
+- `--target PATH` — 安装到指定项目目录（默认当前目录）
+- `--user` — 安装到用户全局目录（`~/.claude/skills/`）
+- `--claude` / `--codex` — 目标平台（默认 `--claude`）
+- `--minimal` — 只安装 4 个核心 skill
+- `--dry-run` — 预览模式，不实际写入
+- `--force` — 跳过确认提示
+
+
+## 约束
+1、要支持Mac、Linux和Windows，因此，脚本统一使用python保证跨平台

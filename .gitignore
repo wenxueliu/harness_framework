@@ -115,3 +115,10 @@ client/public/__manus__/version.json
 **/__pycache__/
 consul_server
 _bmad-output/
+
+.agents/
+.claude/skills/deepwiki
+.codeevolution/
+.codegraph/
+skills-lock.json
+

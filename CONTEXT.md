@@ -42,7 +42,7 @@ The normalized directed acyclic graph projection of a Template Version's Tasks a
 _Avoid_: Run graph, instance task status, independent graph document
 
 **Run**:
-The execution record of a Workflow Instance, preserving its own lifecycle and history when later template versions or successor instances are created.
+The execution record of a Workflow Instance. A Workflow Instance has exactly one Run whose state synchronizes with the Instance's lifecycle (start, pause, resume, abort, terminal state). The Run preserves execution history when later template versions or successor instances are created.
 _Avoid_: Workflow Template, Workflow Instance, task attempt, agent session
 
 **ChangeSet**:

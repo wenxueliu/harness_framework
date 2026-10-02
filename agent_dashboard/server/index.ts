@@ -18,8 +18,10 @@ async function startServer() {
 
   app.use(express.static(staticPath));
 
-  // Handle client-side routing - serve index.html for all routes
-  app.get("*", (_req, res) => {
+  // Handle client-side routing - serve index.html for all routes.
+  // Express 5 / path-to-regexp v8 rejects the bare "*" wildcard; "/{*splat}" matches
+  // the root path and every nested route.
+  app.get("/{*splat}", (_req, res) => {
     res.sendFile(path.join(staticPath, "index.html"));
   });
 

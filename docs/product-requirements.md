@@ -5,6 +5,40 @@
 > 更新日期：2026-09-21  
 > 适用范围：人工编排的作业流模板、模板版本、作业流实例及执行闭环
 
+## 输入历史 (Input History)
+
+> 本章节按时间顺序记录驱动本 PRD 演进的所有原始用户输入，作为需求来源的可追溯凭据。**请勿删除或改写已有条目**，新输入一律追加到末尾。
+
+### 2026-10-01 · Clarify · Q1 Run 生命周期
+**模式**: clarify
+**问题**: 什么触发新 Run？
+**原始回答**:
+> A
+
+### 2026-10-01 · Clarify · Q2 草稿并发控制
+**模式**: clarify
+**问题**: 多人同时编辑同一模板草稿时的并发策略？
+**原始回答**:
+> A
+
+### 2026-10-01 · Clarify · Q3 Workspace 生命周期
+**模式**: clarify
+**问题**: Workspace 的创建、清理和保留策略？
+**原始回答**:
+> B
+
+### 2026-10-01 · Clarify · Q4 权限模型
+**模式**: clarify
+**问题**: Project Group 内的角色定义？
+**原始回答**:
+> A
+
+### 2026-10-01 · Clarify · Q5 产物存储与保留
+**模式**: clarify
+**问题**: 产物的保留策略？
+**原始回答**:
+> B
+
 ## 1. 产品定义
 
 Harness Orchestration 是一个面向研发团队的作业流模板编排与执行平台。用户以人工方式定义任务节点和依赖关系，形成可复用的作业流模板；模板发布为不可变版本后，可以创建多个相互隔离的作业流实例。
@@ -77,6 +111,8 @@ Project Group
 | Task Attempt | Task 的一次实际执行 | 是 |
 
 一个模板可以创建多个实例；实例之间的输入参数、Git 分支或 Commit、Workspace、Task 状态、Attempt、日志和产物引用都必须隔离。
+
+**Run 生命周期**：一个 Instance 只有一个 Run。暂停后恢复不创建新 Run，仅在"变更重执行"时创建 successor instance（整个实例级别）。Run 的状态随 Instance 的启动/暂停/中止/终态同步转换。
 
 ### 3.2 JSON 与 DAG 的关系
 
@@ -242,9 +278,10 @@ RUNNING ⇄ PAUSED
 - FR-TPL-01：用户可以在指定 Project Group 下创建空白模板。
 - FR-TPL-02：用户可以编辑名称、描述、节点定义、依赖、Agent、完成条件和参数 Schema。
 - FR-TPL-03：系统支持保存草稿、恢复草稿、撤销/重做和并发控制。
-- FR-TPL-04：模板详情页展示只读 DAG；模板编辑页展示 JSON 和实时 DAG 预览。
-- FR-TPL-05：发布生成不可变版本，V2 发布不能改变 V1 或已创建实例。
-- FR-TPL-06：模板删除遵守“无实例可删除、有实例只能归档”的规则。
+- FR-TPL-04：草稿保存使用乐观锁（revision 字段），保存请求携带当前 revision，服务端比对不匹配时返回 409 Conflict，客户端提示"草稿已被他人修改，请刷新后重试"。
+- FR-TPL-05：模板详情页展示只读 DAG；模板编辑页展示 JSON 和实时 DAG 预览。
+- FR-TPL-06：发布生成不可变版本，V2 发布不能改变 V1 或已创建实例。
+- FR-TPL-07：模板删除遵守"无实例可删除、有实例只能归档"的规则。
 
 ### DAG 与校验
 
@@ -256,10 +293,11 @@ RUNNING ⇄ PAUSED
 ### 实例与执行
 
 - FR-INS-01：同一模板版本可以创建多个实例并行运行。
-- FR-INS-02：每个实例保存独立的参数、Git、Workspace 和执行上下文快照。
+- FR-INS-02：每个实例保存独立的参数、Git、Run Workspace 和执行上下文快照。
 - FR-INS-03：实例创建、启动、重试、重跑和删除支持幂等或状态保护。
 - FR-INS-04：Task 重试产生新 Attempt；整实例重跑产生 successor instance。
 - FR-INS-05：实例删除按状态执行，删除前二次确认并审计。
+- FR-INS-06：Run Workspace 在实例创建时初始化（按 ADR §5 的隔离等级选择 ORIGINAL/GIT_WORKTREE/CONTROLLED_COPY/DEMO_TEMP）；实例进入终态后保留 N 天（N 由项目组配置，默认 7），到期自动清理；清理前通知项目组管理员。ORIGINAL 级别的 Run Workspace 不参与自动清理，仅允许项目组 Admin 手动释放。Attempt Workspace Binding 不可变，Workspace 清理后 Binding 保留审计记录但路径标记为 EXPIRED。
 
 ### 执行能力与 ACP
 
@@ -273,6 +311,7 @@ RUNNING ⇄ PAUSED
 - FR-CAP-08：能力缺失、版本不兼容、MCP 不健康或 Workspace 不可用时进入 `WAITING_FOR_CAPABILITY` 或 `UNROUTABLE`，支持修复后重新预检。
 - FR-CAP-09：平台不集中维护所有 Skill/MCP/Agent 的实现，只维护可引用的元数据、版本、权限、健康检查和适配器。
 - FR-CAP-10：stage-bridge 不再作为执行或兼容路径；任务上下文、产物、证据和状态反馈由统一 Execution Gateway/ACP 链路承载。
+- FR-CAP-11：产物（日志、文件、证据）采用独立保留策略：实例进入终态后保留 N 天（N 由项目组配置，默认与 Workspace 保留天数对齐），到期自动清理；清理前通知项目组管理员。
 
 ### 变更、安全与审计
 
@@ -280,6 +319,10 @@ RUNNING ⇄ PAUSED
 - FR-CHG-02：变更前显示影响范围、重跑范围和产物复用依据。
 - FR-CHG-03：发布、归档、删除、中止和重新执行需要权限、确认和审计。
 - FR-CHG-04：Project Group 是模板和实例的权限边界；实例不能跨组移动。
+- FR-CHG-05：Project Group 内采用三级角色模型：
+  - **Admin**：管理项目组成员、删除项目组、配置 Workspace 保留策略和 Execution Profile；
+  - **Editor**：创建/编辑/发布模板、创建/启动/暂停/中止实例、发起变更重执行；
+  - **Viewer**：只读访问模板、版本、实例、Task Attempt、日志和产物。
 - FR-CHG-05：敏感参数使用 Secret Reference，不写入模板、历史、Prompt 或日志。
 
 ## 7. 页面与信息架构
@@ -322,7 +365,7 @@ RUNNING ⇄ PAUSED
 3. **实例参数表单**：从参数 Schema 自动生成表单，支持敏感值引用、默认值、枚举和校验。
 4. **Git/Workspace 约束**：明确分支、Commit、Workspace 的可选范围、存在性校验、锁定时机和失败提示。
 5. **实例时间线与可观测性**：统一展示状态变化、Task Attempt、人工消息、控制动作、日志和产物链接。
-6. **权限矩阵和审批策略**：将查看、编辑、发布、创建实例、控制实例、删除和管理 Workspace 映射到实际角色。
+6. **权限矩阵和审批策略**：三级角色（Admin/Editor/Viewer）映射到查看、编辑、发布、创建实例、控制实例、删除和管理 Workspace 操作。
 7. **错误模型与恢复**：统一 API 错误码、字段级错误、可重试错误、不可重试错误和人工处理建议。
 8. **自动化测试门禁**：补齐 API 契约、UI 自动化、模板/实例隔离、V1/V2 兼容、删除状态和变更重执行场景。
 9. **OpenAPI/类型契约**：让前后端共享模板、版本、实例、DAG、Run、Task Attempt 和 ChangeSet 的类型定义。
@@ -366,6 +409,7 @@ RUNNING ⇄ PAUSED
 
 - 所有写操作记录 actor、时间、请求 ID、版本或状态前置条件；
 - 草稿保存具备 revision 并发控制；
+- 草稿保存采用乐观锁：客户端提交 revision，服务端校验不匹配时返回 409，提示用户刷新后重试，不使用悲观锁或最后写入胜出策略；
 - 发布版本和实例执行上下文不可被静默覆盖；
 - 同模板多实例运行时任务状态、日志、Workspace 和产物引用不得串扰；
 - 外部副作用任务必须声明幂等或补偿机制；
