@@ -154,3 +154,10 @@ export async function rerunJobFlowInstance(instanceId: string, input: Partial<Jo
     jsonRequest('POST', input, { 'Idempotency-Key': crypto.randomUUID() }),
   )
 }
+
+export async function listJobFlowTemplateVersions(templateId: string): Promise<JobFlowVersion[]> {
+  const result = await apiRequest<{ versions: JobFlowVersion[] }>(
+    '/api/templates/' + encodeURIComponent(templateId) + '/versions',
+  )
+  return result.versions
+}

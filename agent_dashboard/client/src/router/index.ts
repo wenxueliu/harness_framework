@@ -9,6 +9,7 @@ const router = createRouter({
     { path: '/templates', name: 'job-flow-templates', component: () => import('@/pages/JobFlowTemplates.vue') },
     { path: '/templates/new', name: 'job-flow-builder-new', component: () => import('@/pages/JobFlowBuilder.vue') },
     { path: '/templates/:templateId/edit', name: 'job-flow-builder', component: () => import('@/pages/JobFlowBuilder.vue') },
+    { path: '/templates/:templateId', name: 'template-detail', component: () => import('@/pages/TemplateDetail.vue') },
     { path: '/instances', name: 'job-flow-instances', component: () => import('@/pages/JobFlowInstances.vue') },
     { path: '/instances/:instanceId', name: 'job-flow-instance', component: () => import('@/pages/JobFlowInstance.vue') },
     { path: '/instances/:instanceId/tasks/:taskId', name: 'job-flow-task', component: () => import('@/pages/JobFlowTask.vue') },
