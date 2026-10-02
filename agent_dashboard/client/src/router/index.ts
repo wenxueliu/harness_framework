@@ -12,6 +12,7 @@ const router = createRouter({
     { path: '/templates/:templateId', name: 'template-detail', component: () => import('@/pages/TemplateDetail.vue') },
     { path: '/instances', name: 'job-flow-instances', component: () => import('@/pages/JobFlowInstances.vue') },
     { path: '/instances/:instanceId', name: 'job-flow-instance', component: () => import('@/pages/JobFlowInstance.vue') },
+    { path: '/templates/:templateId/instances/new', name: 'instance-create-wizard', component: () => import('@/pages/InstanceCreateWizard.vue') },
     { path: '/instances/:instanceId/tasks/:taskId', name: 'job-flow-task', component: () => import('@/pages/JobFlowTask.vue') },
     {
       path: '/groups/:groupId/workflows/:workflowId',
