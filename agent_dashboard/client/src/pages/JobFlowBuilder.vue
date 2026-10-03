@@ -2,6 +2,8 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import AppShell from '@/layouts/AppShell.vue'
+import DagGraph from '@/components/DagGraph.vue'
+import type { Task } from '@/api/types'
 import {
   createJobFlowInstance,
   createJobFlowTemplate,
@@ -22,6 +24,30 @@ const tasksText = ref('[{"id":"build","name":"构建","type":"backend","depends_
 const message = ref('')
 const error = ref('')
 const saving = ref(false)
+const parseError = ref('')
+
+const dagTasks = computed<Record<string, Task>>(() => {
+  try {
+    const tasks = parseTasks()
+    parseError.value = ''
+    const record: Record<string, Task> = {}
+    for (const task of tasks) {
+      record[task.id] = {
+        id: task.id,
+        name: task.name ?? task.id,
+        status: 'PENDING',
+        assigned_agent: '',
+        depends_on: task.depends_on ?? [],
+        last_updated: '',
+        type: task.type,
+      }
+    }
+    return record
+  } catch {
+    parseError.value = 'JSON 格式无效，DAG 预览暂不可用'
+    return {}
+  }
+})
 const templateId = computed(() => typeof route.params.templateId === 'string' ? route.params.templateId : '')
 const groupId = computed(() => {
   const value = route.query.groupId || route.query.group_id
@@ -138,15 +164,28 @@ onMounted(async () => {
           <p class="mt-2 text-[11px] text-muted-foreground">支持节点数组或“节点 ID → 配置”对象；节点可使用 id、depends_on、type、service_name 及 ACP、资源预算等扩展字段。</p>
         </div>
       </section>
-      <aside class="h-fit rounded-lg border border-border bg-card p-4">
-        <h2 class="text-sm font-semibold">发布流程</h2>
-        <ol class="mt-3 space-y-3 text-xs text-muted-foreground">
+      <aside class="h-fit space-y-3">
+        <div class="rounded-lg border border-border bg-card overflow-hidden">
+          <div class="border-b border-border px-3 py-2 flex items-center justify-between">
+            <h2 class="text-xs font-semibold">DAG 预览</h2>
+            <span v-if="parseError" class="text-[11px] text-orange-300">{{ parseError }}</span>
+            <span v-else class="text-[11px] text-muted-foreground">{{ Object.keys(dagTasks).length }} 个节点</span>
+          </div>
+          <div class="min-h-[280px]" data-testid="dag-preview">
+            <DagGraph v-if="Object.keys(dagTasks).length" :tasks="dagTasks" />
+            <p v-else class="p-6 text-center text-xs text-muted-foreground">输入有效 JSON 后显示 DAG</p>
+          </div>
+        </div>
+        <div class="rounded-lg border border-border bg-card p-4">
+          <h2 class="text-sm font-semibold">发布流程</h2>
+          <ol class="mt-3 space-y-3 text-xs text-muted-foreground">
           <li>1. 保存草稿：不创建版本和实例</li>
           <li>2. 仅发布：生成不可变版本</li>
           <li>3. 发布并执行：生成版本、创建实例</li>
         </ol>
-        <p v-if="message" data-testid="builder-message" class="mt-4 rounded bg-emerald-400/10 p-3 text-xs text-emerald-300">{{ message }}</p>
-        <p v-if="error" role="alert" class="mt-4 rounded bg-red-400/10 p-3 text-xs text-red-300">{{ error }}</p>
+          <p v-if="message" data-testid="builder-message" class="mt-4 rounded bg-emerald-400/10 p-3 text-xs text-emerald-300">{{ message }}</p>
+          <p v-if="error" role="alert" class="mt-4 rounded bg-red-400/10 p-3 text-xs text-red-300">{{ error }}</p>
+        </div>
       </aside>
     </div>
   </AppShell>
