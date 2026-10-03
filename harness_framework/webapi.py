@@ -50,6 +50,11 @@ from .event_journal import EventJournal
 from .workspace_merge import WorkspaceMergeService
 from .versioning import VersionedResourceStore
 from .job_flows import JobFlowService
+from .execution_profiles import ExecutionProfileService
+from .agent_runtimes import AgentRuntimeService
+from .skill_bundles import SkillBundleService
+from .mcp_grants import MCPService
+from .artifacts import ArtifactService
 
 log = logging.getLogger("webapi")
 
@@ -73,6 +78,11 @@ class APIHandler(BaseHTTPRequestHandler):
     event_journal: EventJournal = None
     workspace_merge: WorkspaceMergeService = None
     job_flows: JobFlowService = None
+    execution_profiles: ExecutionProfileService = None
+    agent_runtimes: AgentRuntimeService = None
+    skill_bundles: SkillBundleService = None
+    mcp_service: MCPService = None
+    artifacts: ArtifactService = None
     sse_connection_seconds: float = 300.0
 
     def log_message(self, format, *args):
@@ -278,6 +288,53 @@ class APIHandler(BaseHTTPRequestHandler):
                     attempt_id=query.get("attempt_id", [None])[0],
                 ))
             if path == "/api/project-groups":
+                pass  # handled below
+            if path == "/api/agent-runtimes":
+                return self._send_json(200, {"agent_runtimes": self.agent_runtimes.list_all()})
+            if path.startswith("/api/agent-runtimes/"):
+                parts = path.split("/")
+                runtime = self.agent_runtimes.get(parts[3])
+                if len(parts) == 5 and parts[4] == "health":
+                    return self._send_json(200, {"agent_runtime": runtime})
+                return self._send_json(200, {"agent_runtime": runtime})
+            if path == "/api/execution-profiles":
+                query = parse_qs(u.query)
+                group_id = query.get("group_id", [None])[0]
+                if group_id:
+                    return self._send_json(200, {"execution_profiles": self.execution_profiles.list_for_group(group_id)})
+                return self._send_json(200, {"execution_profiles": []})
+            if path.startswith("/api/execution-profiles/"):
+                parts = path.split("/")
+                return self._send_json(200, {"execution_profile": self.execution_profiles.get(parts[3])})
+            if path == "/api/skill-bundles":
+                return self._send_json(200, {"skill_bundles": self.skill_bundles.list_all()})
+            if path.startswith("/api/skill-bundles/") and len(path.split("/")) == 5 and path.split("/")[4] == "content":
+                return self._send_json(200, {"content": self.skill_bundles.get_content(path.split("/")[3])})
+            if path.startswith("/api/skill-bundles/"):
+                return self._send_json(200, {"skill_bundle": self.skill_bundles.get(path.split("/")[3])})
+            if path == "/api/mcp-servers":
+                return self._send_json(200, {"mcp_servers": self.mcp_service.list_servers()})
+            if path.startswith("/api/mcp-servers/"):
+                return self._send_json(200, {"mcp_server": self.mcp_service.get_server(path.split("/")[3])})
+            if path.startswith("/api/mcp-grants/"):
+                parts = path.split("/")
+                if len(parts) == 4:
+                    group_id = parts[3]
+                    grants = []
+                    cursor = None
+                    while True:
+                        page, cursor = self.consul.kv_list(f"mcp-grants/{group_id}/", cursor=cursor, limit=1000)
+                        for item in page:
+                            try:
+                                grants.append(json.loads(item.get("value", "{}")))
+                            except (TypeError, json.JSONDecodeError):
+                                continue
+                        if cursor is None:
+                            break
+                    return self._send_json(200, {"mcp_grants": grants})
+                if len(parts) == 5:
+                    return self._send_json(200, {"mcp_grant": self.mcp_service.get_grant(parts[3], parts[4])})
+            if path == "/api/project-groups":
                 context = self._authentication_context()
                 query = parse_qs(u.query)
                 try:
@@ -479,6 +536,21 @@ class APIHandler(BaseHTTPRequestHandler):
                     or path == "/api/instances" or path.startswith("/api/instances/")):
                 result = self._jobflow_post(path, body, self._authentication_context())
                 return self._send_json(201 if path in {"/api/templates", "/api/instances"} else 200, result)
+            if path == "/api/agent-runtimes":
+                return self._send_json(201, self.agent_runtimes.register(body, self._authentication_context().subject))
+            if path == "/api/execution-profiles":
+                return self._send_json(201, self.execution_profiles.create(body, self._authentication_context().subject))
+            if path.startswith("/api/execution-profiles/"):
+                parts = path.split("/")
+                if len(parts) == 5 and parts[4] == "disable":
+                    return self._send_json(200, self.execution_profiles.disable(parts[3], self._authentication_context().subject))
+                return self._send_json(200, self.execution_profiles.update(parts[3], body, self._authentication_context().subject))
+            if path == "/api/skill-bundles":
+                return self._send_json(201, self.skill_bundles.register(body, self._authentication_context().subject))
+            if path == "/api/mcp-servers":
+                return self._send_json(201, self.mcp_service.register_server(body, self._authentication_context().subject))
+            if path == "/api/mcp-grants" or (path.startswith("/api/mcp-grants/") and path.count("/") <= 4):
+                return self._send_json(201, self.mcp_service.create_grant(body, self._authentication_context().subject))
             if (len(parts) == 8 and parts[1:3] == ["api", "workflows"]
                     and parts[4] == "runs" and parts[6] == "workspace"
                     and parts[7] in {"cleanup", "trash", "restore", "purge"}):
@@ -1944,6 +2016,11 @@ def serve(consul: KVStore, host: str = "0.0.0.0", port: int = 8080,
         consul, APIHandler.workspace_manager, APIHandler.event_journal
     )
     APIHandler.job_flows = JobFlowService(consul)
+    APIHandler.execution_profiles = ExecutionProfileService(consul)
+    APIHandler.agent_runtimes = AgentRuntimeService(consul)
+    APIHandler.skill_bundles = SkillBundleService(consul)
+    APIHandler.mcp_service = MCPService(consul)
+    APIHandler.artifacts = ArtifactService(consul)
     server = ThreadingHTTPServer((host, port), APIHandler)
     log.info("WebAPI serving on http://%s:%d/", host, port)
     return server
