@@ -372,6 +372,13 @@ class JobFlowService:
         template_meta = self._read(
             f"{TEMPLATE_PREFIX}/{meta.get('template_id')}/meta", {}
         )
+        version_id = meta.get("version_id", "")
+        version_manifest = self._version_manifest(meta.get("template_id", ""), version_id)[0] if version_id else {}
+        version_tasks = {
+            task["id"]: task
+            for task in version_manifest.get("tasks", [])
+            if isinstance(task, dict) and "id" in task
+        }
         context = self._read(f"{INSTANCE_PREFIX}/{instance_id}/context", {})
         status = self._read(f"{INSTANCE_PREFIX}/{instance_id}/status", {})
         tasks_raw, _ = self.store.kv_get(f"{INSTANCE_PREFIX}/{instance_id}/tasks/", recurse=True)
@@ -382,7 +389,8 @@ class JobFlowService:
                 value = self._read(key)
                 task_id = key.split("/")[-2]
                 if isinstance(value, dict):
-                    tasks[task_id] = value
+                    definition = version_tasks.get(task_id, {})
+                    tasks[task_id] = {**value, "depends_on": definition.get("depends_on", [])}
         return {
             **meta,
             "group_id": template_meta.get("group_id") if isinstance(template_meta, dict) else None,

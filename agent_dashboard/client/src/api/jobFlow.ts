@@ -40,7 +40,7 @@ export interface JobFlowInstance {
     workspace: Record<string, unknown>
   }
   status: { state: string; revision: number }
-  tasks: Record<string, { state: string; attempt_count: number; current_attempt?: string }>
+  tasks: Record<string, { state: string; attempt_count: number; current_attempt?: string; depends_on?: string[] }>
   successor_of?: string
 }
 

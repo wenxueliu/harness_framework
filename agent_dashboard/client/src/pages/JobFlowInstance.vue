@@ -2,6 +2,8 @@
 import { onMounted, ref } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import AppShell from '@/layouts/AppShell.vue'
+import DagGraph from '@/components/DagGraph.vue'
+import type { Task } from '@/api/types'
 import { deleteJobFlowInstance, getJobFlowInstance, rerunJobFlowInstance, type JobFlowInstance } from '@/api/jobFlow'
 
 const route = useRoute()
@@ -15,9 +17,44 @@ const parameterText = ref('{}')
 const instanceId = String(route.params.instanceId || '')
 const deletableStates = new Set(['QUEUED', 'SUCCEEDED', 'FAILED', 'ABORTED', 'SUPERSEDED', 'ARCHIVED'])
 
+const TASK_STATE_MAP: Record<string, Task['status']> = {
+  QUEUED: 'PENDING',
+  PENDING: 'PENDING',
+  BLOCKED: 'BLOCKED',
+  RUNNING: 'IN_PROGRESS',
+  IN_PROGRESS: 'IN_PROGRESS',
+  DONE: 'DONE',
+  SUCCEEDED: 'DONE',
+  FAILED: 'FAILED',
+  ABORTED: 'ABORTED',
+  AWAITING_REVIEW: 'AWAITING_REVIEW',
+  WAITING_FOR_HUMAN: 'WAITING_FOR_HUMAN',
+  WAITING_FOR_CAPABILITY: 'BLOCKED',
+  SKIPPED_UPSTREAM_FAILED: 'SKIPPED_UPSTREAM_FAILED',
+}
+
+const dagTasks = ref<Record<string, Task>>({})
+
+function buildDagTasks() {
+  const record: Record<string, Task> = {}
+  for (const [taskId, task] of Object.entries(instance.value?.tasks ?? {})) {
+    record[taskId] = {
+      id: taskId,
+      name: taskId,
+      status: TASK_STATE_MAP[task.state] ?? 'UNKNOWN',
+      raw_status: task.state,
+      assigned_agent: '',
+      depends_on: task.depends_on ?? [],
+      last_updated: '',
+    }
+  }
+  dagTasks.value = record
+}
+
 async function load() {
   try {
     instance.value = await getJobFlowInstance(instanceId)
+    buildDagTasks()
     gitRef.value = String(instance.value.context.git?.ref || '')
     parameterText.value = JSON.stringify(instance.value.context.parameters || {}, null, 2)
   }
@@ -57,6 +94,13 @@ onMounted(load)
         <div class="rounded border border-border bg-card p-3"><p class="text-[11px] text-muted-foreground">所属项目组</p><p class="mt-1 font-mono text-xs">{{ instance.group_id || 'unassigned' }}</p></div>
         <div class="rounded border border-border bg-card p-3"><p class="text-[11px] text-muted-foreground">Git</p><p class="mt-1 font-mono text-xs">{{ instance.context.git?.ref || '未指定' }}</p></div>
         <div class="rounded border border-border bg-card p-3"><p class="text-[11px] text-muted-foreground">Workspace</p><p class="mt-1 font-mono text-xs">{{ instance.context.workspace?.workspace_id || '未指定' }}</p></div>
+      </section>
+      <section class="rounded-lg border border-border bg-card p-4">
+        <h2 class="text-sm font-semibold mb-2">运行 DAG</h2>
+        <div class="rounded border border-border overflow-hidden min-h-[300px]" data-testid="instance-dag">
+          <DagGraph v-if="Object.keys(dagTasks).length" :tasks="dagTasks" />
+          <p v-else class="p-6 text-center text-xs text-muted-foreground">暂无任务节点</p>
+        </div>
       </section>
       <section class="rounded-lg border border-border bg-card p-4">
         <h2 class="text-sm font-semibold">实例任务</h2>
