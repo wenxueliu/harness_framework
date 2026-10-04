@@ -5,7 +5,6 @@ const router = createRouter({
   history: createWebHashHistory(),
   routes: [
     { path: '/', name: 'dashboard', component: Home },
-    { path: '/workflows/new', name: 'workflow-builder', component: () => import('@/pages/WorkflowBuilder.vue') },
     { path: '/templates', name: 'job-flow-templates', component: () => import('@/pages/JobFlowTemplates.vue') },
     { path: '/templates/new', name: 'job-flow-builder-new', component: () => import('@/pages/JobFlowBuilder.vue') },
     { path: '/templates/:templateId/edit', name: 'job-flow-builder', component: () => import('@/pages/JobFlowBuilder.vue') },

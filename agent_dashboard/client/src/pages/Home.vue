@@ -1,11 +1,8 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import type { Workflow, Task } from '@/api/types'
-import {
-  sendControlSignalToHarness,
-  pingHarness,
-} from '@/lib/harnessApi'
-import { listJobFlowInstances } from '@/api/jobFlow'
+import { pingHarness, sendControlSignalToHarness } from '@/lib/harnessApi'
+import { listJobFlowInstances, controlJobFlowInstance } from '@/api/jobFlow'
 import { instancesToWorkflows } from '@/lib/instanceAdapter'
 import { fetchWorkflows as fetchWorkflowsMock, sendControlSignal as sendControlSignalMock, PHASE_CONFIG, TASK_TYPE_ICON } from '@/lib/mockData'
 import DagGraph from '@/components/DagGraph.vue'
@@ -15,8 +12,6 @@ import WorkflowListItem from '@/components/WorkflowListItem.vue'
 import ControlDialog from '@/components/ControlDialog.vue'
 import TaskDrawer from '@/components/TaskDrawer.vue'
 import ProjectGroupSidebar from '@/components/ProjectGroupSidebar.vue'
-import RunCreationDialog from '@/components/RunCreationDialog.vue'
-import { createRun } from '@/api/dashboard'
 import {
   Pause,
   Play,
@@ -77,10 +72,6 @@ const refreshing = ref(false)
 const sheetOpen = ref(false)
 const mobileTab = ref<MobileTab>('dag')
 const taskDrawerOpen = ref(false)
-const runDialogOpen = ref(false)
-const runCreating = ref(false)
-const runError = ref('')
-
 function syncRouteSelection(data = workflows.value) {
   const workflowId = typeof route.params.workflowId === 'string' ? route.params.workflowId : null
   const taskId = typeof route.params.taskId === 'string' ? route.params.taskId : null
@@ -199,11 +190,13 @@ async function handleConfirm() {
   dialogOpen.value = false
   try {
     if (dataSource.value === 'api') {
-      await sendControlSignalToHarness(
-        selectedId.value,
-        pendingSignal.value,
-        pendingTaskName.value ?? undefined,
-      )
+      const actionMap: Record<string, 'pause' | 'abort'> = { PAUSE: 'pause', ABORT: 'abort' }
+      const action = actionMap[pendingSignal.value]
+      if (action) {
+        await controlJobFlowInstance(selectedId.value, action)
+      } else {
+        await sendControlSignalToHarness(selectedId.value, pendingSignal.value, pendingTaskName.value ?? undefined)
+      }
     } else if (dataSource.value === 'demo') {
       await sendControlSignalMock(selectedId.value, pendingSignal.value)
     } else {
@@ -260,17 +253,6 @@ async function selectProjectGroup(groupId: string) {
     selectedId.value = workflowId
     await router.push({ name: 'workflow-dashboard', params: { groupId, workflowId } })
   }
-}
-
-async function startRun(input: { workspaceId: string; strategy: 'ORIGINAL' | 'GIT_WORKTREE' | 'CONTROLLED_COPY'; gitRef: string; acceptDirty: boolean }) {
-  if (!selectedId.value) return
-  runCreating.value = true; runError.value = ''
-  try {
-    await createRun(selectedId.value, input.workspaceId, input.strategy, input.gitRef, input.acceptDirty)
-    runDialogOpen.value = false
-    await load(true)
-  } catch (cause) { runError.value = cause instanceof Error ? cause.message : 'Run 启动失败' }
-  finally { runCreating.value = false }
 }
 
 function closeTaskDetail() {
@@ -456,13 +438,6 @@ function closeTaskDetail() {
 
             <!-- Control buttons -->
             <div class="flex items-center gap-2 overflow-x-auto pb-0.5 scrollbar-hide">
-              <button
-                v-if="capabilityStore.permitted('run:create') && projectGroupStore.workspaces.length"
-                class="flex-shrink-0 flex items-center gap-1.5 text-xs px-3 py-1.5 rounded bg-blue-500/10 border border-blue-500/30 text-blue-300 hover:bg-blue-500/20 transition-colors whitespace-nowrap"
-                @click="runError = ''; runDialogOpen = true"
-              >
-                <Play :size="11" />启动 Run
-              </button>
               <button
                 v-if="selectedWorkflow.phase === 'BLOCKED'"
                 class="flex-shrink-0 flex items-center gap-1.5 text-xs px-3 py-1.5 rounded bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/20 transition-colors whitespace-nowrap"
@@ -760,8 +735,6 @@ function closeTaskDetail() {
         </div>
       </aside>
     </div>
-    <RunCreationDialog :open="runDialogOpen" :req-id="selectedId || ''" :workspaces="projectGroupStore.workspaces" :busy="runCreating" :error="runError" @close="runDialogOpen = false" @create="startRun" />
-
     <!-- Mobile Task Detail Bottom Sheet -->
     <Teleport to="body">
       <div v-if="taskDrawerOpen && selectedTask" class="fixed inset-0 bg-black/60 z-40 md:hidden" @click="closeTaskDetail" />

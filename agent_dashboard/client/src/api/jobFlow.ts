@@ -148,6 +148,12 @@ export async function startJobFlowInstance(instanceId: string) {
   )
 }
 
+export async function controlJobFlowInstance(instanceId: string, action: 'pause' | 'abort' | 'drain' | 'archive') {
+  return apiRequest<{ instance: JobFlowInstance }>(
+    '/api/instances/' + encodeURIComponent(instanceId) + '/' + action, jsonRequest('POST', {}),
+  )
+}
+
 export async function rerunJobFlowInstance(instanceId: string, input: Partial<JobFlowInstance['context']> = {}) {
   return apiRequest<{ instance: JobFlowInstance; successor_of: string }>(
     '/api/instances/' + encodeURIComponent(instanceId) + '/rerun',
