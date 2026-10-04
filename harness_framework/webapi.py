@@ -55,6 +55,7 @@ from .agent_runtimes import AgentRuntimeService
 from .skill_bundles import SkillBundleService
 from .mcp_grants import MCPService
 from .artifacts import ArtifactService
+from .capability_preflight import CapabilityPreflightService
 
 log = logging.getLogger("webapi")
 
@@ -306,6 +307,17 @@ class APIHandler(BaseHTTPRequestHandler):
             if path.startswith("/api/execution-profiles/"):
                 parts = path.split("/")
                 return self._send_json(200, {"execution_profile": self.execution_profiles.get(parts[3])})
+            if path.startswith("/api/instances/") and path.endswith("/preflight/latest"):
+                instance_id = path.split("/")[3]
+                latest = self.consul.kv_get(f"instances/{instance_id}/preflight/latest")
+                return self._send_json(200, json.loads(latest[0]) if latest[0] else {"status": "IDLE"})
+            if path.startswith("/api/instances/") and path.endswith("/artifacts"):
+                instance_id = path.split("/")[3]
+                return self._send_json(200, {"artifacts": self.artifacts.list_for_instance(instance_id)})
+            if path.startswith("/api/attempts/") and path.endswith("/manifest"):
+                from .execution_manifest import ExecutionManifestService
+                attempt_id = path.split("/")[3]
+                return self._send_json(200, ExecutionManifestService(self.consul).get(attempt_id))
             if path == "/api/skill-bundles":
                 return self._send_json(200, {"skill_bundles": self.skill_bundles.list_all()})
             if path.startswith("/api/skill-bundles/") and len(path.split("/")) == 5 and path.split("/")[4] == "content":
@@ -538,6 +550,18 @@ class APIHandler(BaseHTTPRequestHandler):
                 return self._send_json(201 if path in {"/api/templates", "/api/instances"} else 200, result)
             if path == "/api/agent-runtimes":
                 return self._send_json(201, self.agent_runtimes.register(body, self._authentication_context().subject))
+            if path.startswith("/api/instances/") and path.endswith("/preflight"):
+                instance_id = path.split("/")[3]
+                from .execution_manifest import ExecutionManifestService
+                preflight = CapabilityPreflightService(
+                    self.consul, self.agent_runtimes, self.execution_profiles,
+                    self.skill_bundles, self.mcp_service, self.workspace_manager,
+                    ExecutionManifestService(self.consul),
+                )
+                return self._send_json(200, preflight.run(instance_id))
+            if path.startswith("/api/instances/") and path.endswith("/artifacts"):
+                instance_id = path.split("/")[3]
+                return self._send_json(200, {"artifacts": self.artifacts.list_for_instance(instance_id)})
             if path == "/api/execution-profiles":
                 return self._send_json(201, self.execution_profiles.create(body, self._authentication_context().subject))
             if path.startswith("/api/execution-profiles/"):

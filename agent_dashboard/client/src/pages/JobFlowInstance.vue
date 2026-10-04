@@ -3,6 +3,11 @@ import { onMounted, ref } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import AppShell from '@/layouts/AppShell.vue'
 import DagGraph from '@/components/DagGraph.vue'
+import PreflightPanel, { type PreflightResult } from '@/components/PreflightPanel.vue'
+import ManifestViewer from '@/components/ManifestViewer.vue'
+import ChangeSetPanel from '@/components/ChangeSetPanel.vue'
+import WorkspaceCard from '@/components/WorkspaceCard.vue'
+import ArtifactList, { type ArtifactItem } from '@/components/ArtifactList.vue'
 import type { Task } from '@/api/types'
 import { deleteJobFlowInstance, getJobFlowInstance, rerunJobFlowInstance, type JobFlowInstance } from '@/api/jobFlow'
 
@@ -34,6 +39,10 @@ const TASK_STATE_MAP: Record<string, Task['status']> = {
 }
 
 const dagTasks = ref<Record<string, Task>>({})
+const preflight = ref<PreflightResult | null>(null)
+const manifest = ref<Record<string, unknown> | null>(null)
+const artifactList = ref<ArtifactItem[]>([])
+const activeTab = ref('preflight')
 
 function buildDagTasks() {
   const record: Record<string, Task> = {}
@@ -49,6 +58,21 @@ function buildDagTasks() {
     }
   }
   dagTasks.value = record
+}
+
+async function loadCapability() {
+  try {
+    const res = await fetch(`/api/instances/${instanceId}/preflight/latest`)
+    if (res.ok) preflight.value = await res.json()
+  } catch { /* offline */ }
+  try {
+    const res = await fetch(`/api/attempts/${instanceId}/manifest`)
+    if (res.ok) manifest.value = await res.json()
+  } catch { /* offline */ }
+  try {
+    const res = await fetch(`/api/instances/${instanceId}/artifacts`)
+    if (res.ok) { const data = await res.json(); artifactList.value = data.artifacts ?? [] }
+  } catch { /* offline */ }
 }
 
 async function load() {
@@ -80,7 +104,7 @@ async function removeInstance() {
   }
   catch (cause) { error.value = cause instanceof Error ? cause.message : '实例删除失败' }
 }
-onMounted(load)
+onMounted(() => { load(); loadCapability() })
 </script>
 
 <template>
@@ -101,6 +125,28 @@ onMounted(load)
           <DagGraph v-if="Object.keys(dagTasks).length" :tasks="dagTasks" />
           <p v-else class="p-6 text-center text-xs text-muted-foreground">暂无任务节点</p>
         </div>
+      </section>
+      <section class="rounded-lg border border-border bg-card p-4">
+        <h2 class="text-sm font-semibold mb-2">Workspace</h2>
+        <WorkspaceCard
+          :name="String(instance.context.workspace?.workspace_id ?? '未指定')"
+          :isolation-level="String(instance.context.workspace?.strategy ?? 'ORIGINAL')"
+          :status="['SUCCEEDED','FAILED','ABORTED','SUPERSEDED'].includes(instance.status.state) ? 'RETAINED' : 'ACTIVE'"
+          :created-at="String(instance.context.workspace?.created_at ?? '')"
+          :retention-days="7"
+          :is-terminal="['SUCCEEDED','FAILED','ABORTED','SUPERSEDED'].includes(instance.status.state)"
+        />
+      </section>
+      <section class="rounded-lg border border-border bg-card p-4">
+        <div class="flex gap-2 border-b border-border mb-3">
+          <button v-for="tab in ['preflight','manifest','artifacts']" :key="tab"
+            class="px-3 py-1.5 text-xs transition"
+            :class="activeTab === tab ? 'border-b-2 border-blue-400 text-blue-300 font-medium' : 'text-muted-foreground'"
+            @click="activeTab = tab">{{ tab }}</button>
+        </div>
+        <PreflightPanel v-if="activeTab === 'preflight'" :result="preflight" @rerun="loadCapability" />
+        <ManifestViewer v-if="activeTab === 'manifest'" :manifest="manifest" />
+        <ArtifactList v-if="activeTab === 'artifacts'" :artifacts="artifactList" />
       </section>
       <section class="rounded-lg border border-border bg-card p-4">
         <h2 class="text-sm font-semibold">实例任务</h2>
