@@ -2,10 +2,11 @@
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import type { Workflow, Task } from '@/api/types'
 import {
-  fetchWorkflowsFromHarness,
   sendControlSignalToHarness,
   pingHarness,
 } from '@/lib/harnessApi'
+import { listJobFlowInstances } from '@/api/jobFlow'
+import { instancesToWorkflows } from '@/lib/instanceAdapter'
 import { fetchWorkflows as fetchWorkflowsMock, sendControlSignal as sendControlSignalMock, PHASE_CONFIG, TASK_TYPE_ICON } from '@/lib/mockData'
 import DagGraph from '@/components/DagGraph.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
@@ -35,14 +36,27 @@ import {
   BarChart3,
   FolderPlus,
   Settings,
+  Sun,
+  Moon,
+  Monitor,
 } from 'lucide-vue-next'
 import { cn } from '@/lib/utils'
 import { useCapabilityStore } from '@/stores/capabilities'
 import { useProjectGroupStore } from '@/stores/projectGroups'
 import { useRoute, useRouter } from 'vue-router'
 import type { ControlSignal } from '@/lib/constants'
+import { applyTheme, readThemeMode, type ThemeMode } from '@/lib/theme'
 type MobileTab = 'dag' | 'tasks' | 'stats'
 const router = useRouter()
+const themeMode = ref<ThemeMode>('system')
+onMounted(() => {
+  themeMode.value = readThemeMode()
+  applyTheme(themeMode.value)
+})
+function changeTheme(event: Event) {
+  themeMode.value = (event.target as HTMLSelectElement).value as ThemeMode
+  applyTheme(themeMode.value)
+}
 const route = useRoute()
 const capabilityStore = useCapabilityStore()
 const projectGroupStore = useProjectGroupStore()
@@ -131,7 +145,10 @@ async function load(silent = false) {
         const groupId = typeof route.params.groupId === 'string' ? route.params.groupId : 'unassigned'
         await projectGroupStore.load(groupId)
       }
-      data = await fetchWorkflowsFromHarness()
+      const groupId = typeof route.params.groupId === 'string' && route.params.groupId !== 'unassigned'
+        ? route.params.groupId : undefined
+      const instances = await listJobFlowInstances(undefined, groupId)
+      data = instancesToWorkflows(instances)
       dataSource.value = 'api'
     } catch (e) {
       if (!demoMode) {
@@ -232,7 +249,7 @@ function openWorkflowBuilder() {
   const groupId = projectGroupStore.selectedId !== 'unassigned'
     ? projectGroupStore.selectedId
     : currentGroupId.value !== 'unassigned' ? currentGroupId.value : undefined
-  router.push({ name: 'workflow-builder', query: groupId ? { groupId } : undefined })
+  router.push({ name: 'job-flow-templates', query: groupId ? { groupId } : undefined })
 }
 
 async function selectProjectGroup(groupId: string) {
@@ -308,6 +325,14 @@ function closeTaskDetail() {
       </div>
 
       <div class="ml-auto flex items-center gap-2">
+        <label class="flex items-center gap-1.5 text-muted-foreground" title="界面主题">
+          <Sun v-if="themeMode === 'light'" :size="13" />
+          <Moon v-else-if="themeMode === 'dark'" :size="13" />
+          <Monitor v-else :size="13" />
+          <select aria-label="主题" class="max-w-20 rounded border border-border bg-background px-1.5 py-1 text-[11px]" :value="themeMode" @change="changeTheme">
+            <option value="system">系统</option><option value="light">Light</option><option value="dark">Dark</option>
+          </select>
+        </label>
         <button
           v-if="typeof route.params.groupId === 'string' && selectedId"
           aria-label="查看执行日志"
@@ -336,7 +361,7 @@ function closeTaskDetail() {
           @click="openWorkflowBuilder"
         >
           <span class="text-sm leading-none">+</span>
-          <span class="hidden sm:inline">新建任务</span>
+          <span class="hidden sm:inline">从模板创建</span>
         </button>
         <button
           class="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors px-2 py-1 rounded hover:bg-accent"

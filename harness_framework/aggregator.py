@@ -21,6 +21,7 @@ log = logging.getLogger("aggregator")
 
 SUCCESS_STATES = frozenset({"DONE"})
 FAILURE_STATES = frozenset({"FAILED", "ABORTED", "SKIPPED_UPSTREAM_FAILED"})
+INSTANCE_PREFIX = "jobflows/instances"
 
 
 class Aggregator:
@@ -47,27 +48,173 @@ class Aggregator:
     def _tick(self) -> None:
         # 列出所有需求
         items, _ = self.consul.kv_get("workflows/", recurse=True)
+        if items:
+            req_ids = set()
+            for it in items:
+                parts = it["Key"].split("/")
+                if len(parts) >= 2 and parts[0] == "workflows":
+                    req_ids.add(parts[1])
+
+            # 按 priority 降序排列需求，高优先级先处理
+            def req_priority(req_id: str) -> int:
+                val, _ = self.consul.kv_get(f"workflows/{req_id}/priority")
+                return int(val) if val else 0
+
+            sorted_reqs = sorted(req_ids, key=req_priority, reverse=True)
+
+            for req_id in sorted_reqs:
+                try:
+                    self._process_requirement(req_id)
+                except Exception as e:
+                    log.exception("process %s failed: %s", req_id, e)
+
+        # 同步推进 Job Flow 实例
+        self._tick_instances()
+
+    def _tick_instances(self) -> None:
+        """扫描 jobflows/instances/ 并推进 RUNNING 实例的任务。"""
+        items, _ = self.consul.kv_get(f"{INSTANCE_PREFIX}/", recurse=True)
         if not items:
             return
 
-        req_ids = set()
+        instance_ids = set()
         for it in items:
             parts = it["Key"].split("/")
-            if len(parts) >= 2 and parts[0] == "workflows":
-                req_ids.add(parts[1])
+            if len(parts) >= 3 and parts[0] == "jobflows" and parts[1] == "instances":
+                instance_ids.add(parts[2])
 
-        # 按 priority 降序排列需求，高优先级先处理
-        def req_priority(req_id: str) -> int:
-            val, _ = self.consul.kv_get(f"workflows/{req_id}/priority")
-            return int(val) if val else 0
-
-        sorted_reqs = sorted(req_ids, key=req_priority, reverse=True)
-
-        for req_id in sorted_reqs:
+        for instance_id in sorted(instance_ids):
             try:
-                self._process_requirement(req_id)
+                self._process_instance(instance_id)
             except Exception as e:
-                log.exception("process %s failed: %s", req_id, e)
+                log.exception("process instance %s failed: %s", instance_id, e)
+
+    def _process_instance(self, instance_id: str) -> None:
+        """推进单个 Job Flow 实例的任务依赖。"""
+        import json as _json
+
+        status_raw, _ = self.consul.kv_get(f"{INSTANCE_PREFIX}/{instance_id}/status")
+        if not status_raw:
+            return
+        try:
+            status = _json.loads(status_raw) if isinstance(status_raw, str) else status_raw
+        except (_json.JSONDecodeError, TypeError):
+            return
+        state = status.get("state", "") if isinstance(status, dict) else str(status)
+        if state not in ("RUNNING", "IN_PROGRESS"):
+            return
+
+        ctl, _ = self.consul.kv_get(f"{INSTANCE_PREFIX}/{instance_id}/control")
+        if ctl == "ABORT":
+            self._abort_instance(instance_id)
+            return
+        if ctl == "PAUSE":
+            return
+
+        tasks_raw, _ = self.consul.kv_get(f"{INSTANCE_PREFIX}/{instance_id}/tasks")
+        if not tasks_raw:
+            return
+        try:
+            tasks = _json.loads(tasks_raw) if isinstance(tasks_raw, str) else tasks_raw
+        except (_json.JSONDecodeError, TypeError):
+            return
+        if not isinstance(tasks, dict):
+            return
+
+        for task_id, task_info in tasks.items():
+            if not isinstance(task_info, dict):
+                continue
+            cur_state = task_info.get("state", "QUEUED")
+            if cur_state not in ("QUEUED", "BLOCKED"):
+                continue
+
+            depends_on = task_info.get("depends_on", [])
+            blocking_deps = []
+            for dep in depends_on:
+                dep_name = dep.get("task", "") if isinstance(dep, dict) else str(dep)
+                if dep_name:
+                    blocking_deps.append(dep_name)
+
+            dep_states = []
+            failed = False
+            for dep_name in blocking_deps:
+                dep_info = tasks.get(dep_name, {})
+                dep_state = dep_info.get("state", "QUEUED") if isinstance(dep_info, dict) else "QUEUED"
+                dep_states.append(dep_state)
+                if dep_state in FAILURE_STATES:
+                    failed = True
+
+            if failed:
+                task_info["state"] = "SKIPPED_UPSTREAM_FAILED"
+                self._write_instance_task(instance_id, task_id, task_info)
+                continue
+
+            if all(s == "DONE" or s == "SUCCEEDED" for s in dep_states):
+                task_info["state"] = "PENDING"
+                self._write_instance_task(instance_id, task_id, task_info)
+                log.info("instance %s: activated task %s", instance_id, task_id)
+
+        # 检查是否所有任务已终态
+        all_terminal = all(
+            info.get("state", "") in ("DONE", "SUCCEEDED", "FAILED", "ABORTED",
+                                       "SKIPPED_UPSTREAM_FAILED")
+            for info in tasks.values() if isinstance(info, dict)
+        )
+        if all_terminal and tasks:
+            any_failed = any(
+                info.get("state", "") in ("FAILED", "ABORTED", "SKIPPED_UPSTREAM_FAILED")
+                for info in tasks.values() if isinstance(info, dict)
+            )
+            final_state = "FAILED" if any_failed else "SUCCEEDED"
+            self.consul.kv_put(f"{INSTANCE_PREFIX}/{instance_id}/status", _json.dumps({
+                "state": final_state, "revision": int(status.get("revision", 0)) + 1,
+                "updated_at": _now_iso(),
+            }))
+            log.info("instance %s reached terminal state: %s", instance_id, final_state)
+
+    def _write_instance_task(self, instance_id: str, task_id: str, task_info: dict) -> None:
+        import json as _json
+        self.consul.kv_put(
+            f"{INSTANCE_PREFIX}/{instance_id}/tasks", _json.dumps(
+                self._read_instance_tasks(instance_id) | {task_id: task_info}
+            )
+        )
+
+    def _read_instance_tasks(self, instance_id: str) -> dict:
+        import json as _json
+        raw, _ = self.consul.kv_get(f"{INSTANCE_PREFIX}/{instance_id}/tasks")
+        if not raw:
+            return {}
+        try:
+            tasks = _json.loads(raw) if isinstance(raw, str) else raw
+            return tasks if isinstance(tasks, dict) else {}
+        except (_json.JSONDecodeError, TypeError):
+            return {}
+
+    def _abort_instance(self, instance_id: str) -> None:
+        """ABORT 信号：将所有非终态任务设为 ABORTED。"""
+        import json as _json
+        tasks = self._read_instance_tasks(instance_id)
+        for task_id, info in tasks.items():
+            if not isinstance(info, dict):
+                continue
+            if info.get("state", "") not in ("DONE", "SUCCEEDED", "FAILED",
+                                              "ABORTED", "SKIPPED_UPSTREAM_FAILED"):
+                info["state"] = "ABORTED"
+        self.consul.kv_put(
+            f"{INSTANCE_PREFIX}/{instance_id}/tasks", _json.dumps(tasks)
+        )
+        status_raw, _ = self.consul.kv_get(f"{INSTANCE_PREFIX}/{instance_id}/status")
+        try:
+            status = _json.loads(status_raw) if isinstance(status_raw, str) else (status_raw or {})
+        except (_json.JSONDecodeError, TypeError):
+            status = {}
+        revision = int(status.get("revision", 0)) + 1 if isinstance(status, dict) else 1
+        self.consul.kv_put(f"{INSTANCE_PREFIX}/{instance_id}/status", _json.dumps({
+            "state": "ABORTED", "revision": revision, "updated_at": _now_iso(),
+        }))
+        self.consul.kv_delete(f"{INSTANCE_PREFIX}/{instance_id}/control")
+        log.info("instance %s aborted", instance_id)
 
     def _process_requirement(self, req_id: str) -> None:
         # 检查是否已发布

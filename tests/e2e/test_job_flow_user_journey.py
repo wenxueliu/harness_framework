@@ -69,6 +69,56 @@ def test_template_instance_task_detail_and_theme(
 
 @pytest.mark.e2e
 @pytest.mark.smoke
+def test_home_shows_instances_and_template_create_button(
+    page: Page, dashboard_url: str,
+) -> None:
+    """The homepage lists Job Flow instances and links to template creation."""
+    suffix = str(time.time_ns())
+    template_id = "ui-home-template-" + suffix
+    instance_id = "ui-home-instance-" + suffix
+    instance_name = "UI home instance " + suffix
+    try:
+        api_json("POST", "/api/templates", {
+            "template_id": template_id,
+            "name": "UI home journey " + suffix,
+            "tasks": [
+                {"id": "build", "type": "backend", "depends_on": []},
+                {"id": "test", "type": "test", "depends_on": ["build"]},
+            ],
+        })
+        published = api_json("POST", f"/api/templates/{template_id}/publish", {})
+        api_json("POST", "/api/instances", {
+            "instance_id": instance_id,
+            "template_id": template_id,
+            "version_id": published["version"]["version_id"],
+            "name": instance_name,
+            "parameters": {}, "git": {}, "workspace": {},
+        })
+
+        page.goto(dashboard_url + "/#/")
+        wait_for_network_idle(page)
+
+        expect(page.get_by_text(instance_name)).to_be_visible(timeout=15000)
+
+        create_button = page.locator("button", has_text="从模板创建")
+        expect(create_button).to_be_visible(timeout=10000)
+
+        create_button.click()
+        wait_for_network_idle(page)
+        expect(page.get_by_text("模板管理")).to_be_visible(timeout=10000)
+    finally:
+        try:
+            api_json("DELETE", f"/api/instances/{instance_id}")
+        except RuntimeError:
+            pass
+        try:
+            api_json("DELETE", f"/api/templates/{template_id}")
+        except RuntimeError:
+            pass
+
+
+@pytest.mark.e2e
+@pytest.mark.smoke
 def test_queued_instance_can_be_deleted_from_instance_list(
     page: Page, dashboard_url: str,
 ) -> None:

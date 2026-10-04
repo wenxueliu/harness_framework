@@ -442,3 +442,103 @@ class TestAggregator:
         assert not backend_pending, (
             "backend should NOT activate when blocking dep (design) is not DONE"
         )
+
+
+class TestAggregatorInstances:
+    """Aggregator 对 Job Flow 实例的依赖推进测试。"""
+
+    def test_running_instance_tasks_advance_when_deps_satisfied(self):
+        store = {
+            "jobflows/instances/inst-001/status": json.dumps(
+                {"state": "RUNNING", "revision": 1}
+            ),
+            "jobflows/instances/inst-001/tasks": json.dumps({
+                "build": {"state": "DONE", "attempt_count": 1, "depends_on": []},
+                "test": {"state": "QUEUED", "attempt_count": 0, "depends_on": ["build"]},
+            }),
+        }
+        consul = _make_store(store)
+        agg = Aggregator(consul, run_manager=make_mock_run_manager(), poll_interval=1)
+
+        agg._process_instance("inst-001")
+
+        puts = {c[0][0]: c[0][1] for c in consul.kv_put.call_args_list}
+        tasks_written = json.loads(puts.get("jobflows/instances/inst-001/tasks", "{}"))
+        assert tasks_written.get("test", {}).get("state") == "PENDING"
+
+    def test_queued_instance_tasks_not_advanced(self):
+        store = {
+            "jobflows/instances/inst-002/status": json.dumps(
+                {"state": "QUEUED", "revision": 0}
+            ),
+            "jobflows/instances/inst-002/tasks": json.dumps({
+                "build": {"state": "QUEUED", "attempt_count": 0, "depends_on": []},
+            }),
+        }
+        consul = _make_store(store)
+        agg = Aggregator(consul, run_manager=make_mock_run_manager(), poll_interval=1)
+
+        agg._process_instance("inst-002")
+
+        consul.kv_put.assert_not_called()
+
+    def test_instance_aborts_on_control_signal(self):
+        store = {
+            "jobflows/instances/inst-003/status": json.dumps(
+                {"state": "RUNNING", "revision": 1}
+            ),
+            "jobflows/instances/inst-003/control": "ABORT",
+            "jobflows/instances/inst-003/tasks": json.dumps({
+                "build": {"state": "IN_PROGRESS", "attempt_count": 1, "depends_on": []},
+                "test": {"state": "QUEUED", "attempt_count": 0, "depends_on": ["build"]},
+            }),
+        }
+        consul = _make_store(store)
+        agg = Aggregator(consul, run_manager=make_mock_run_manager(), poll_interval=1)
+
+        agg._process_instance("inst-003")
+
+        puts = {c[0][0]: c[0][1] for c in consul.kv_put.call_args_list}
+        status = json.loads(puts.get("jobflows/instances/inst-003/status", "{}"))
+        assert status.get("state") == "ABORTED"
+        tasks_written = json.loads(puts.get("jobflows/instances/inst-003/tasks", "{}"))
+        assert tasks_written.get("build", {}).get("state") == "ABORTED"
+        consul.kv_delete.assert_called_once_with("jobflows/instances/inst-003/control")
+
+    def test_instance_reaches_succeeded_when_all_tasks_done(self):
+        store = {
+            "jobflows/instances/inst-004/status": json.dumps(
+                {"state": "RUNNING", "revision": 2}
+            ),
+            "jobflows/instances/inst-004/tasks": json.dumps({
+                "build": {"state": "DONE", "attempt_count": 1, "depends_on": []},
+                "test": {"state": "SUCCEEDED", "attempt_count": 1, "depends_on": ["build"]},
+            }),
+        }
+        consul = _make_store(store)
+        agg = Aggregator(consul, run_manager=make_mock_run_manager(), poll_interval=1)
+
+        agg._process_instance("inst-004")
+
+        puts = {c[0][0]: c[0][1] for c in consul.kv_put.call_args_list}
+        status = json.loads(puts.get("jobflows/instances/inst-004/status", "{}"))
+        assert status.get("state") == "SUCCEEDED"
+
+    def test_instance_reaches_failed_when_any_task_failed(self):
+        store = {
+            "jobflows/instances/inst-005/status": json.dumps(
+                {"state": "RUNNING", "revision": 1}
+            ),
+            "jobflows/instances/inst-005/tasks": json.dumps({
+                "build": {"state": "FAILED", "attempt_count": 1, "depends_on": []},
+                "test": {"state": "SKIPPED_UPSTREAM_FAILED", "attempt_count": 0, "depends_on": ["build"]},
+            }),
+        }
+        consul = _make_store(store)
+        agg = Aggregator(consul, run_manager=make_mock_run_manager(), poll_interval=1)
+
+        agg._process_instance("inst-005")
+
+        puts = {c[0][0]: c[0][1] for c in consul.kv_put.call_args_list}
+        status = json.loads(puts.get("jobflows/instances/inst-005/status", "{}"))
+        assert status.get("state") == "FAILED"
