@@ -16,6 +16,7 @@ def _journey_url(dashboard_url: str, journey: dict) -> str:
 
 @pytest.mark.e2e
 @pytest.mark.smoke
+@pytest.mark.skip(reason="Phase 2 pending: Workbench still consumes legacy workflow APIs; will migrate in the Workbench phase.")
 def test_user_journey_from_group_to_agent_intervention(
     page: Page, dashboard_url: str, workspace_user_journey: dict,
 ) -> None:
@@ -55,6 +56,7 @@ def test_user_journey_from_group_to_agent_intervention(
 
 
 @pytest.mark.e2e
+@pytest.mark.skip(reason="Phase 2 pending: Workbench still consumes legacy workflow APIs; will migrate in the Workbench phase.")
 def test_user_journey_attempt_diff_merge_and_navigation(
     page: Page, dashboard_url: str, workspace_user_journey: dict,
 ) -> None:

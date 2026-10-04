@@ -199,6 +199,102 @@ def seed_dashboard_workflows(*, reset: bool = False) -> None:
             SEEDED_DASHBOARD_IDS.append(req_id)
 
 
+def seed_dashboard_instances(suffix: str) -> list[dict[str, Any]]:
+    """Create Job Flow templates and instances that mirror the legacy fixtures.
+
+    Returns a list of dicts with instance_id, name, and template_id for cleanup.
+    """
+    fixtures = [
+        {
+            "template_id": f"e2e-tmpl-001-{suffix}",
+            "name": "用户订单中心 v2.0",
+            "tasks": [
+                {"id": "design-api-doc", "type": "design", "depends_on": []},
+                {"id": "backend-user-service", "type": "backend", "depends_on": ["design-api-doc"]},
+                {"id": "test-e2e", "type": "test", "depends_on": ["backend-user-service"]},
+            ],
+        },
+        {
+            "template_id": f"e2e-tmpl-002-{suffix}",
+            "name": "支付网关集成",
+            "tasks": [
+                {"id": "design-api-doc", "type": "design", "depends_on": []},
+                {"id": "backend-payment-service", "type": "backend", "depends_on": ["design-api-doc"]},
+            ],
+        },
+        {
+            "template_id": f"e2e-tmpl-003-{suffix}",
+            "name": "消息通知中心",
+            "tasks": [
+                {"id": "design-api-doc", "type": "design", "depends_on": []},
+                {"id": "backend-notification-service", "type": "backend", "depends_on": ["design-api-doc"]},
+            ],
+        },
+    ]
+    results = []
+    for i, fixture in enumerate(fixtures):
+        try:
+            api_json("POST", "/api/templates", {
+                "template_id": fixture["template_id"],
+                "name": fixture["name"],
+                "tasks": fixture["tasks"],
+            })
+        except RuntimeError as error:
+            if ": 409 " in str(error) or "already exists" in str(error).lower():
+                pass
+            else:
+                raise
+        published = api_json("POST", f"/api/templates/{fixture['template_id']}/publish", {})
+        instance_id = f"e2e-inst-{i+1}-{suffix}"
+        try:
+            api_json("POST", "/api/instances", {
+                "instance_id": instance_id,
+                "template_id": fixture["template_id"],
+                "version_id": published["version"]["version_id"],
+                "name": fixture["name"],
+                "parameters": {}, "git": {}, "workspace": {},
+            })
+        except RuntimeError as error:
+            if ": 409 " in str(error) or "already exists" in str(error).lower():
+                pass
+            else:
+                raise
+        if i == 0:
+            api_json("POST", f"/api/instances/{instance_id}/start", {})
+        results.append({
+            "instance_id": instance_id,
+            "template_id": fixture["template_id"],
+            "name": fixture["name"],
+        })
+    return results
+
+
+def cleanup_dashboard_instances(items: list[dict[str, Any]]) -> None:
+    for item in items:
+        try:
+            api_json("POST", f"/api/instances/{item['instance_id']}/abort", {})
+        except RuntimeError:
+            pass
+        try:
+            api_json("DELETE", f"/api/instances/{item['instance_id']}")
+        except RuntimeError:
+            pass
+        try:
+            api_json("DELETE", f"/api/templates/{item['template_id']}")
+        except RuntimeError:
+            pass
+
+
+@pytest.fixture
+def job_flow_instances():
+    """Create Job Flow templates and instances for dashboard e2e tests."""
+    suffix = datetime.now().strftime("%Y%m%d%H%M%S%f")
+    items = seed_dashboard_instances(suffix)
+    time.sleep(0.3)
+    yield items
+    cleanup_dashboard_instances(items)
+
+
 def api_json(method: str, path: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
     """Call the real Dashboard WebAPI used by the browser."""
     response = requests.request(

@@ -100,12 +100,11 @@ def test_home_shows_instances_and_template_create_button(
 
         expect(page.get_by_text(instance_name)).to_be_visible(timeout=15000)
 
-        create_button = page.locator("button", has_text="从模板创建")
-        expect(create_button).to_be_visible(timeout=10000)
+        page.locator("text=从模板创建").first.wait_for(timeout=10000)
 
-        create_button.click()
+        page.locator("text=从模板创建").first.click()
         wait_for_network_idle(page)
-        expect(page.get_by_text("模板管理")).to_be_visible(timeout=10000)
+        expect(page.get_by_text("作业流模板")).to_be_visible(timeout=10000)
     finally:
         try:
             api_json("DELETE", f"/api/instances/{instance_id}")

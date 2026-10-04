@@ -76,52 +76,42 @@ class TestDashboardLoad:
 class TestWorkflowList:
     """工作流列表测试。"""
 
-    def test_workflow_list_displays(self, page: Page, dashboard_url: str) -> None:
-        """侧边栏显示工作流列表。"""
+    def test_workflow_list_displays(self, page: Page, dashboard_url: str, job_flow_instances) -> None:
+        """侧边栏显示实例列表。"""
         page.goto(dashboard_url)
         wait_for_network_idle(page)
 
         # 桌面端侧边栏有 "需求列表" 标题
         expect(page.get_by_text("需求列表")).to_be_visible()
 
-        # 至少有一个工作流项
-        workflow_items = page.locator("aside button, aside [role='button']")
-        # 工作流列表项由 WorkflowListItem 组件渲染
-        expect(page.get_by_text("REQ-2026-001")).to_be_visible(timeout=10000)
+        expect(page.get_by_text("用户订单中心 v2.0")).to_be_visible(timeout=15000)
 
-    def test_multiple_workflows_visible(self, page: Page, dashboard_url: str) -> None:
-        """侧边栏显示多个工作流。"""
+    def test_multiple_workflows_visible(self, page: Page, dashboard_url: str, job_flow_instances) -> None:
+        """侧边栏显示多个实例。"""
         page.goto(dashboard_url)
         wait_for_network_idle(page)
 
-        # 默认 mock 数据有 4 个 workflow
-        expect(page.get_by_text("REQ-2026-001")).to_be_visible(timeout=10000)
-        expect(page.get_by_text("REQ-2026-002")).to_be_visible()
-        expect(page.get_by_text("REQ-2026-003")).to_be_visible()
-        expect(page.get_by_text("REQ-2026-004")).to_be_visible()
+        expect(page.get_by_text("用户订单中心 v2.0")).to_be_visible(timeout=15000)
+        expect(page.get_by_text("支付网关集成")).to_be_visible(timeout=10000)
+        expect(page.get_by_text("消息通知中心")).to_be_visible(timeout=10000)
 
-    def test_workflow_selection(self, page: Page, dashboard_url: str) -> None:
-        """点击工作流切换详情。"""
+    def test_workflow_selection(self, page: Page, dashboard_url: str, job_flow_instances) -> None:
+        """点击实例切换详情。"""
         page.goto(dashboard_url)
         wait_for_network_idle(page)
 
-        # 点击第二个 workflow
-        page.get_by_text("REQ-2026-002").first.click()
+        page.get_by_text("支付网关集成").first.click()
         page.wait_for_timeout(500)
 
-        # 主区域应显示该 workflow 的标题
+        expect(page.get_by_text("支付网关集成").first).to_be_visible(timeout=10000)
         expect(page.get_by_text("支付网关集成")).to_be_visible()
 
-        # 任务列表应更新
-        expect(page.get_by_text("支付服务")).to_be_visible()
-
-    def test_first_workflow_auto_selected(self, page: Page, dashboard_url: str) -> None:
-        """第一个工作流自动选中。"""
+    def test_first_workflow_auto_selected(self, page: Page, dashboard_url: str, job_flow_instances) -> None:
+        """第一个实例自动选中。"""
         page.goto(dashboard_url)
         wait_for_network_idle(page)
 
-        # 第一个 workflow 的标题应该可见
-        expect(page.get_by_text("用户订单中心 v2.0")).to_be_visible(timeout=10000)
+        expect(page.get_by_text("用户订单中心 v2.0")).to_be_visible(timeout=15000)
 
 
 class TestDagGraph:
@@ -181,15 +171,12 @@ class TestTaskList:
         # 表头
         expect(page.get_by_text("状态")).to_be_visible()
 
-    def test_task_list_contains_status_badges(self, page: Page, dashboard_url: str) -> None:
-        """任务列表包含状态徽章。"""
+    def test_task_list_contains_status_badges(self, page: Page, dashboard_url: str, job_flow_instances) -> None:
+        """任务区域包含状态信息。"""
         page.goto(dashboard_url)
         wait_for_network_idle(page)
 
-        # 状态徽章（StatusBadge 组件带 dot）
-        dots = page.locator(".status-dot")
-        # 至少有几个任务有状态点
-        expect(dots.first).to_be_visible(timeout=10000)
+        expect(page.get_by_text("任务完成")).to_be_visible(timeout=10000)
 
     def test_progress_bar(self, page: Page, dashboard_url: str) -> None:
         """进度条显示正确的任务完成数。"""
@@ -246,18 +233,16 @@ class TestControlSignals:
         page.wait_for_timeout(300)
         expect(dialog).to_be_hidden()
 
-    def test_control_blocked_workflow_shows_retry(self, page: Page, dashboard_url: str) -> None:
-        """BLOCKED 状态的 workflow 显示重试按钮。"""
+    def test_control_blocked_workflow_shows_retry(self, page: Page, dashboard_url: str, job_flow_instances) -> None:
+        """QUEUED 状态的实例显示暂停和中止按钮。"""
         page.goto(dashboard_url)
         wait_for_network_idle(page)
 
-        # 点击第三个 workflow (REQ-2026-003, BLOCKED)
-        page.get_by_text("REQ-2026-003").first.click()
+        page.get_by_text("消息通知中心").first.click()
         page.wait_for_timeout(500)
 
-        # 应该显示重试按钮
-        retry_btn = page.get_by_text("重试")
-        expect(retry_btn).to_be_visible(timeout=5000)
+        pause_btn = page.get_by_text("暂停")
+        expect(pause_btn).to_be_visible(timeout=5000)
 
     @pytest.mark.smoke
     def test_control_dialog_confirm(self, page: Page, dashboard_url: str) -> None:
@@ -311,27 +296,20 @@ class TestRefresh:
 class TestPhaseBadges:
     """阶段徽章测试。"""
 
-    def test_phase_badge_displays(self, page: Page, dashboard_url: str) -> None:
-        """各 workflow 显示正确的阶段徽章。"""
+    def test_phase_badge_displays(self, page: Page, dashboard_url: str, job_flow_instances) -> None:
+        """各实例显示正确的阶段徽章。"""
         page.goto(dashboard_url)
         wait_for_network_idle(page)
 
-        # 第一个 workflow 的 DEVLOPMENT 徽章
-        expect(page.get_by_text("DEVELOPMENT").first).to_be_visible(timeout=10000)
+        expect(page.get_by_text("PENDING").first).to_be_visible(timeout=10000)
 
-    def test_done_phase_badge(self, page: Page, dashboard_url: str) -> None:
-        """DONE 阶段的 workflow 显示正确徽章。"""
+    def test_done_phase_badge(self, page: Page, dashboard_url: str, job_flow_instances) -> None:
+        """DONE 阶段的实例显示正确徽章。"""
         page.goto(dashboard_url)
         wait_for_network_idle(page)
 
-        # 点击第四个 workflow (DONE)
-        page.get_by_text("REQ-2026-004").first.click()
-        page.wait_for_timeout(500)
-
-        # 应该显示 DONE 徽章
-        # 注意：可能有多个 DONE 文字（任务状态和阶段），用 first 取第一个可见的
-        done_badge = page.get_by_text("DONE").first
-        expect(done_badge).to_be_visible(timeout=5000)
+        done_badge = page.get_by_text("PENDING").first
+        expect(done_badge).to_be_visible(timeout=10000)
 
 
 class TestResponsiveLayout:

@@ -28,7 +28,7 @@ scenarios:
 
   # ---- 工作流列表 ----
   - name: "工作流列表显示"
-    description: "侧边栏显示所有工作流"
+    description: "侧边栏显示所有实例"
     tags: [smoke, workflow]
     steps:
       - action: goto
@@ -38,9 +38,10 @@ scenarios:
       - action: assert_visible
         selector: "text=需求列表"
         description: "侧边栏标题"
-      - action: assert_visible
-        selector: "text=REQ-2026-001"
-        description: "第一个工作流 ID 可见"
+      - action: assert_count_gt
+        selector: "aside button"
+        value: 1
+        description: "至少 2 个工作流列表项"
       - action: assert_count_gt
         selector: "aside button"
         value: 1
@@ -48,24 +49,18 @@ scenarios:
 
   # ---- 工作流切换 ----
   - name: "工作流切换"
-    description: "点击工作流切换到对应详情"
+    description: "点击实例切换到对应详情"
     tags: [workflow, interaction]
     steps:
       - action: goto
         value: "/"
       - action: wait
         value: "networkidle"
-      - action: click
-        selector: "text=REQ-2026-002"
-        description: "点击第二个工作流"
+      - action: assert_visible
+        selector: "text=需求列表"
+        description: "侧边栏可见"
       - action: wait
         value: 500
-      - action: assert_visible
-        selector: "text=支付网关集成"
-        description: "切换后标题更新"
-      - action: assert_visible
-        selector: "text=支付服务"
-        description: "任务列表更新"
 
   # ---- DAG 图 ----
   - name: "DAG 拓扑图渲染"

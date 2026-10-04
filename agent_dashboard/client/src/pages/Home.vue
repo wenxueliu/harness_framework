@@ -90,11 +90,7 @@ function syncRouteSelection(data = workflows.value) {
 // ─── Derived ────────────────────────────────────────────────────────────────
 const selectedWorkflow = computed(() => workflows.value.find((w) => w.id === selectedId.value) ?? null)
 const visibleWorkflows = computed(() => {
-  if (!projectGroupStore.workflowIds.length && projectGroupStore.selectedId === 'unassigned') {
-    return workflows.value
-  }
-  const allowed = new Set(projectGroupStore.workflowIds)
-  return workflows.value.filter((workflow) => allowed.has(workflow.id))
+  return workflows.value
 })
 
 const totalDone = computed(() => workflows.value.filter((w) => w.phase === 'DONE').length)

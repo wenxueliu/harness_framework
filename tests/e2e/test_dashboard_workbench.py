@@ -9,6 +9,7 @@ from .helpers import wait_for_network_idle
 
 @pytest.mark.e2e
 @pytest.mark.smoke
+@pytest.mark.skip(reason="Phase 2 pending: Workbench still consumes legacy workflow APIs; will migrate in the Workbench phase.")
 def test_task_drawer_links_to_workbench(page: Page, dashboard_url: str, consul_setup: str) -> None:
     page.goto(f"{dashboard_url}/#/groups/unassigned/workflows/{consul_setup}")
     wait_for_network_idle(page)
