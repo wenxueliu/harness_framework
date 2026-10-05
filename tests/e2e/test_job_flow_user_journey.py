@@ -265,3 +265,99 @@ def test_project_group_context_filters_templates_and_instances(
                 })
             except RuntimeError:
                 pass
+
+
+@pytest.mark.e2e
+@pytest.mark.smoke
+def test_template_detail_shows_instances_and_archive(
+    page: Page, dashboard_url: str,
+) -> None:
+    """Template detail shows instance area, create-instance link, and archive."""
+    suffix = str(time.time_ns())
+    template_id = "ui-tmpl-detail-" + suffix
+    instance_id = "ui-inst-detail-" + suffix
+    instance_name = "UI detail instance " + suffix
+    try:
+        api_json("POST", "/api/templates", {
+            "template_id": template_id,
+            "name": "UI template detail " + suffix,
+            "tasks": [{"id": "build", "type": "backend", "depends_on": []}],
+        })
+        published = api_json("POST", f"/api/templates/{template_id}/publish", {})
+        api_json("POST", "/api/instances", {
+            "instance_id": instance_id,
+            "template_id": template_id,
+            "version_id": published["version"]["version_id"],
+            "name": instance_name,
+            "parameters": {}, "git": {}, "workspace": {},
+        })
+
+        page.goto(dashboard_url + f"/#/templates/{template_id}")
+        wait_for_network_idle(page)
+
+        expect(page.locator('[data-testid="instance-area"]')).to_be_visible(timeout=15000)
+        expect(page.get_by_text(instance_name)).to_be_visible(timeout=10000)
+        expect(page.locator('[data-testid="create-instance"]')).to_be_visible(timeout=10000)
+        expect(page.locator('[data-testid="archive-template"]')).to_be_visible(timeout=10000)
+        expect(page.locator('[data-testid="template-status"]')).to_be_visible(timeout=10000)
+        expect(page.locator('[data-testid="version-tabs"]')).to_be_visible(timeout=10000)
+
+        status_text = page.evaluate(
+            "() => document.querySelector('[data-testid=\"template-status\"]')?.textContent || ''"
+        )
+        assert status_text == "ACTIVE", f"Expected ACTIVE, got: {status_text}"
+    finally:
+        try:
+            api_json("DELETE", f"/api/instances/{instance_id}")
+        except RuntimeError:
+            pass
+        try:
+            api_json("DELETE", f"/api/templates/{template_id}")
+        except RuntimeError:
+            pass
+
+
+@pytest.mark.e2e
+def test_instance_detail_shows_breadcrumb(
+    page: Page, dashboard_url: str,
+) -> None:
+    """Instance detail shows breadcrumb: group > template > version > instance."""
+    suffix = str(time.time_ns())
+    template_id = "ui-breadcrumb-tmpl-" + suffix
+    instance_id = "ui-breadcrumb-inst-" + suffix
+    try:
+        api_json("POST", "/api/templates", {
+            "template_id": template_id,
+            "name": "UI breadcrumb " + suffix,
+            "tasks": [{"id": "build", "type": "backend", "depends_on": []}],
+        })
+        published = api_json("POST", f"/api/templates/{template_id}/publish", {})
+        api_json("POST", "/api/instances", {
+            "instance_id": instance_id,
+            "template_id": template_id,
+            "version_id": published["version"]["version_id"],
+            "name": "UI breadcrumb instance " + suffix,
+            "parameters": {}, "git": {}, "workspace": {},
+        })
+
+        page.goto(dashboard_url + f"/#/instances/{instance_id}")
+        wait_for_network_idle(page)
+
+        breadcrumb = page.locator('[data-testid="instance-breadcrumb"]')
+        expect(breadcrumb).to_be_visible(timeout=15000)
+        breadcrumb_text = page.evaluate(
+            "() => document.querySelector('[data-testid=\"instance-breadcrumb\"]')?.textContent || ''"
+        )
+        assert template_id in breadcrumb_text, (
+            f"breadcrumb should contain template_id, got: {breadcrumb_text}"
+        )
+        assert published["version"]["version_id"] in breadcrumb_text
+    finally:
+        try:
+            api_json("DELETE", f"/api/instances/{instance_id}")
+        except RuntimeError:
+            pass
+        try:
+            api_json("DELETE", f"/api/templates/{template_id}")
+        except RuntimeError:
+            pass

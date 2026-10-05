@@ -112,6 +112,15 @@ onMounted(() => { load(); loadCapability() })
     <template #actions><div class="flex gap-2"><button data-testid="rerun-instance" class="rounded bg-blue-500 px-3 py-2 text-xs text-white" :disabled="rerunning" @click="editing = !editing">修改并重新执行</button><button data-testid="delete-instance" class="rounded border border-red-400/50 px-3 py-2 text-xs text-red-300 disabled:cursor-not-allowed disabled:opacity-40" :disabled="!deletableStates.has(instance?.status.state || '')" title="只有排队中或终态实例可以删除" @click="removeInstance">删除实例</button></div></template>
     <div v-if="error" role="alert" class="m-6 rounded bg-red-400/10 p-4 text-sm text-red-300">{{ error }}</div>
     <div v-else-if="instance" class="mx-auto max-w-6xl space-y-4 p-4 sm:p-6">
+      <nav data-testid="instance-breadcrumb" class="flex items-center gap-1.5 text-xs text-muted-foreground">
+        <RouterLink to="/templates" class="hover:text-foreground">{{ instance.group_id || 'unassigned' }}</RouterLink>
+        <span>›</span>
+        <RouterLink :to="`/templates/${instance.template_id}`" class="hover:text-foreground">{{ instance.template_id }}</RouterLink>
+        <span>›</span>
+        <span class="font-mono">{{ instance.version_id }}</span>
+        <span>›</span>
+        <span class="text-foreground">{{ instance.name }}</span>
+      </nav>
       <section class="grid gap-3 md:grid-cols-5">
         <div class="rounded border border-border bg-card p-3"><p class="text-[11px] text-muted-foreground">状态</p><p class="mt-1 font-semibold">{{ instance.status.state }}</p></div>
         <div class="rounded border border-border bg-card p-3"><p class="text-[11px] text-muted-foreground">模板版本</p><p class="mt-1 font-mono text-xs">{{ instance.version_id }}</p></div>
@@ -139,7 +148,7 @@ onMounted(() => { load(); loadCapability() })
       </section>
       <section class="rounded-lg border border-border bg-card p-4">
         <div class="flex gap-2 border-b border-border mb-3">
-          <button v-for="tab in ['preflight','manifest','artifacts']" :key="tab"
+          <button v-for="tab in ['preflight','manifest','artifacts','changeset']" :key="tab"
             class="px-3 py-1.5 text-xs transition"
             :class="activeTab === tab ? 'border-b-2 border-blue-400 text-blue-300 font-medium' : 'text-muted-foreground'"
             @click="activeTab = tab">{{ tab }}</button>
@@ -147,6 +156,7 @@ onMounted(() => { load(); loadCapability() })
         <PreflightPanel v-if="activeTab === 'preflight'" :result="preflight" @rerun="loadCapability" />
         <ManifestViewer v-if="activeTab === 'manifest'" :manifest="manifest" />
         <ArtifactList v-if="activeTab === 'artifacts'" :artifacts="artifactList" />
+        <ChangeSetPanel v-if="activeTab === 'changeset'" :changeset="null" />
       </section>
       <section class="rounded-lg border border-border bg-card p-4">
         <h2 class="text-sm font-semibold">实例任务</h2>

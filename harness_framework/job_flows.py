@@ -210,6 +210,24 @@ class JobFlowService:
     def get_template(self, template_id: str) -> dict:
         return self._template_view(self._template(template_id))
 
+    def archive_template(self, template_id: str, actor: str) -> dict:
+        """Archive a template; archived templates cannot create new instances."""
+        meta = self._template(template_id)
+        if meta.get("status") == "ARCHIVED":
+            raise APIError(
+                "TEMPLATE_ALREADY_ARCHIVED",
+                "模板已归档",
+                409,
+                {"template_id": template_id},
+            )
+        meta["status"] = "ARCHIVED"
+        meta["updated_at"] = _now()
+        self._write(f"{TEMPLATE_PREFIX}/{template_id}/meta", meta)
+        self._append_event(f"{TEMPLATE_PREFIX}/{template_id}", "TEMPLATE_ARCHIVED", actor, {
+            "template_id": template_id,
+        })
+        return self._template_view(meta)
+
     def delete_template(self, template_id: str, actor: str) -> dict:
         """Hard-delete a template only when it has never had an instance.
 
@@ -405,6 +423,13 @@ class JobFlowService:
             return cached
         template_id = _id(body.get("template_id"), "tpl")
         template = self._template(template_id)
+        if template.get("status") == "ARCHIVED":
+            raise APIError(
+                "TEMPLATE_ARCHIVED",
+                "已归档模板不能创建新实例",
+                409,
+                {"template_id": template_id},
+            )
         requested_group_id = str(body.get("group_id") or "").strip()
         if requested_group_id and requested_group_id != template.get("group_id"):
             raise APIError(

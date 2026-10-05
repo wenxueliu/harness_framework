@@ -1116,6 +1116,9 @@ class APIHandler(BaseHTTPRequestHandler):
                 if not key:
                     raise APIError("IDEMPOTENCY_KEY_REQUIRED", "Idempotency-Key 不能为空", 422)
                 return service.publish_template(template_id, body, actor, key)
+            if len(parts) == 5 and parts[4] == "archive":
+                self._require(context, "workflow:publish", template["group_id"])
+                return {"template": service.archive_template(template_id, actor)}
             if len(parts) == 5 and parts[4] in {"publish-and-instantiate", "publish-and-execute"}:
                 self._jobflow_require_active_group(template)
                 self._require(context, "workflow:publish", template["group_id"])

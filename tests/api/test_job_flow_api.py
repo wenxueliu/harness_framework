@@ -414,3 +414,70 @@ def test_templates_and_instances_are_scoped_to_project_group():
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_template_archive_blocks_new_instances():
+    server = serve(
+        MockConsulStore(),
+        host="127.0.0.1",
+        port=0,
+        auth_config=AuthConfig(mode="local", local_user="archive-test"),
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    port = server.server_address[1]
+    try:
+        status, created = request(port, "POST", "/api/templates", {
+            "template_id": "archive-template",
+            "name": "Archive test",
+            "tasks": [{"id": "build", "type": "backend", "depends_on": []}],
+        })
+        assert status == 201
+
+        status, published = request(
+            port, "POST", "/api/templates/archive-template/publish", {},
+            {"Idempotency-Key": "archive-publish"},
+        )
+        assert status == 200
+        version_id = published["version"]["version_id"]
+
+        status, instance = request(port, "POST", "/api/instances", {
+            "template_id": "archive-template",
+            "version_id": version_id,
+            "name": "pre-archive-instance",
+            "parameters": {}, "git": {}, "workspace": {},
+        }, {"Idempotency-Key": "pre-archive-instance"})
+        assert status == 201
+
+        status, delete_rejected = request(port, "DELETE", "/api/templates/archive-template")
+        assert status == 409
+        assert delete_rejected["error"]["code"] == "TEMPLATE_HAS_INSTANCES"
+
+        status, archived = request(
+            port, "POST", "/api/templates/archive-template/archive", {},
+        )
+        assert status == 200
+        assert archived["template"]["status"] == "ARCHIVED"
+
+        status, double_archive = request(
+            port, "POST", "/api/templates/archive-template/archive", {},
+        )
+        assert status == 409
+        assert double_archive["error"]["code"] == "TEMPLATE_ALREADY_ARCHIVED"
+
+        status, blocked = request(port, "POST", "/api/instances", {
+            "template_id": "archive-template",
+            "version_id": version_id,
+            "instance_id": "post-archive-instance",
+            "name": "post-archive-instance",
+            "parameters": {}, "git": {}, "workspace": {},
+        }, {"Idempotency-Key": "post-archive-inst"})
+        assert status == 409
+        assert blocked["error"]["code"] == "TEMPLATE_ARCHIVED"
+
+        status, fetched = request(port, "GET", "/api/templates/archive-template")
+        assert status == 200
+        assert fetched["template"]["status"] == "ARCHIVED"
+    finally:
+        server.shutdown()
+        server.server_close()

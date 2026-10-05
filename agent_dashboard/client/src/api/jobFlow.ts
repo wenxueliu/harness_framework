@@ -14,6 +14,7 @@ export interface JobFlowTemplate {
   name: string
   description?: string
   group_id?: string
+  status?: string
   current_version_id?: string | null
   draft?: { tasks: JobFlowTask[]; parameters?: Record<string, unknown>; manifest_hash?: string }
   draft_revision: number
@@ -54,6 +55,13 @@ export async function deleteJobFlowTemplate(templateId: string): Promise<void> {
   await apiRequest<{ deleted: boolean }>(
     '/api/templates/' + encodeURIComponent(templateId), { method: 'DELETE' },
   )
+}
+
+export async function archiveJobFlowTemplate(templateId: string): Promise<JobFlowTemplate> {
+  const result = await apiRequest<{ template: JobFlowTemplate }>(
+    '/api/templates/' + encodeURIComponent(templateId) + '/archive', jsonRequest('POST', {}),
+  )
+  return result.template
 }
 
 export async function createJobFlowTemplate(input: {
