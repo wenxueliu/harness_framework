@@ -28,7 +28,7 @@ from .aggregator import Aggregator
 from .watchdog import Watchdog
 from .webapi import serve as webapi_serve
 from .run_manager import RunManager
-from .acp_dispatcher import ACPDispatcher
+from .acp_dispatcher import ACPDispatcher, JobFlowACPDispatcher
 from .auth import AuthConfig
 from .capabilities import FeatureConfig
 from .workspace_security import WorkspaceSecurity
@@ -137,6 +137,9 @@ def main() -> None:
                    help="ACP Agent 默认工作目录")
     p.add_argument("--acp-max-concurrency", type=int,
                    default=int(os.environ.get("ACP_MAX_CONCURRENCY", "4")))
+    p.add_argument("--jobflow-acp-max-concurrency", type=int,
+                   default=int(os.environ.get("JOBFLOW_ACP_MAX_CONCURRENCY", "2")),
+                   help="JobFlow ACP 最大并发任务数")
     p.add_argument("--acp-task-timeout", type=int,
                    default=int(os.environ.get("ACP_TASK_TIMEOUT", "7200")),
                    help="单次 ACP prompt 最长执行时间（秒）")
@@ -275,6 +278,25 @@ def main() -> None:
         )
         t.start()
         threads.append(t)
+
+        jobflow_acp_dispatcher = JobFlowACPDispatcher(
+            consul,
+            commands=commands,
+            routing=routing,
+            workspace_root=args.acp_workspace_root,
+            poll_interval=min(float(args.aggregator_interval), 1.0),
+            task_timeout=args.acp_task_timeout,
+            max_concurrency=args.jobflow_acp_max_concurrency,
+            permission_policy=args.acp_permission_policy,
+            event_journal=EventJournal(consul),
+        )
+        components.append(jobflow_acp_dispatcher)
+        jobflow_thread = threading.Thread(
+            target=jobflow_acp_dispatcher.run,
+            name="jobflow-acp-dispatcher", daemon=True,
+        )
+        jobflow_thread.start()
+        threads.append(jobflow_thread)
 
     # Watchdog
     if not args.no_watchdog:

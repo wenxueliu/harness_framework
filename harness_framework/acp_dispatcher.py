@@ -23,6 +23,7 @@ from .workspace_manager import WorkspaceManager
 from .event_journal import EventJournal
 from .project_groups import UNASSIGNED_GROUP_ID
 from .api_errors import ConflictError
+from .job_flows import INSTANCE_PREFIX
 
 log = logging.getLogger("acp_dispatcher")
 
@@ -37,6 +38,8 @@ DEFAULT_AGENT_ROUTING = {
     "generic": "codex",
 }
 SUCCESS_STOP_REASONS = frozenset({"end_turn"})
+WORKFLOW_SCOPE = "workflow"
+JOBFLOW_SCOPE = "jobflow"
 
 
 class WorkspaceUnavailable(RuntimeError):
@@ -62,6 +65,7 @@ class ACPDispatcher:
         client_factory: Callable[..., ACPClient] = ACPClient,
         workspace_manager: WorkspaceManager | None = None,
         event_journal: EventJournal | None = None,
+        scope: str = WORKFLOW_SCOPE,
     ):
         self.store = store
         self.run_manager = run_manager
@@ -76,15 +80,57 @@ class ACPDispatcher:
         self.client_factory = client_factory
         self.workspace_manager = workspace_manager
         self.event_journal = event_journal or EventJournal(store)
+        self.scope = scope
+        self.human_messages_supported = scope == WORKFLOW_SCOPE
         if max_concurrency < 1:
             raise ValueError("ACP max_concurrency must be positive")
         if task_timeout < 1 or lease_duration < 1:
             raise ValueError("ACP timeouts must be positive")
         if any(value not in {"claude", "codex"} for value in self.routing.values()):
             raise ValueError("ACP routing values must be claude or codex")
+        if scope not in {WORKFLOW_SCOPE, JOBFLOW_SCOPE}:
+            raise ValueError("ACP scope must be workflow or jobflow")
         self._stop = threading.Event()
         self._lock = threading.Lock()
         self._active: dict[tuple[str, str], dict[str, Any]] = {}
+
+    def _task_base(self, scope_id: str, task_name: str) -> str:
+        if self.scope == JOBFLOW_SCOPE:
+            return f"{INSTANCE_PREFIX}/{scope_id}/tasks/{task_name}"
+        return f"workflows/{scope_id}/tasks/{task_name}"
+
+    def _scope_base(self, scope_id: str) -> str:
+        if self.scope == JOBFLOW_SCOPE:
+            return f"{INSTANCE_PREFIX}/{scope_id}"
+        return f"workflows/{scope_id}"
+
+    def _task_state(self, value: Any) -> str:
+        if isinstance(value, dict):
+            return str(value.get("state", ""))
+        return str(value or "")
+
+    def _read_task_status(self, scope_id: str, task_name: str) -> tuple[Any, int]:
+        raw, index = self.store.kv_get(f"{self._task_base(scope_id, task_name)}/status")
+        if self.scope != JOBFLOW_SCOPE or isinstance(raw, dict):
+            return raw, index
+        try:
+            return json.loads(raw), index
+        except (TypeError, json.JSONDecodeError):
+            return {}, index
+
+    def _write_task_state(
+        self, scope_id: str, task_name: str, state: str, index: int,
+        *, current: Any = None, fields: dict[str, Any] | None = None,
+    ) -> bool:
+        base = self._task_base(scope_id, task_name)
+        if self.scope != JOBFLOW_SCOPE:
+            return self.store.kv_put(f"{base}/status", state, cas=index)
+        status = dict(current) if isinstance(current, dict) else {}
+        status.update({"task_id": task_name, "state": state, **(fields or {})})
+        status["updated_at"] = _now_iso()
+        return self.store.kv_put(
+            f"{base}/status", json.dumps(status, ensure_ascii=False), cas=index,
+        )
 
     def stop(self) -> None:
         self._stop.set()
@@ -124,19 +170,22 @@ class ACPDispatcher:
                 continue
             except (ValueError, ACPError) as exc:
                 self.store.kv_put(
-                    f"workflows/{req_id}/tasks/{task_name}/dispatch_error", str(exc)
+                    f"{self._task_base(req_id, task_name)}/dispatch_error", str(exc)
                 )
                 log.error("cannot dispatch %s/%s: %s", req_id, task_name, exc)
                 continue
             if not claim:
                 continue
-            key = (req_id, task_name)
+            key = (
+                (f"{self.scope}:{req_id}", task_name)
+                if self.scope == JOBFLOW_SCOPE else (req_id, task_name)
+            )
             with self._lock:
-                self._active[key] = {**claim, "client": None}
+                self._active[key] = {**claim, "scope_id": req_id, "client": None}
             thread = threading.Thread(
                 target=self._execute,
                 args=(req_id, task_name, meta, claim),
-                name=f"acp-{req_id}-{task_name}",
+                name=f"acp-{self.scope}-{req_id}-{task_name}",
                 daemon=True,
             )
             with self._lock:
@@ -204,15 +253,23 @@ class ACPDispatcher:
         return [(req_id, name, meta) for req_id, name, meta, _priority in pending]
 
     def _claim(self, req_id: str, task_name: str, meta: dict[str, str]) -> dict[str, Any] | None:
-        base = f"workflows/{req_id}/tasks/{task_name}"
-        status, index = self.store.kv_get(f"{base}/status")
-        if status != "PENDING":
+        base = self._task_base(req_id, task_name)
+        status, index = self._read_task_status(req_id, task_name)
+        if self._task_state(status) != "PENDING":
             return None
+        if self.scope == JOBFLOW_SCOPE:
+            instance_raw, _ = self.store.kv_get(f"{self._scope_base(req_id)}/status")
+            try:
+                instance_state = json.loads(instance_raw or "{}").get("state", "")
+            except (TypeError, json.JSONDecodeError):
+                instance_state = ""
+            if instance_state != "RUNNING":
+                return None
         provider, _config = self._resolve_agent(meta)
         if provider not in self.commands:
             self._mark_unroutable(req_id, task_name, provider)
             return None
-        execution_mode, _ = self.store.kv_get(f"workflows/{req_id}/execution_mode")
+        execution_mode, _ = self.store.kv_get(f"{self._scope_base(req_id)}/execution_mode")
         if execution_mode == "managed-workspace":
             run_id = self.run_manager.get_active_run(req_id)
             if not run_id:
@@ -220,7 +277,12 @@ class ACPDispatcher:
             if self.workspace_manager is None:
                 raise ValueError("managed workspace service is not configured")
         else:
-            run_id = self.run_manager.get_or_create_run(req_id, "acp-dispatcher")
+            if self.scope == JOBFLOW_SCOPE:
+                run_id = self.run_manager.get_active_run(req_id)
+                if not run_id:
+                    return None
+            else:
+                run_id = self.run_manager.get_or_create_run(req_id, "acp-dispatcher")
         attempt_id = f"attempt-{uuid.uuid4().hex}"
         previous_epoch, _ = self.store.kv_get(f"{base}/lease_epoch")
         lease_epoch = int(previous_epoch or "0") + 1
@@ -247,7 +309,16 @@ class ACPDispatcher:
                 f"workflows/{req_id}/runs/{run_id}/tasks/{task_name}/attempts/"
                 f"{attempt_id}/workspace-binding"
             )
-        if not self.store.kv_put(f"{base}/status", "IN_PROGRESS", cas=index):
+        attempt_fields = {}
+        if self.scope == JOBFLOW_SCOPE:
+            attempt_fields = {
+                "current_attempt": attempt_id,
+                "attempt_count": int(status.get("attempt_count", 0) or 0) + 1,
+            }
+        if not self._write_task_state(
+            req_id, task_name, "IN_PROGRESS", index,
+            current=status, fields=attempt_fields,
+        ):
             if binding_key:
                 self.store.kv_delete(binding_key)
             if isolated_workspace_id:
@@ -270,6 +341,12 @@ class ACPDispatcher:
         self.store.kv_put(f"{base}/lease_renewed_at", now)
         self.store.kv_put(f"{base}/lease_expires_at", _deadline(self.lease_duration))
         self.store.kv_put(f"{base}/hard_deadline_at", _deadline(self.task_timeout))
+        if self.scope == JOBFLOW_SCOPE:
+            self.store.kv_put(f"{base}/attempts/{attempt_id}", json.dumps({
+                "attempt_id": attempt_id, "state": "IN_PROGRESS",
+                "agent_id": agent_id, "provider": provider,
+                "created_at": now,
+            }, ensure_ascii=False))
         self.run_manager.record_transition(
             req_id, run_id, task_name, "PENDING", "IN_PROGRESS", agent_id,
             "dispatched through ACP", {"provider": provider, "attempt_id": attempt_id},
@@ -282,8 +359,11 @@ class ACPDispatcher:
     def _execute(
         self, req_id: str, task_name: str, meta: dict[str, str], claim: dict[str, Any]
     ) -> None:
-        key = (req_id, task_name)
-        base = f"workflows/{req_id}/tasks/{task_name}"
+        key = (
+            (f"{self.scope}:{req_id}", task_name)
+            if self.scope == JOBFLOW_SCOPE else (req_id, task_name)
+        )
+        base = self._task_base(req_id, task_name)
         provider = claim["provider"]
         event_count = 0
         session_id = ""
@@ -295,7 +375,7 @@ class ACPDispatcher:
             event_key = f"{int(time.time() * 1000000):021d}-{event_count:06d}"
             if session_id:
                 self.store.kv_put(
-                    f"workflows/{req_id}/sessions/{task_name}/{session_id}/events/{event_key}",
+                    f"{self._scope_base(req_id)}/sessions/{task_name}/{session_id}/events/{event_key}",
                     json.dumps({
                         "timestamp": _now_iso(), "type": "ACP_UPDATE",
                         "provider": provider, "run_id": claim["run_id"],
@@ -333,7 +413,7 @@ class ACPDispatcher:
 
         try:
             provider, config = self._resolve_agent(meta)
-            execution_mode, _ = self.store.kv_get(f"workflows/{req_id}/execution_mode")
+            execution_mode, _ = self.store.kv_get(f"{self._scope_base(req_id)}/execution_mode")
             if execution_mode == "managed-workspace":
                 try:
                     if self.workspace_manager is None:
@@ -344,6 +424,8 @@ class ACPDispatcher:
                 except Exception as exc:
                     raise WorkspaceUnavailable(str(exc)) from exc
             else:
+                if self.scope == JOBFLOW_SCOPE and (config.get("cwd") or meta.get("repo_path")):
+                    raise ValueError("jobflow tasks require an approved workspace binding")
                 cwd = os.path.abspath(
                     config.get("cwd") or meta.get("repo_path") or self.workspace_root
                 )
@@ -354,7 +436,12 @@ class ACPDispatcher:
                     "TASK_NAME": task_name, "ATTEMPT_ID": claim["attempt_id"],
                     "LEASE_EPOCH": str(claim["lease_epoch"]),
                 },
-                permission_policy=config.get("permission_policy", self.permission_policy),
+                permission_policy=(
+                    "deny"
+                    if self.permission_policy == "deny"
+                    or config.get("permission_policy") == "deny"
+                    else self.permission_policy
+                ),
                 update_handler=on_update,
             )
             with self._lock:
@@ -369,7 +456,7 @@ class ACPDispatcher:
             resume_id = self._session_to_resume(req_id, config, provider)
             pending_human = list_human_messages(
                 self.store, req_id, task_name, pending_only=True,
-            )
+            ) if self.human_messages_supported else []
             resumed_for_human = False
             if not resume_id and pending_human:
                 previous_session, _ = self.store.kv_get(f"{base}/acp/session_id")
@@ -391,7 +478,7 @@ class ACPDispatcher:
             if resumed_for_human:
                 current_message = claim_next_human_message(
                     self.store, req_id, task_name,
-                )
+                ) if self.human_messages_supported else None
                 if current_message:
                     prompt_text = self._build_human_prompt(current_message)
 
@@ -401,14 +488,32 @@ class ACPDispatcher:
                     timeout=self.task_timeout,
                     should_cancel=lambda: (
                         self._should_cancel(req_id, task_name, claim)
-                        or has_pending_interrupt(self.store, req_id, task_name)
+                        or (self.human_messages_supported
+                            and has_pending_interrupt(self.store, req_id, task_name))
                     ),
                 )
                 if result.stop_reason not in SUCCESS_STOP_REASONS:
                     interrupted = result.stop_reason in {"cancelled", "canceled"}
+                    cancellation_reason = (
+                        self._cancel_reason(req_id, task_name, claim)
+                        if interrupted else ""
+                    )
+                    if cancellation_reason in {
+                        "PAUSED", "ABORTED", "ABORT", "DISPATCHER_STOPPED",
+                    }:
+                        self._release_for_control(
+                            req_id, task_name, claim, cancellation_reason,
+                        )
+                        if session_id:
+                            self.run_manager.record_session_end(
+                                req_id, claim["run_id"], task_name, event_count, 0,
+                                "cancelled", f"ACP task cancelled: {cancellation_reason}",
+                                claim["attempt_id"],
+                            )
+                        return
                     if (not interrupted
-                            or self._should_cancel(req_id, task_name, claim)
-                            or not has_pending_interrupt(self.store, req_id, task_name)):
+                            or not (self.human_messages_supported
+                                    and has_pending_interrupt(self.store, req_id, task_name))):
                         raise ACPError(
                             f"ACP turn stopped with {result.stop_reason or 'unknown reason'}"
                         )
@@ -429,7 +534,7 @@ class ACPDispatcher:
 
                 current_message = claim_next_human_message(
                     self.store, req_id, task_name,
-                )
+                ) if self.human_messages_supported else None
                 if not current_message:
                     break
                 prompt_text = self._build_human_prompt(current_message)
@@ -498,14 +603,14 @@ class ACPDispatcher:
         elif mode == "continue":
             source = session.get("from_task", "")
             source_provider, _ = self.store.kv_get(
-                f"workflows/{req_id}/tasks/{source}/acp/provider"
+                f"{self._task_base(req_id, source)}/acp/provider"
             )
             if source_provider and source_provider != provider:
                 raise ValueError(
                     "cannot continue an ACP session created by a different provider"
                 )
             value, _ = self.store.kv_get(
-                f"workflows/{req_id}/tasks/{source}/acp/session_id"
+                f"{self._task_base(req_id, source)}/acp/session_id"
             )
         else:
             raise ValueError(f"unsupported acp.session.mode: {mode}")
@@ -574,9 +679,9 @@ class ACPDispatcher:
             }:
                 raise ValueError(f"unknown context_inputs namespace: {namespace}")
             if namespace == "legacy":
-                key = f"workflows/{req_id}/context/{selector[7:]}"
+                key = f"{self._scope_base(req_id)}/context/{selector[7:]}"
             else:
-                key = f"workflows/{req_id}/knowledge/{selector}"
+                key = f"{self._scope_base(req_id)}/knowledge/{selector}"
 
             if selector.endswith("/*"):
                 prefix = key[:-1]
@@ -604,7 +709,7 @@ class ACPDispatcher:
         return result
 
     def _missing_completion_requirements(self, req_id: str, task_name: str) -> list[str]:
-        base = f"workflows/{req_id}/tasks/{task_name}"
+        base = self._task_base(req_id, task_name)
         raw, _ = self.store.kv_get(f"{base}/completion_contract")
         contract = _json_value(raw, {})
         missing = []
@@ -621,18 +726,20 @@ class ACPDispatcher:
     def _complete(
         self, req_id: str, task_name: str, claim: dict[str, Any], result: ACPResult
     ) -> None:
-        base = f"workflows/{req_id}/tasks/{task_name}"
+        base = self._task_base(req_id, task_name)
         if not self._attempt_is_current(base, claim):
             return
-        status, index = self.store.kv_get(f"{base}/status")
-        if status != "IN_PROGRESS":
+        status, index = self._read_task_status(req_id, task_name)
+        if self._task_state(status) != "IN_PROGRESS":
             return
         payload = {
             "transport": "acp", "provider": claim["provider"],
             "session_id": result.session_id, "stop_reason": result.stop_reason,
             "agent_text": _agent_text(result.updates), "usage": result.response.get("usage"),
         }
-        if not self.store.kv_put(f"{base}/status", "DONE", cas=index):
+        if not self._write_task_state(
+            req_id, task_name, "DONE", index, current=status,
+        ):
             return
         self.store.kv_put(f"{base}/validity", "VALID")
         self.store.kv_put(f"{base}/completed_by", claim["agent_id"])
@@ -642,7 +749,8 @@ class ACPDispatcher:
             req_id, claim["run_id"], task_name, "IN_PROGRESS", "DONE",
             claim["agent_id"], "ACP turn completed", {"provider": claim["provider"]},
         )
-        self.run_manager.check_run_completion(req_id, claim["run_id"])
+        if self.scope == WORKFLOW_SCOPE:
+            self.run_manager.check_run_completion(req_id, claim["run_id"])
         self._task_event(
             req_id, claim["run_id"], task_name, claim["attempt_id"],
             "TASK_STATUS_CHANGED", {"previous_status": "IN_PROGRESS", "status": "DONE"},
@@ -652,13 +760,16 @@ class ACPDispatcher:
     def _fail(
         self, req_id: str, task_name: str, claim: dict[str, Any], error: str
     ) -> None:
-        base = f"workflows/{req_id}/tasks/{task_name}"
+        base = self._task_base(req_id, task_name)
         if not self._attempt_is_current(base, claim):
             return
-        status, index = self.store.kv_get(f"{base}/status")
-        if status != "IN_PROGRESS":
+        status, index = self._read_task_status(req_id, task_name)
+        if self._task_state(status) != "IN_PROGRESS":
             return
-        if not self.store.kv_put(f"{base}/status", "FAILED", cas=index):
+        if not self._write_task_state(
+            req_id, task_name, "FAILED", index, current=status,
+            fields={"error_message": error[:8000]},
+        ):
             return
         self.store.kv_put(f"{base}/failed_by", claim["agent_id"])
         self.store.kv_put(f"{base}/failed_at", _now_iso())
@@ -667,7 +778,8 @@ class ACPDispatcher:
             req_id, claim["run_id"], task_name, "IN_PROGRESS", "FAILED",
             claim["agent_id"], error[:1000], {"provider": claim["provider"]},
         )
-        self.run_manager.check_run_completion(req_id, claim["run_id"])
+        if self.scope == WORKFLOW_SCOPE:
+            self.run_manager.check_run_completion(req_id, claim["run_id"])
         self._task_event(
             req_id, claim["run_id"], task_name, claim["attempt_id"],
             "TASK_STATUS_CHANGED", {"previous_status": "IN_PROGRESS", "status": "FAILED",
@@ -678,13 +790,16 @@ class ACPDispatcher:
     def _wait_for_workspace(
         self, req_id: str, task_name: str, claim: dict[str, Any], error: str
     ) -> None:
-        base = f"workflows/{req_id}/tasks/{task_name}"
+        base = self._task_base(req_id, task_name)
         if not self._attempt_is_current(base, claim):
             return
-        status, index = self.store.kv_get(f"{base}/status")
-        if status != "IN_PROGRESS":
+        status, index = self._read_task_status(req_id, task_name)
+        if self._task_state(status) != "IN_PROGRESS":
             return
-        if not self.store.kv_put(f"{base}/status", "WAITING_FOR_HUMAN", cas=index):
+        if not self._write_task_state(
+            req_id, task_name, "WAITING_FOR_HUMAN", index, current=status,
+            fields={"waiting_reason": "WORKSPACE_UNAVAILABLE"},
+        ):
             return
         self.store.kv_put(f"{base}/waiting_reason", "WORKSPACE_UNAVAILABLE")
         self.store.kv_put(f"{base}/error_message", error[:8000])
@@ -705,7 +820,20 @@ class ACPDispatcher:
         self, req_id: str, run_id: str, task_id: str, attempt_id: str,
         event_type: str, data: dict[str, Any], actor: dict[str, str],
     ) -> None:
-        group_id, _ = self.store.kv_get(f"workflows/{req_id}/project-group")
+        group_id = ""
+        if self.scope == JOBFLOW_SCOPE:
+            meta_value, _ = self.store.kv_get(f"{self._scope_base(req_id)}/meta")
+            try:
+                meta = json.loads(meta_value or "{}")
+                template_id = meta.get("template_id", "")
+                template_value, _ = self.store.kv_get(
+                    f"jobflows/templates/{template_id}/meta"
+                )
+                group_id = json.loads(template_value or "{}").get("group_id", "")
+            except (json.JSONDecodeError, TypeError):
+                group_id = ""
+        else:
+            group_id, _ = self.store.kv_get(f"workflows/{req_id}/project-group")
         try:
             self.event_journal.append(
                 event_type,
@@ -720,7 +848,7 @@ class ACPDispatcher:
             log.exception("failed to journal task event req=%s task=%s", req_id, task_id)
 
     def _mark_unroutable(self, req_id: str, task_name: str, provider: str) -> None:
-        base = f"workflows/{req_id}/tasks/{task_name}"
+        base = self._task_base(req_id, task_name)
         self.store.kv_put(f"{base}/dispatch_error", f"ACP command not configured: {provider}")
 
     def _attempt_is_current(self, base: str, claim: dict[str, Any]) -> bool:
@@ -731,20 +859,64 @@ class ACPDispatcher:
     def _should_cancel(
         self, req_id: str, task_name: str, claim: dict[str, Any]
     ) -> bool:
+        return bool(self._cancel_reason(req_id, task_name, claim))
+
+    def _cancel_reason(
+        self, req_id: str, task_name: str, claim: dict[str, Any]
+    ) -> str:
         if self._stop.is_set():
-            return True
-        control, _ = self.store.kv_get(f"workflows/{req_id}/control")
-        if control == "ABORT":
-            return True
-        return not self._attempt_is_current(
-            f"workflows/{req_id}/tasks/{task_name}", claim
+            return "DISPATCHER_STOPPED"
+        if self.scope == JOBFLOW_SCOPE:
+            status_raw, _ = self.store.kv_get(f"{self._scope_base(req_id)}/status")
+            try:
+                instance_state = json.loads(status_raw or "{}").get("state", "")
+            except (TypeError, json.JSONDecodeError):
+                instance_state = ""
+            if instance_state in {"PAUSED", "ABORTED"}:
+                return instance_state
+        else:
+            control, _ = self.store.kv_get(f"{self._scope_base(req_id)}/control")
+            if control == "ABORT":
+                return "ABORT"
+        if not self._attempt_is_current(
+            self._task_base(req_id, task_name), claim
+        ):
+            return "FENCED"
+        return ""
+
+    def _release_for_control(
+        self, req_id: str, task_name: str, claim: dict[str, Any], reason: str
+    ) -> None:
+        base = self._task_base(req_id, task_name)
+        if not self._attempt_is_current(base, claim):
+            return
+        status, index = self._read_task_status(req_id, task_name)
+        if self._task_state(status) != "IN_PROGRESS":
+            return
+        new_state = "ABORTED" if reason in {"ABORTED", "ABORT"} else "PENDING"
+        if not self._write_task_state(req_id, task_name, new_state, index, current=status):
+            return
+        self.store.kv_put(f"{base}/attempt_id", "")
+        if new_state == "ABORTED":
+            self.store.kv_put(f"{base}/aborted_at", _now_iso())
+        self.run_manager.record_transition(
+            req_id, claim["run_id"], task_name, "IN_PROGRESS", new_state,
+            claim["agent_id"], f"ACP control cancellation: {reason}",
+            {"provider": claim["provider"], "reason": reason},
+        )
+        self._task_event(
+            req_id, claim["run_id"], task_name, claim["attempt_id"],
+            "TASK_STATUS_CHANGED",
+            {"previous_status": "IN_PROGRESS", "status": new_state, "reason": reason},
+            {"type": "system", "id": "acp-dispatcher"},
         )
 
     def _maintain_active(self) -> None:
         with self._lock:
             entries = list(self._active.items())
-        for (req_id, task_name), claim in entries:
-            base = f"workflows/{req_id}/tasks/{task_name}"
+        for (_active_id, task_name), claim in entries:
+            req_id = claim["scope_id"]
+            base = self._task_base(req_id, task_name)
             if not self._attempt_is_current(base, claim):
                 client = claim.get("client")
                 if client:
@@ -753,6 +925,155 @@ class ACPDispatcher:
             now = _now_iso()
             self.store.kv_put(f"{base}/lease_renewed_at", now)
             self.store.kv_put(f"{base}/lease_expires_at", _deadline(self.lease_duration))
+
+
+class JobFlowACPDispatcher(ACPDispatcher):
+    """Dispatch PENDING tasks for the new Template/Version/Instance model."""
+
+    def __init__(
+        self,
+        store: KVStore,
+        *,
+        commands: dict[str, list[str]],
+        routing: dict[str, str] | None = None,
+        workspace_root: str = "",
+        poll_interval: float = 1,
+        task_timeout: int = 7200,
+        lease_duration: int = 120,
+        max_concurrency: int = 4,
+        permission_policy: str = "allow_once",
+        client_factory: Callable[..., ACPClient] = ACPClient,
+        event_journal: EventJournal | None = None,
+    ):
+        super().__init__(
+            store,
+            RunManager(store, event_journal=event_journal or EventJournal(store),
+                       instance_mode=True),
+            commands=commands,
+            routing=routing,
+            workspace_root=workspace_root,
+            poll_interval=poll_interval,
+            task_timeout=task_timeout,
+            lease_duration=lease_duration,
+            max_concurrency=max_concurrency,
+            permission_policy=permission_policy,
+            client_factory=client_factory,
+            event_journal=event_journal,
+            scope=JOBFLOW_SCOPE,
+        )
+
+    def _tick(self) -> None:
+        super()._tick()
+        self._recover_expired_tasks()
+
+    def _pending_tasks(self) -> list[tuple[str, str, dict[str, str]]]:
+        items, _ = self.store.kv_get(f"{INSTANCE_PREFIX}/", recurse=True)
+        if not items:
+            return []
+        instances: dict[str, dict[str, Any]] = {}
+        for item in items:
+            parts = item["Key"].split("/")
+            if len(parts) < 3 or parts[:2] != ["jobflows", "instances"]:
+                continue
+            instance_id = parts[2]
+            instance = instances.setdefault(instance_id, {"tasks": {}})
+            if len(parts) == 4 and item["Key"] == f"{INSTANCE_PREFIX}/{instance_id}/status":
+                try:
+                    status = json.loads(item.get("_decoded", "{}"))
+                except (TypeError, json.JSONDecodeError):
+                    status = {}
+                if isinstance(status, dict):
+                    instance["status"] = status
+            elif len(parts) >= 5 and parts[3] == "tasks" and item["Key"].endswith("/status"):
+                task_id = parts[4]
+                try:
+                    status = json.loads(item.get("_decoded", "{}"))
+                except (TypeError, json.JSONDecodeError):
+                    status = {}
+                if isinstance(status, dict):
+                    instance["tasks"].setdefault(task_id, {}).update(status)
+            elif len(parts) >= 6 and parts[3] == "tasks" and parts[5] == "definition":
+                try:
+                    definition = json.loads(item.get("_decoded", "{}"))
+                except (TypeError, json.JSONDecodeError):
+                    definition = {}
+                if isinstance(definition, dict):
+                    instance["tasks"].setdefault(parts[4], {}).update(definition)
+
+        pending: list[tuple[str, str, dict[str, str]]] = []
+        for instance_id, instance in sorted(instances.items()):
+            if instance.get("status", {}).get("state") != "RUNNING":
+                continue
+            for task_id, meta in instance["tasks"].items():
+                if meta.get("state") != "PENDING":
+                    continue
+                if meta.get("type") in {"parallel", "aggregate"}:
+                    continue
+                normalized = dict(meta)
+                if isinstance(normalized.get("acp"), dict):
+                    normalized["acp"] = json.dumps(normalized["acp"], ensure_ascii=False)
+                pending.append((instance_id, task_id, normalized))
+        return sorted(pending, key=lambda item: (item[0], item[1]))
+
+    def _recover_expired_tasks(self) -> None:
+        now = _now_iso()
+        for instance_id, task_id, meta in self._jobflow_task_meta():
+            if meta.get("state") != "IN_PROGRESS":
+                continue
+            base = self._task_base(instance_id, task_id)
+            hard_deadline_raw, _ = self.store.kv_get(f"{base}/hard_deadline_at")
+            lease_deadline_raw, _ = self.store.kv_get(f"{base}/lease_expires_at")
+            hard_deadline = str(hard_deadline_raw or "")
+            lease_deadline = str(lease_deadline_raw or "")
+            if hard_deadline and hard_deadline <= now:
+                status, index = self._read_task_status(instance_id, task_id)
+                self._write_task_state(
+                    instance_id, task_id, "FAILED", index, current=status,
+                    fields={"error_message": "hard deadline exceeded"},
+                )
+                self.store.kv_put(f"{base}/failed_at", now)
+                self.store.kv_put(f"{base}/error_message", "hard deadline exceeded")
+                continue
+            if not lease_deadline or lease_deadline > now:
+                continue
+            status, index = self._read_task_status(instance_id, task_id)
+            epoch, _ = self.store.kv_get(f"{base}/lease_epoch")
+            self._write_task_state(
+                instance_id, task_id, "PENDING", index, current=status,
+                fields={"current_attempt": "", "lease_epoch": int(epoch or "0") + 1},
+            )
+            self.store.kv_put(f"{base}/lease_epoch", str(int(epoch or "0") + 1))
+
+    def _jobflow_task_meta(self) -> list[tuple[str, str, dict[str, Any]]]:
+        items, _ = self.store.kv_get(f"{INSTANCE_PREFIX}/", recurse=True)
+        if not items:
+            return []
+        running: set[str] = set()
+        tasks: list[tuple[str, str, dict[str, Any]]] = []
+        for item in items:
+            key = item.get("Key", "")
+            parts = key.split("/")
+            if len(parts) < 4 or parts[:2] != ["jobflows", "instances"]:
+                continue
+            instance_id = parts[2]
+            if len(parts) == 4 and key.endswith("/status"):
+                try:
+                    if json.loads(item.get("_decoded", "{}")).get("state") == "RUNNING":
+                        running.add(instance_id)
+                except (TypeError, json.JSONDecodeError):
+                    pass
+            elif len(parts) >= 6 and parts[3] == "tasks" and key.endswith("/status"):
+                try:
+                    meta = json.loads(item.get("_decoded", "{}"))
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                if isinstance(meta, dict):
+                    tasks.append((instance_id, parts[4], meta))
+        return [
+            (instance_id, task_id, meta)
+            for instance_id, task_id, meta in tasks
+            if instance_id in running
+        ]
 
 
 def _json_value(value: Any, default: Any) -> Any:

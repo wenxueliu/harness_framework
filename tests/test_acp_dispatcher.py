@@ -3,7 +3,8 @@ from __future__ import annotations
 import json
 
 from harness_framework.acp_client import ACPResult
-from harness_framework.acp_dispatcher import ACPDispatcher
+from harness_framework.acp_dispatcher import ACPDispatcher, JobFlowACPDispatcher
+from harness_framework.job_flows import JobFlowService
 from harness_framework.human_interaction import create_human_message, list_human_messages
 from harness_framework.run_manager import RunManager
 from harness_framework.project_groups import ProjectGroupService
@@ -307,3 +308,127 @@ def test_completion_contract_is_enforced():
     dispatcher._execute(req_id, task_name, meta, claim)
     assert store._store[f"{base}/status"] == "FAILED"
     assert "artifact:implementation" in store._store[f"{base}/error_message"]
+
+
+def _job_flow_service(store):
+    FakeACPClient.instances.clear()
+    service = JobFlowService(store)
+    service.create_template({
+        "template_id": "tpl-acp", "name": "ACP Flow",
+        "tasks": [
+            {"id": "build", "type": "backend", "depends_on": []},
+            {"id": "test", "type": "test", "depends_on": ["build"]},
+        ],
+    }, "local:alice")
+    version = service.publish_template(
+        "tpl-acp", {"expected_revision": 1}, "local:alice", "publish-acp",
+    )["version"]
+    service.create_instance({
+        "template_id": "tpl-acp", "version_id": version["version_id"],
+        "instance_id": "inst-acp", "name": "acp-main",
+    }, "local:alice", "create-acp")
+    service.start_instance("inst-acp", "local:alice")
+    return service
+
+
+def test_job_flow_pending_task_dispatches_and_completes_through_acp():
+    FakeACPClient.instances.clear()
+    store = MockConsulStore()
+    service = _job_flow_service(store)
+    run = json.loads(store._store["jobflows/instances/inst-acp/run/current"])
+    started = {"run": run}
+    assert run["status"] == "RUNNING"
+
+    dispatcher = JobFlowACPDispatcher(
+        store,
+        commands={"claude": ["claude-acp"], "codex": ["codex-acp"]},
+        client_factory=FakeACPClient,
+    )
+    from harness_framework.aggregator import Aggregator
+    aggregator = Aggregator(store, RunManager(store, instance_mode=True))
+    aggregator._tick_instances()
+
+    for expected_task, expected_type in (("build", "backend"), ("test", "test")):
+        instance_id, task_name, meta = dispatcher._pending_tasks()[0]
+        assert (instance_id, task_name) == ("inst-acp", expected_task)
+        assert meta["type"] == expected_type
+
+        claim = dispatcher._claim(instance_id, task_name, meta)
+        assert claim is not None and claim["provider"] == "codex"
+        assert claim["run_id"] == started["run"]["run_id"]
+        dispatcher._active[(f"jobflow:{instance_id}", task_name)] = {
+            **claim, "scope_id": instance_id, "client": None,
+        }
+        dispatcher._execute(instance_id, task_name, meta, claim)
+
+        base = f"jobflows/instances/{instance_id}/tasks/{task_name}"
+        task_status = json.loads(store._store[f"{base}/status"])
+        assert task_status["state"] == "DONE"
+        assert task_status["current_attempt"] == claim["attempt_id"]
+        assert store._store[f"{base}/execution_transport"] == "acp"
+        assert store._store[f"{base}/acp/session_id"] == "acp-session-new"
+        assert (f"jobflow:{instance_id}", task_name) not in dispatcher._active
+        assert not any(key.startswith("workflows/") for key in store._store)
+        aggregator._tick_instances()
+
+    instance_status = json.loads(store._store["jobflows/instances/inst-acp/status"])
+    assert instance_status["state"] == "SUCCEEDED"
+
+
+def test_job_flow_abort_blocks_dispatch_and_finalizes_run():
+    store = MockConsulStore()
+    service = _job_flow_service(store)
+    service.control_instance("inst-acp", "abort", "local:alice")
+
+    dispatcher = JobFlowACPDispatcher(
+        store,
+        commands={"claude": ["claude-acp"], "codex": ["codex-acp"]},
+        client_factory=FakeACPClient,
+    )
+    assert dispatcher._pending_tasks() == []
+    instance_status = json.loads(store._store["jobflows/instances/inst-acp/status"])
+    task_status = json.loads(store._store["jobflows/instances/inst-acp/tasks/build/status"])
+    assert instance_status["state"] == "ABORTED"
+    assert task_status["state"] == "ABORTED"
+    run = json.loads(store._store["jobflows/instances/inst-acp/run/current"])
+    assert run["status"] == "ABORTED"
+    assert store._store[f"jobflows/instances/inst-acp/runs/{run['run_id']}/status"] == "ABORTED"
+    assert not store._store.get("jobflows/instances/inst-acp/current_run")
+
+
+def test_job_flow_retry_requeues_task_for_acp_dispatch():
+    store = MockConsulStore()
+    service = _job_flow_service(store)
+    response = service.retry_task("inst-acp", "build", "local:alice")
+
+    dispatcher = JobFlowACPDispatcher(
+        store,
+        commands={"claude": ["claude-acp"], "codex": ["codex-acp"]},
+        client_factory=FakeACPClient,
+    )
+    pending = dispatcher._pending_tasks()
+    assert [(instance_id, task_id) for instance_id, task_id, _ in pending] == [
+        ("inst-acp", "build")
+    ]
+    assert pending[0][2]["current_attempt"] == response["attempt_id"]
+
+
+def test_job_flow_expired_lease_is_recovered_to_pending():
+    store = MockConsulStore()
+    service = _job_flow_service(store)
+    dispatcher = JobFlowACPDispatcher(
+        store,
+        commands={"claude": ["claude-acp"], "codex": ["codex-acp"]},
+        client_factory=FakeACPClient,
+    )
+    instance_id, task_name, meta = dispatcher._pending_tasks()[0]
+    claim = dispatcher._claim(instance_id, task_name, meta)
+    assert claim is not None
+    base = dispatcher._task_base(instance_id, task_name)
+    store.kv_put(f"{base}/lease_expires_at", "2000-01-01T00:00:00Z")
+
+    dispatcher._tick()
+
+    status = json.loads(store._store[f"{base}/status"])
+    assert status["state"] == "PENDING"
+    assert status["lease_epoch"] == claim["lease_epoch"] + 1

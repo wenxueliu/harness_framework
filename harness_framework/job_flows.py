@@ -567,11 +567,29 @@ class JobFlowService:
                     {"preflight": preflight},
                 )
                 return {"instance": self._instance_view(meta), "preflight": preflight}
-        instance = self._transition(instance_id, "RUNNING", actor)
-        run_id = f"run-{uuid.uuid4().hex[:12]}"
+        current_run_raw, current_run_index = self.store.kv_get(
+            f"{INSTANCE_PREFIX}/{instance_id}/current_run"
+        )
+        if current_run_raw:
+            run_id = str(current_run_raw)
+        else:
+            run_id = f"run-{uuid.uuid4().hex[:12]}"
+            if not self.store.kv_put(
+                f"{INSTANCE_PREFIX}/{instance_id}/current_run", run_id,
+                cas=current_run_index,
+            ):
+                winner, _ = self.store.kv_get(
+                    f"{INSTANCE_PREFIX}/{instance_id}/current_run"
+                )
+                if not winner:
+                    raise APIError("RUN_REGISTRATION_CONFLICT", "运行注册冲突", 409)
+                run_id = str(winner)
         self._write(f"{INSTANCE_PREFIX}/{instance_id}/run/current", {
             "run_id": run_id, "status": "RUNNING", "started_at": _now(),
         })
+        self.store.kv_put(f"{INSTANCE_PREFIX}/{instance_id}/current_run", run_id)
+        self.store.kv_put(f"{INSTANCE_PREFIX}/{instance_id}/runs/{run_id}/status", "RUNNING")
+        instance = self._transition(instance_id, "RUNNING", actor)
         return {"instance": instance, "run": self._read(
             f"{INSTANCE_PREFIX}/{instance_id}/run/current"
         )}
@@ -580,7 +598,37 @@ class JobFlowService:
         transitions = {"pause": "PAUSED", "abort": "ABORTED", "drain": "DRAINING"}
         if action not in transitions:
             raise APIError("INVALID_INSTANCE_ACTION", "不支持的实例操作", 422)
-        return {"instance": self._transition(instance_id, transitions[action], actor)}
+        instance = self._transition(instance_id, transitions[action], actor)
+        if transitions[action] == "ABORTED":
+            items, _ = self.store.kv_get(
+                f"{INSTANCE_PREFIX}/{instance_id}/tasks/", recurse=True
+            )
+            for item in items or []:
+                key = item.get("Key", "")
+                if not key.endswith("/status"):
+                    continue
+                try:
+                    status = json.loads(item.get("_decoded", "{}"))
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                if not isinstance(status, dict) or status.get("state") in {
+                    "DONE", "SUCCEEDED", "FAILED", "ABORTED", "SKIPPED_UPSTREAM_FAILED",
+                }:
+                    continue
+                task_id = key.split("/")[-2]
+                status["state"] = "ABORTED"
+                status["aborted_at"] = _now()
+                self._write(key, status)
+            run = self._read(f"{INSTANCE_PREFIX}/{instance_id}/run/current", {})
+            run_id = run.get("run_id") if isinstance(run, dict) else ""
+            if run_id:
+                self._write(f"{INSTANCE_PREFIX}/{instance_id}/run/current", {
+                    "run_id": run_id, "status": "ABORTED", "finished_at": _now(),
+                })
+                self.store.kv_put(f"{INSTANCE_PREFIX}/{instance_id}/runs/{run_id}/status", "ABORTED")
+                self.store.kv_put(f"{INSTANCE_PREFIX}/{instance_id}/runs/{run_id}/finished_at", _now())
+                self.store.kv_delete(f"{INSTANCE_PREFIX}/{instance_id}/current_run")
+        return {"instance": instance}
 
     def archive_instance(self, instance_id: str, actor: str) -> dict:
         return {"instance": self._transition(instance_id, "ARCHIVED", actor)}
@@ -641,10 +689,15 @@ class JobFlowService:
             raise APIError("TASK_NOT_FOUND", "实例任务不存在", 404)
         attempt_count = int(current.get("attempt_count", 0)) + 1
         attempt_id = f"attempt-{attempt_count}-{uuid.uuid4().hex[:8]}"
-        current.update({"state": "READY", "attempt_count": attempt_count, "current_attempt": attempt_id})
+        current.update({"state": "PENDING", "attempt_count": attempt_count, "current_attempt": attempt_id})
         self._write(status_key, current)
+        lease_epoch, _ = self.store.kv_get(f"{INSTANCE_PREFIX}/{instance_id}/tasks/{task_id}/lease_epoch")
+        self.store.kv_put(
+            f"{INSTANCE_PREFIX}/{instance_id}/tasks/{task_id}/lease_epoch",
+            str(int(lease_epoch or "0") + 1),
+        )
         self._write(f"{INSTANCE_PREFIX}/{instance_id}/tasks/{task_id}/attempts/{attempt_id}", {
-            "attempt_id": attempt_id, "state": "READY", "created_at": _now(), "created_by": actor,
+            "attempt_id": attempt_id, "state": "PENDING", "created_at": _now(), "created_by": actor,
         })
         return {"instance": self.get_instance(instance_id), "attempt_id": attempt_id}
 

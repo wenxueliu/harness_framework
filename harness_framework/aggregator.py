@@ -172,8 +172,10 @@ class Aggregator:
                     run_id = run_data.get("run_id", "") if isinstance(run_data, dict) else ""
                     if run_id:
                         rm = _RM(self.consul, instance_mode=True)
-                        rm.end_run(instance_id, run_id,
-                                   "SUCCEEDED" if final_state == "SUCCEEDED" else "FAILED")
+                        rm.end_run(
+                            instance_id, run_id,
+                            "COMPLETED" if final_state == "SUCCEEDED" else "FAILED",
+                        )
                 except (_json.JSONDecodeError, TypeError):
                     pass
             log.info("instance %s reached terminal state: %s", instance_id, final_state)
