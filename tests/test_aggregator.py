@@ -452,10 +452,18 @@ class TestAggregatorInstances:
             "jobflows/instances/inst-001/status": json.dumps(
                 {"state": "RUNNING", "revision": 1}
             ),
-            "jobflows/instances/inst-001/tasks": json.dumps({
-                "build": {"state": "DONE", "attempt_count": 1, "depends_on": []},
-                "test": {"state": "QUEUED", "attempt_count": 0, "depends_on": ["build"]},
-            }),
+            "jobflows/instances/inst-001/tasks/build/definition": json.dumps(
+                {"id": "build", "depends_on": []},
+            ),
+            "jobflows/instances/inst-001/tasks/build/status": json.dumps(
+                {"state": "DONE", "attempt_count": 1},
+            ),
+            "jobflows/instances/inst-001/tasks/test/definition": json.dumps(
+                {"id": "test", "depends_on": ["build"]},
+            ),
+            "jobflows/instances/inst-001/tasks/test/status": json.dumps(
+                {"state": "QUEUED", "attempt_count": 0},
+            ),
         }
         consul = _make_store(store)
         agg = Aggregator(consul, run_manager=make_mock_run_manager(), poll_interval=1)
@@ -463,17 +471,22 @@ class TestAggregatorInstances:
         agg._process_instance("inst-001")
 
         puts = {c[0][0]: c[0][1] for c in consul.kv_put.call_args_list}
-        tasks_written = json.loads(puts.get("jobflows/instances/inst-001/tasks", "{}"))
-        assert tasks_written.get("test", {}).get("state") == "PENDING"
+        tasks_written = json.loads(
+            puts.get("jobflows/instances/inst-001/tasks/test/status", "{}")
+        )
+        assert tasks_written.get("state") == "PENDING"
 
     def test_queued_instance_tasks_not_advanced(self):
         store = {
             "jobflows/instances/inst-002/status": json.dumps(
                 {"state": "QUEUED", "revision": 0}
             ),
-            "jobflows/instances/inst-002/tasks": json.dumps({
-                "build": {"state": "QUEUED", "attempt_count": 0, "depends_on": []},
-            }),
+            "jobflows/instances/inst-002/tasks/build/definition": json.dumps(
+                {"id": "build", "depends_on": []},
+            ),
+            "jobflows/instances/inst-002/tasks/build/status": json.dumps(
+                {"state": "QUEUED", "attempt_count": 0},
+            ),
         }
         consul = _make_store(store)
         agg = Aggregator(consul, run_manager=make_mock_run_manager(), poll_interval=1)
@@ -488,10 +501,18 @@ class TestAggregatorInstances:
                 {"state": "RUNNING", "revision": 1}
             ),
             "jobflows/instances/inst-003/control": "ABORT",
-            "jobflows/instances/inst-003/tasks": json.dumps({
-                "build": {"state": "IN_PROGRESS", "attempt_count": 1, "depends_on": []},
-                "test": {"state": "QUEUED", "attempt_count": 0, "depends_on": ["build"]},
-            }),
+            "jobflows/instances/inst-003/tasks/build/definition": json.dumps(
+                {"id": "build", "depends_on": []},
+            ),
+            "jobflows/instances/inst-003/tasks/build/status": json.dumps(
+                {"state": "IN_PROGRESS", "attempt_count": 1},
+            ),
+            "jobflows/instances/inst-003/tasks/test/definition": json.dumps(
+                {"id": "test", "depends_on": ["build"]},
+            ),
+            "jobflows/instances/inst-003/tasks/test/status": json.dumps(
+                {"state": "QUEUED", "attempt_count": 0},
+            ),
         }
         consul = _make_store(store)
         agg = Aggregator(consul, run_manager=make_mock_run_manager(), poll_interval=1)
@@ -501,8 +522,10 @@ class TestAggregatorInstances:
         puts = {c[0][0]: c[0][1] for c in consul.kv_put.call_args_list}
         status = json.loads(puts.get("jobflows/instances/inst-003/status", "{}"))
         assert status.get("state") == "ABORTED"
-        tasks_written = json.loads(puts.get("jobflows/instances/inst-003/tasks", "{}"))
-        assert tasks_written.get("build", {}).get("state") == "ABORTED"
+        tasks_written = json.loads(
+            puts.get("jobflows/instances/inst-003/tasks/build/status", "{}")
+        )
+        assert tasks_written.get("state") == "ABORTED"
         consul.kv_delete.assert_called_once_with("jobflows/instances/inst-003/control")
 
     def test_instance_reaches_succeeded_when_all_tasks_done(self):
@@ -510,10 +533,12 @@ class TestAggregatorInstances:
             "jobflows/instances/inst-004/status": json.dumps(
                 {"state": "RUNNING", "revision": 2}
             ),
-            "jobflows/instances/inst-004/tasks": json.dumps({
-                "build": {"state": "DONE", "attempt_count": 1, "depends_on": []},
-                "test": {"state": "SUCCEEDED", "attempt_count": 1, "depends_on": ["build"]},
-            }),
+            "jobflows/instances/inst-004/tasks/build/status": json.dumps(
+                {"state": "DONE", "attempt_count": 1},
+            ),
+            "jobflows/instances/inst-004/tasks/test/status": json.dumps(
+                {"state": "SUCCEEDED", "attempt_count": 1},
+            ),
         }
         consul = _make_store(store)
         agg = Aggregator(consul, run_manager=make_mock_run_manager(), poll_interval=1)
@@ -529,10 +554,12 @@ class TestAggregatorInstances:
             "jobflows/instances/inst-005/status": json.dumps(
                 {"state": "RUNNING", "revision": 1}
             ),
-            "jobflows/instances/inst-005/tasks": json.dumps({
-                "build": {"state": "FAILED", "attempt_count": 1, "depends_on": []},
-                "test": {"state": "SKIPPED_UPSTREAM_FAILED", "attempt_count": 0, "depends_on": ["build"]},
-            }),
+            "jobflows/instances/inst-005/tasks/build/status": json.dumps(
+                {"state": "FAILED", "attempt_count": 1},
+            ),
+            "jobflows/instances/inst-005/tasks/test/status": json.dumps(
+                {"state": "SKIPPED_UPSTREAM_FAILED", "attempt_count": 0},
+            ),
         }
         consul = _make_store(store)
         agg = Aggregator(consul, run_manager=make_mock_run_manager(), poll_interval=1)

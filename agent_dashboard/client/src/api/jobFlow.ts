@@ -229,3 +229,30 @@ export async function listJobFlowTemplateVersions(templateId: string): Promise<J
   )
   return result.versions
 }
+
+export async function getJobFlowTemplateVersion(templateId: string, versionId: string) {
+  return apiRequest<{ version: JobFlowVersion; manifest: { tasks: JobFlowTask[] } }>(
+    `/api/templates/${encodeURIComponent(templateId)}/versions/${encodeURIComponent(versionId)}`,
+  )
+}
+
+export type VersionDiff = {
+  template_id: string
+  from_version_id: string
+  to_version_id: string
+  added_tasks: string[]
+  removed_tasks: string[]
+  changed_tasks: Array<{ task_id: string; fields: Record<string, { old: unknown; new: unknown }> }>
+  summary: string
+}
+
+export async function diffJobFlowVersions(
+  templateId: string,
+  fromVersionId: string,
+  toVersionId: string,
+): Promise<VersionDiff> {
+  return apiRequest<VersionDiff>(
+    `/api/templates/${encodeURIComponent(templateId)}/versions/${encodeURIComponent(toVersionId)}/diff` +
+      `?from_version_id=${encodeURIComponent(fromVersionId)}`,
+  )
+}

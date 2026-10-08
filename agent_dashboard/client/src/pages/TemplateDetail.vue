@@ -1,13 +1,14 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import AppShell from '@/layouts/AppShell.vue'
 import DagGraph from '@/components/DagGraph.vue'
 import type { Task } from '@/api/types'
 import {
-  getJobFlowTemplate, listJobFlowTemplateVersions, listJobFlowInstances,
+  diffJobFlowVersions, getJobFlowTemplate, getJobFlowTemplateVersion,
+  listJobFlowTemplateVersions, listJobFlowInstances,
   archiveJobFlowTemplate, deleteJobFlowTemplate,
-  type JobFlowTemplate, type JobFlowVersion, type JobFlowTask, type JobFlowInstance,
+  type JobFlowTemplate, type JobFlowVersion, type JobFlowTask, type JobFlowInstance, type VersionDiff,
 } from '@/api/jobFlow'
 
 const route = useRoute()
@@ -18,6 +19,8 @@ const template = ref<JobFlowTemplate | null>(null)
 const versions = ref<JobFlowVersion[]>([])
 const instances = ref<JobFlowInstance[]>([])
 const selectedVersionId = ref<string>('')
+const selectedManifest = ref<{ tasks: JobFlowTask[] } | null>(null)
+const versionDiff = ref<VersionDiff | null>(null)
 const loading = ref(true)
 const error = ref('')
 const actionError = ref('')
@@ -32,7 +35,7 @@ const hasPublishedVersion = computed(() => versions.value.length > 0)
 const isArchived = computed(() => template.value?.status === 'ARCHIVED')
 
 const dagTasks = computed<Record<string, Task>>(() => {
-  const raw: JobFlowTask[] = template.value?.draft?.tasks ?? []
+  const raw: JobFlowTask[] = selectedManifest.value?.tasks ?? template.value?.draft?.tasks ?? []
   const record: Record<string, Task> = {}
   for (const task of raw) {
     record[task.id] = {
@@ -68,9 +71,26 @@ async function load() {
   }
 }
 
+async function loadVersion() {
+  if (!selectedVersionId.value) {
+    selectedManifest.value = null
+    versionDiff.value = null
+    return
+  }
+  const result = await getJobFlowTemplateVersion(templateId.value, selectedVersionId.value)
+  selectedManifest.value = result.manifest
+  const index = versions.value.findIndex(item => item.version_id === selectedVersionId.value)
+  const previous = index > 0 ? versions.value[index - 1] : null
+  versionDiff.value = previous
+    ? await diffJobFlowVersions(templateId.value, previous.version_id, selectedVersionId.value)
+    : null
+}
+
 function versionLabel(v: JobFlowVersion): string {
   return `V${v.version} · ${v.status}`
 }
+
+watch(selectedVersionId, () => { loadVersion() })
 
 async function handleArchive() {
   if (!template.value) return
@@ -136,6 +156,15 @@ async function handleDelete() {
             @click="selectedVersionId = v.version_id">
             {{ versionLabel(v) }}
           </button>
+        </div>
+
+        <div v-if="versionDiff" class="rounded-lg border border-border bg-card p-4" data-testid="version-diff">
+          <h3 class="text-sm font-semibold">版本差异 <span class="font-mono text-xs">{{ versionDiff.summary }}</span></h3>
+          <div class="mt-2 flex flex-wrap gap-2 text-xs">
+            <span v-for="task in versionDiff.added_tasks" :key="task" class="rounded bg-green-500/10 px-2 py-1 text-green-300">+ {{ task }}</span>
+            <span v-for="task in versionDiff.removed_tasks" :key="task" class="rounded bg-red-500/10 px-2 py-1 text-red-300">- {{ task }}</span>
+            <span v-for="change in versionDiff.changed_tasks" :key="change.task_id" class="rounded bg-amber-500/10 px-2 py-1 text-amber-300">~ {{ change.task_id }}</span>
+          </div>
         </div>
 
         <div class="rounded-lg border border-border bg-card overflow-hidden">

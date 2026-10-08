@@ -112,13 +112,7 @@ class Aggregator:
         if ctl == "PAUSE":
             return
 
-        tasks_raw, _ = self.consul.kv_get(f"{INSTANCE_PREFIX}/{instance_id}/tasks")
-        if not tasks_raw:
-            return
-        try:
-            tasks = _json.loads(tasks_raw) if isinstance(tasks_raw, str) else tasks_raw
-        except (_json.JSONDecodeError, TypeError):
-            return
+        tasks = self._read_instance_tasks(instance_id)
         if not isinstance(tasks, dict):
             return
 
@@ -187,21 +181,46 @@ class Aggregator:
     def _write_instance_task(self, instance_id: str, task_id: str, task_info: dict) -> None:
         import json as _json
         self.consul.kv_put(
-            f"{INSTANCE_PREFIX}/{instance_id}/tasks", _json.dumps(
-                self._read_instance_tasks(instance_id) | {task_id: task_info}
-            )
+            f"{INSTANCE_PREFIX}/{instance_id}/tasks/{task_id}/status",
+            _json.dumps(task_info),
         )
 
     def _read_instance_tasks(self, instance_id: str) -> dict:
-        import json as _json
-        raw, _ = self.consul.kv_get(f"{INSTANCE_PREFIX}/{instance_id}/tasks")
-        if not raw:
-            return {}
-        try:
-            tasks = _json.loads(raw) if isinstance(raw, str) else raw
-            return tasks if isinstance(tasks, dict) else {}
-        except (_json.JSONDecodeError, TypeError):
-            return {}
+        tasks: dict[str, dict] = {}
+        items, _ = self.consul.kv_get(
+            f"{INSTANCE_PREFIX}/{instance_id}/tasks/", recurse=True
+        )
+        for item in items or []:
+            key = item.get("Key", "")
+            if not key.endswith("/status"):
+                continue
+            task_id = key.split("/")[-2]
+            status = item.get("_decoded")
+            if status is None:
+                status = item.get("Value")
+            if isinstance(status, str):
+                import json as _json
+                try:
+                    status = _json.loads(status)
+                except (_json.JSONDecodeError, TypeError):
+                    status = {}
+            if not isinstance(status, dict):
+                continue
+            definition = self.consul.kv_get(
+                f"{INSTANCE_PREFIX}/{instance_id}/tasks/{task_id}/definition"
+            )
+            definition_value = definition[0]
+            if isinstance(definition_value, str):
+                import json as _json
+                try:
+                    definition_value = _json.loads(definition_value)
+                except (_json.JSONDecodeError, TypeError):
+                    definition_value = {}
+            tasks[task_id] = {
+                **(definition_value if isinstance(definition_value, dict) else {}),
+                **status,
+            }
+        return tasks
 
     def _abort_instance(self, instance_id: str) -> None:
         """ABORT 信号：将所有非终态任务设为 ABORTED。"""
@@ -213,9 +232,9 @@ class Aggregator:
             if info.get("state", "") not in ("DONE", "SUCCEEDED", "FAILED",
                                               "ABORTED", "SKIPPED_UPSTREAM_FAILED"):
                 info["state"] = "ABORTED"
-        self.consul.kv_put(
-            f"{INSTANCE_PREFIX}/{instance_id}/tasks", _json.dumps(tasks)
-        )
+        for task_id, info in tasks.items():
+            if isinstance(info, dict):
+                self._write_instance_task(instance_id, task_id, info)
         status_raw, _ = self.consul.kv_get(f"{INSTANCE_PREFIX}/{instance_id}/status")
         try:
             status = _json.loads(status_raw) if isinstance(status_raw, str) else (status_raw or {})

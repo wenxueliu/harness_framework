@@ -78,5 +78,5 @@ class TestInstanceDetailDag:
     def test_instance_dag_empty_state(self, page: Page):
         """UI-06: 实例无任务时显示空状态提示。"""
         page.goto(BASE_URL + "/#/instances/nonexistent")
-        page.wait_for_timeout(1000)
+        page.wait_for_selector('[role="alert"]')
         assert page.query_selector('[role="alert"]') is not None

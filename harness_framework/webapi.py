@@ -1067,14 +1067,15 @@ class APIHandler(BaseHTTPRequestHandler):
             if len(parts) == 5 and parts[4] == "versions":
                 return {"versions": service.list_versions(template_id)}
             if len(parts) == 6 and parts[4] == "versions":
-                versions = service.list_versions(template_id)
-                version = next((item for item in versions if item["version_id"] == unquote(parts[5])), None)
-                if version is None:
-                    raise APIError("VERSION_NOT_FOUND", "模板版本不存在", 404)
-                manifest, _ = self.consul.kv_get(
-                    f"jobflows/templates/{template_id}/versions/{version['version_id']}/manifest"
+                return service.get_version(template_id, unquote(parts[5]))
+            if len(parts) == 7 and parts[4] == "versions" and parts[6] == "diff":
+                query = parse_qs(parsed_url.query)
+                from_version_id = query.get("from_version_id", [""])[0]
+                if not from_version_id:
+                    raise APIError("FROM_VERSION_REQUIRED", "缺少 from_version_id", 422)
+                return service.diff_versions(
+                    template_id, from_version_id, unquote(parts[5])
                 )
-                return {"version": version, "manifest": json.loads(manifest) if manifest else {}}
         if path.startswith("/api/instances/"):
             instance_id = unquote(parts[3])
             instance = service.get_instance(instance_id)
@@ -1095,6 +1096,8 @@ class APIHandler(BaseHTTPRequestHandler):
                 return {"tasks": instance["tasks"]}
             if len(parts) == 5 and parts[4] == "events":
                 return {"events": service.list_events(instance_id)}
+            if len(parts) == 5 and parts[4] == "artifacts":
+                return {"artifacts": self.artifacts.list_for_instance(instance_id)}
         raise APIError("NOT_FOUND", "接口不存在", 404)
 
     def _jobflow_post(self, path: str, body: dict, context) -> dict:
@@ -1182,6 +1185,10 @@ class APIHandler(BaseHTTPRequestHandler):
                 if not key:
                     raise APIError("IDEMPOTENCY_KEY_REQUIRED", "Idempotency-Key 不能为空", 422)
                 return service.rerun_instance(instance_id, body, actor, key)
+            if len(parts) == 5 and parts[4] == "artifacts":
+                self._require(context, "file:write", template["group_id"])
+                artifact = self.artifacts.create({**body, "instance_id": instance_id})
+                return {"artifact": artifact}
             if len(parts) == 7 and parts[4] == "tasks" and parts[6] == "retry":
                 self._require(context, "task:retry", template["group_id"])
                 return service.retry_task(instance_id, unquote(parts[5]), actor)

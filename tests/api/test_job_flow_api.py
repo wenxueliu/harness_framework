@@ -4,6 +4,7 @@ from __future__ import annotations
 import http.client
 import json
 import threading
+from urllib.parse import quote
 
 from harness_framework.auth import AuthConfig
 from harness_framework.project_groups import ProjectGroupService
@@ -137,6 +138,14 @@ def test_template_version_and_multiple_instance_lifecycle():
             port, "GET", f"/api/attempts/{latest_preflight['attempt_id']}/manifest",
         )
         assert status == 200 and manifest["attempt_id"] == latest_preflight["attempt_id"]
+        status, artifact = request(
+            port, "POST", f"/api/instances/{first_id}/artifacts",
+            {"artifact_id": "release-log", "path": "logs/release.txt", "retention_days": 1},
+        )
+        assert status == 200 and artifact["artifact"]["instance_id"] == first_id
+        status, artifacts = request(port, "GET", f"/api/instances/{first_id}/artifacts")
+        assert status == 200
+        assert [item["artifact_id"] for item in artifacts["artifacts"]] == ["release-log"]
 
         status, rerun = request(
             port, "POST", f"/api/instances/{first_id}/rerun",
@@ -169,6 +178,15 @@ def test_template_version_and_multiple_instance_lifecycle():
         )
         assert status == 200
         assert len(old_version["manifest"]["tasks"]) == 3
+
+        status, version_diff = request(
+            port, "GET",
+            f"/api/templates/release-template/versions/{version_v2}/diff"
+            f"?from_version_id={quote(version_v1, safe='')}",
+        )
+        assert status == 200
+        assert version_diff["removed_tasks"] == ["publish", "test"]
+        assert version_diff["summary"] == "+0 -2 ~0"
 
         status, disabled = request(
             port, "POST",

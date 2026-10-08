@@ -295,6 +295,44 @@ class JobFlowService:
         self._template(template_id)
         return self._read(f"{TEMPLATE_PREFIX}/{template_id}/versions/index", []) or []
 
+    def get_version(self, template_id: str, version_id: str) -> dict:
+        version = next(
+            (item for item in self.list_versions(template_id) if item["version_id"] == version_id),
+            None,
+        )
+        if version is None:
+            raise APIError("VERSION_NOT_FOUND", "模板版本不存在", 404)
+        manifest = self._read(
+            f"{TEMPLATE_PREFIX}/{template_id}/versions/{version_id}/manifest", {}
+        )
+        return {"version": version, "manifest": manifest if isinstance(manifest, dict) else {}}
+
+    def diff_versions(self, template_id: str, from_version_id: str, to_version_id: str) -> dict:
+        old = self.get_version(template_id, from_version_id)["manifest"]
+        new = self.get_version(template_id, to_version_id)["manifest"]
+        old_tasks = {str(item["id"]): item for item in old.get("tasks", []) if isinstance(item, dict)}
+        new_tasks = {str(item["id"]): item for item in new.get("tasks", []) if isinstance(item, dict)}
+        added = sorted(set(new_tasks) - set(old_tasks))
+        removed = sorted(set(old_tasks) - set(new_tasks))
+        changed: list[dict] = []
+        for task_id in sorted(set(old_tasks) & set(new_tasks)):
+            differences: dict[str, dict] = {}
+            for field in ("name", "type", "depends_on"):
+                old_value, new_value = old_tasks[task_id].get(field), new_tasks[task_id].get(field)
+                if old_value != new_value:
+                    differences[field] = {"old": old_value, "new": new_value}
+            if differences:
+                changed.append({"task_id": task_id, "fields": differences})
+        return {
+            "template_id": template_id,
+            "from_version_id": from_version_id,
+            "to_version_id": to_version_id,
+            "added_tasks": added,
+            "removed_tasks": removed,
+            "changed_tasks": changed,
+            "summary": f"+{len(added)} -{len(removed)} ~{len(changed)}",
+        }
+
     def publish_template(self, template_id: str, body: dict, actor: str, key: str | None) -> dict:
         cached = self._idempotent(key)
         if cached:

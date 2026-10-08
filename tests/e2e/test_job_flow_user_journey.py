@@ -68,6 +68,41 @@ def test_template_instance_task_detail_and_theme(
 
 
 @pytest.mark.e2e
+def test_template_detail_shows_version_diff(page: Page, dashboard_url: str) -> None:
+    """Selecting a version renders the immutable version and its structural diff."""
+    suffix = str(time.time_ns())
+    template_id = "ui-version-diff-" + suffix
+    try:
+        api_json("POST", "/api/templates", {
+            "template_id": template_id,
+            "name": "UI version diff " + suffix,
+            "tasks": [
+                {"id": "build", "type": "backend", "depends_on": []},
+                {"id": "test", "type": "test", "depends_on": ["build"]},
+            ],
+        })
+        first = api_json("POST", f"/api/templates/{template_id}/publish", {})
+        api_json("PATCH", f"/api/templates/{template_id}/draft", {
+            "expected_revision": 1,
+            "tasks": [{"id": "build", "type": "backend", "depends_on": []}],
+        })
+        second = api_json("POST", f"/api/templates/{template_id}/publish", {})
+        page.goto(dashboard_url + f"/#/templates/{template_id}")
+        wait_for_network_idle(page)
+        page.locator(f'[data-testid="version-tab-{second["version"]["version_id"]}"]').wait_for(timeout=10000)
+        page.locator(f'[data-testid="version-tab-{second["version"]["version_id"]}"]').click()
+        expect(page.get_by_text("版本差异")).to_be_visible(timeout=10000)
+        expect(page.locator('[data-testid="version-diff"]')).to_be_visible()
+        assert "1 个节点" in page.content()
+        assert first["version"]["manifest_hash"] != second["version"]["manifest_hash"]
+    finally:
+        try:
+            api_json("DELETE", f"/api/templates/{template_id}")
+        except RuntimeError:
+            pass
+
+
+@pytest.mark.e2e
 @pytest.mark.smoke
 def test_home_shows_instances_and_template_create_button(
     page: Page, dashboard_url: str,
