@@ -25,6 +25,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 CONSUL_DIR="$PROJECT_DIR/consul_server"
 DASHBOARD_DIR="$PROJECT_DIR/agent_dashboard"
+HARNESS_WORKSPACE_ROOT="${HARNESS_WORKSPACE_ROOT:-$(cd "$PROJECT_DIR/../.." && pwd)}"
 LOG_DIR="${XDG_RUNTIME_DIR:-/tmp}/harness-framework"
 PID_DIR="$LOG_DIR/pids"
 
@@ -122,6 +123,7 @@ start_daemon() {
     nohup python3 -m harness_framework.daemon \
         --port "$DAEMON_PORT" \
         --consul "127.0.0.1:$CONSUL_PORT" \
+        --workspace-root "flow=$HARNESS_WORKSPACE_ROOT" \
         > "$LOG_DIR/daemon.log" 2>&1 &
 
     local pid=$!

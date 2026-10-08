@@ -291,6 +291,35 @@ class Page:
             return Locator(self, selector[5:], text=True)
         return Locator(self, selector)
 
+    def wait_for_selector(self, selector: str, timeout: int = 5000) -> Locator:
+        locator = self.locator(selector)
+        locator.wait_for("visible", timeout)
+        return locator
+
+    def fill(self, selector: str, value: str) -> None:
+        self.locator(selector).fill(value)
+
+    def click(self, selector: str) -> None:
+        self.locator(selector).click()
+
+    def inner_text(self, selector: str) -> str:
+        return str(self.evaluate(
+            "s => document.querySelector(s)?.textContent || ''", selector,
+        ))
+
+    def query_selector(self, selector: str) -> object | None:
+        return self.evaluate("s => !!document.querySelector(s)", selector) or None
+
+    def query_selector_all(self, selector: str) -> list[Locator]:
+        count = int(self.evaluate("s => document.querySelectorAll(s).length", selector))
+        if not count:
+            return []
+        self.evaluate("""s => Array.from(document.querySelectorAll(s)).forEach((el, index) => {
+          el.setAttribute('data-webbridge-index', String(index));
+        })""", selector)
+        return [self.locator(f"{selector}[data-webbridge-index='{index}']")
+                for index in range(count)]
+
     def get_by_text(self, text: str) -> Locator:
         return Locator(self, text, text=True)
 

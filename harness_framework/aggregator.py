@@ -92,6 +92,7 @@ class Aggregator:
     def _process_instance(self, instance_id: str) -> None:
         """推进单个 Job Flow 实例的任务依赖。"""
         import json as _json
+        from .run_manager import RunManager as _RM
 
         status_raw, _ = self.consul.kv_get(f"{INSTANCE_PREFIX}/{instance_id}/status")
         if not status_raw:
@@ -170,6 +171,17 @@ class Aggregator:
                 "state": final_state, "revision": int(status.get("revision", 0)) + 1,
                 "updated_at": _now_iso(),
             }))
+            run_id_raw, _ = self.consul.kv_get(f"{INSTANCE_PREFIX}/{instance_id}/run/current")
+            if run_id_raw:
+                try:
+                    run_data = _json.loads(run_id_raw) if isinstance(run_id_raw, str) else run_id_raw
+                    run_id = run_data.get("run_id", "") if isinstance(run_data, dict) else ""
+                    if run_id:
+                        rm = _RM(self.consul, instance_mode=True)
+                        rm.end_run(instance_id, run_id,
+                                   "SUCCEEDED" if final_state == "SUCCEEDED" else "FAILED")
+                except (_json.JSONDecodeError, TypeError):
+                    pass
             log.info("instance %s reached terminal state: %s", instance_id, final_state)
 
     def _write_instance_task(self, instance_id: str, task_id: str, task_info: dict) -> None:

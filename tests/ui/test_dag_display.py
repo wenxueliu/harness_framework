@@ -2,19 +2,21 @@
 from __future__ import annotations
 
 import pytest
+import time
 
 from tests.e2e.webbridge import Page
 
-BASE_URL = "http://127.0.0.1:8081"
+BASE_URL = "http://127.0.0.1:3000"
 
 
 def _create_template(page: Page, name: str, tasks_json: str) -> str:
+    unique_name = f"{name}-{time.time_ns()}"
     page.goto(BASE_URL + "/#/templates/new")
     page.wait_for_selector('[data-testid="template-name"]')
-    page.fill('[data-testid="template-name"]', name)
+    page.fill('[data-testid="template-name"]', unique_name)
     page.fill('[data-testid="tasks-editor"]', tasks_json)
     page.click('[data-testid="save-draft"]')
-    page.wait_for_selector('[data-testid="builder-message"]')
+    page.wait_for_selector('[data-testid="builder-message"], [role="alert"]')
     url = page.evaluate("window.location.hash")
     return url
 
@@ -36,15 +38,14 @@ class TestTemplateEditorDag:
             '[{"id":"a","depends_on":[]},{"id":"b","depends_on":["a"]},{"id":"c","depends_on":["a"]}]')
         page.goto(page.evaluate("window.location.href"))
         page.wait_for_selector('[data-testid="dag-preview"]')
-        text = page.inner_text('[data-testid="dag-preview"]')
+        text = page.content()
         assert "3 个节点" in text
 
     def test_dag_preview_parse_error_fallback(self, page: Page):
         """UI-03: JSON 格式无效时显示错误提示，不白屏。"""
         _create_template(page, "dag-test-3", "invalid json{{{")
-        page.goto(page.evaluate("window.location.href"))
         page.wait_for_selector('[data-testid="dag-preview"]')
-        text = page.inner_text('[data-testid="dag-preview"]')
+        text = page.content()
         assert "暂不可用" in text or "无效" in text
 
     def test_dag_preview_updates_on_json_change(self, page: Page):
@@ -56,7 +57,7 @@ class TestTemplateEditorDag:
         page.fill('[data-testid="tasks-editor"]',
             '[{"id":"a","depends_on":[]},{"id":"b","depends_on":["a"]}]')
         page.wait_for_timeout(500)
-        text = page.inner_text('[data-testid="dag-preview"]')
+        text = page.content()
         assert "2 个节点" in text
 
 

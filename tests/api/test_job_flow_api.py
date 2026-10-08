@@ -24,6 +24,25 @@ def request(port: int, method: str, path: str, body: dict | None = None, headers
     return response.status, payload
 
 
+def prepare_runtime_profile(port: int, group_id: str = "unassigned", profile_id: str = "profile-main"):
+    status, _ = request(port, "POST", "/api/agent-runtimes", {
+        "runtime_id": "runtime-main", "name": "ACP Runtime", "version": "1.0.0",
+    })
+    assert status == 201
+    status, runtime = request(port, "POST", "/api/agent-runtimes/runtime-main/health", {
+        "status": "HEALTHY",
+    })
+    assert status == 200 and runtime["agent_runtime"]["status"] == "HEALTHY"
+    status, profile = request(port, "POST", "/api/execution-profiles", {
+        "profile_id": profile_id,
+        "group_id": group_id,
+        "name": "Standard profile",
+        "agent_runtime_id": "runtime-main",
+    })
+    assert status == 201
+    return profile["profile_id"]
+
+
 def test_template_version_and_multiple_instance_lifecycle():
     server = serve(
         MockConsulStore(),
@@ -45,6 +64,7 @@ def test_template_version_and_multiple_instance_lifecycle():
         })
         assert status == 201
         assert created["template"]["draft_revision"] == 1
+        profile_id = prepare_runtime_profile(port)
 
         status, updated = request(port, "PATCH", "/api/templates/release-template/draft", {
             "expected_revision": 1,
@@ -75,6 +95,7 @@ def test_template_version_and_multiple_instance_lifecycle():
             "parameters": {"region": "cn"},
             "git": {"ref": "main"},
             "workspace": {"workspace_id": "ws-main"},
+            "execution_profile_id": profile_id,
         }
         status, first = request(
             port, "POST", "/api/instances", instance_body,
@@ -106,6 +127,16 @@ def test_template_version_and_multiple_instance_lifecycle():
 
         status, started = request(port, "POST", f"/api/instances/{first_id}/start", {})
         assert status == 200 and started["instance"]["status"]["state"] == "RUNNING"
+        assert started["run"]["run_id"]
+        status, latest_preflight = request(
+            port, "GET", f"/api/instances/{first_id}/preflight/latest",
+        )
+        assert status == 200 and latest_preflight["status"] == "PASSED"
+        assert latest_preflight["attempt_id"] == first["instance"]["current_attempt_id"]
+        status, manifest = request(
+            port, "GET", f"/api/attempts/{latest_preflight['attempt_id']}/manifest",
+        )
+        assert status == 200 and manifest["attempt_id"] == latest_preflight["attempt_id"]
 
         status, rerun = request(
             port, "POST", f"/api/instances/{first_id}/rerun",
@@ -173,9 +204,13 @@ def test_publish_and_execute_is_one_idempotent_action():
             "tasks": [{"id": "build", "depends_on": []}],
         })
         assert status == 201
+        profile_id = prepare_runtime_profile(port)
         status, result = request(
             port, "POST", "/api/templates/execute-template/publish-and-execute",
-            {"instance": {"instance_id": "execute-instance", "name": "Run now"}},
+            {"instance": {
+                "instance_id": "execute-instance", "name": "Run now",
+                "execution_profile_id": profile_id,
+            }},
             {"Idempotency-Key": "publish-and-execute"},
         )
         assert status == 200
@@ -225,6 +260,7 @@ def test_template_delete_requires_no_bound_instances():
             "tasks": [{"id": "build", "depends_on": []}],
         })
         assert status == 201
+        profile_id = prepare_runtime_profile(port)
         status, published = request(
             port, "POST", "/api/templates/bound-template/publish", {},
             {"Idempotency-Key": "publish-bound-template"},
@@ -236,6 +272,7 @@ def test_template_delete_requires_no_bound_instances():
                 "version_id": published["version"]["version_id"],
                 "name": "Bound instance",
                 "parameters": {}, "git": {}, "workspace": {},
+                "execution_profile_id": profile_id,
             },
             {"Idempotency-Key": "bound-instance"},
         )
@@ -272,11 +309,13 @@ def test_instance_delete_requires_terminal_state_and_removes_instance():
             {"Idempotency-Key": "publish-instance-delete-template"},
         )
         assert status == 200
+        profile_id = prepare_runtime_profile(port)
         instance_body = {
             "template_id": "instance-delete-template",
             "version_id": published["version"]["version_id"],
             "name": "Instance to delete",
             "parameters": {}, "git": {}, "workspace": {},
+            "execution_profile_id": profile_id,
         }
         status, created = request(
             port, "POST", "/api/instances", instance_body,

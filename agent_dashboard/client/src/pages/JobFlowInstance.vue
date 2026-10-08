@@ -9,13 +9,23 @@ import ChangeSetPanel from '@/components/ChangeSetPanel.vue'
 import WorkspaceCard from '@/components/WorkspaceCard.vue'
 import ArtifactList, { type ArtifactItem } from '@/components/ArtifactList.vue'
 import type { Task } from '@/api/types'
-import { deleteJobFlowInstance, getJobFlowInstance, rerunJobFlowInstance, type JobFlowInstance } from '@/api/jobFlow'
+import {
+  controlJobFlowInstance,
+  deleteJobFlowInstance,
+  getJobFlowInstance,
+  getJobFlowPreflight,
+  rerunJobFlowInstance,
+  runJobFlowPreflight,
+  startJobFlowInstance,
+  type JobFlowInstance,
+} from '@/api/jobFlow'
 
 const route = useRoute()
 const router = useRouter()
 const instance = ref<JobFlowInstance | null>(null)
 const error = ref('')
 const rerunning = ref(false)
+const controlling = ref(false)
 const editing = ref(false)
 const gitRef = ref('')
 const parameterText = ref('{}')
@@ -62,17 +72,39 @@ function buildDagTasks() {
 
 async function loadCapability() {
   try {
-    const res = await fetch(`/api/instances/${instanceId}/preflight/latest`)
-    if (res.ok) preflight.value = await res.json()
-  } catch { /* offline */ }
-  try {
-    const res = await fetch(`/api/attempts/${instanceId}/manifest`)
-    if (res.ok) manifest.value = await res.json()
+    const latest = await getJobFlowPreflight(instanceId)
+    preflight.value = latest.status === 'IDLE'
+      ? await runJobFlowPreflight(instanceId)
+      : latest
+    if (preflight.value?.attempt_id) {
+      const response = await fetch(`/api/attempts/${encodeURIComponent(preflight.value.attempt_id)}/manifest`)
+      if (response.ok) manifest.value = await response.json()
+    }
   } catch { /* offline */ }
   try {
     const res = await fetch(`/api/instances/${instanceId}/artifacts`)
     if (res.ok) { const data = await res.json(); artifactList.value = data.artifacts ?? [] }
   } catch { /* offline */ }
+}
+
+async function start() {
+  controlling.value = true
+  try {
+    await startJobFlowInstance(instanceId)
+    await Promise.all([load(), loadCapability()])
+  }
+  catch (cause) { error.value = cause instanceof Error ? cause.message : '实例启动失败' }
+  finally { controlling.value = false }
+}
+
+async function control(action: 'pause' | 'abort' | 'drain' | 'archive') {
+  controlling.value = true
+  try {
+    await controlJobFlowInstance(instanceId, action)
+    await load()
+  }
+  catch (cause) { error.value = cause instanceof Error ? cause.message : '实例操作失败' }
+  finally { controlling.value = false }
 }
 
 async function load() {
@@ -109,7 +141,16 @@ onMounted(() => { load(); loadCapability() })
 
 <template>
   <AppShell :title="instance?.name || '作业流实例'" eyebrow="Instance Detail">
-    <template #actions><div class="flex gap-2"><button data-testid="rerun-instance" class="rounded bg-blue-500 px-3 py-2 text-xs text-white" :disabled="rerunning" @click="editing = !editing">修改并重新执行</button><button data-testid="delete-instance" class="rounded border border-red-400/50 px-3 py-2 text-xs text-red-300 disabled:cursor-not-allowed disabled:opacity-40" :disabled="!deletableStates.has(instance?.status.state || '')" title="只有排队中或终态实例可以删除" @click="removeInstance">删除实例</button></div></template>
+    <template #actions>
+      <div class="flex flex-wrap gap-2">
+        <button data-testid="start-instance" class="rounded bg-emerald-500 px-3 py-2 text-xs text-white disabled:cursor-not-allowed disabled:opacity-40" :disabled="controlling || !['QUEUED','PAUSED','WAITING_FOR_CAPABILITY'].includes(instance?.status.state || '')" @click="start">启动</button>
+        <button data-testid="pause-instance" class="rounded border border-border px-3 py-2 text-xs disabled:opacity-40" :disabled="controlling || instance?.status.state !== 'RUNNING'" @click="control('pause')">暂停</button>
+        <button data-testid="abort-instance" class="rounded border border-red-400/50 px-3 py-2 text-xs text-red-300 disabled:opacity-40" :disabled="controlling || !['QUEUED','RUNNING','PAUSED','DRAINING'].includes(instance?.status.state || '')" @click="control('abort')">中止</button>
+        <button data-testid="drain-instance" class="rounded border border-border px-3 py-2 text-xs disabled:opacity-40" :disabled="controlling || !['QUEUED','RUNNING','PAUSED'].includes(instance?.status.state || '')" @click="control('drain')">Drain</button>
+        <button data-testid="rerun-instance" class="rounded bg-blue-500 px-3 py-2 text-xs text-white" :disabled="rerunning" @click="editing = !editing">修改并重新执行</button>
+        <button data-testid="delete-instance" class="rounded border border-red-400/50 px-3 py-2 text-xs text-red-300 disabled:cursor-not-allowed disabled:opacity-40" :disabled="!deletableStates.has(instance?.status.state || '')" title="只有排队中或终态实例可以删除" @click="removeInstance">删除实例</button>
+      </div>
+    </template>
     <div v-if="error" role="alert" class="m-6 rounded bg-red-400/10 p-4 text-sm text-red-300">{{ error }}</div>
     <div v-else-if="instance" class="mx-auto max-w-6xl space-y-4 p-4 sm:p-6">
       <nav data-testid="instance-breadcrumb" class="flex items-center gap-1.5 text-xs text-muted-foreground">

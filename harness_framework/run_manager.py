@@ -34,19 +34,27 @@ TASK_TERMINAL_STATES = frozenset({
 
 class RunManager:
     def __init__(self, consul: KVStore, workspace_manager=None,
-                 event_journal: EventJournal | None = None):
+                 event_journal: EventJournal | None = None,
+                 instance_mode: bool = False):
         self.consul = consul
         self.workspace_manager = workspace_manager
         self.event_journal = event_journal or EventJournal(consul)
+        self.instance_mode = instance_mode
+
+    def _kv_prefix(self, req_id: str) -> str:
+        """Return the KV prefix for a workflow or a Job Flow instance."""
+        if self.instance_mode:
+            return f"jobflows/instances/{req_id}"
+        return f"workflows/{req_id}"
 
     # ── Run 生命周期 ────────────────────────────────────────────────────────
 
     def get_active_run(self, req_id: str) -> Optional[str]:
         """Return the active Run without creating execution state."""
-        current, _ = self.consul.kv_get(f"workflows/{req_id}/current_run")
+        current, _ = self.consul.kv_get(f"{self._kv_prefix(req_id)}/current_run")
         if not current:
             return None
-        status, _ = self.consul.kv_get(f"workflows/{req_id}/runs/{current}/status")
+        status, _ = self.consul.kv_get(f"{self._kv_prefix(req_id)}/runs/{current}/status")
         if not status or status in RUN_TERMINAL_STATES:
             return None
         return current
@@ -63,14 +71,14 @@ class RunManager:
 
         run_id = _generate_run_id()
         now = _now_iso()
-        base = f"workflows/{req_id}/runs/{run_id}"
+        base = f"{self._kv_prefix(req_id)}/runs/{run_id}"
         self.consul.kv_put(f"{base}/status", "RUNNING")
         self.consul.kv_put(f"{base}/started_at", now)
         self.consul.kv_put(f"{base}/started_by", actor)
         self.consul.kv_put(f"{base}/summary", json.dumps(
             {"total": 0, "done": 0, "failed": 0, "aborted": 0}
         ))
-        current_key = f"workflows/{req_id}/current_run"
+        current_key = f"{self._kv_prefix(req_id)}/current_run"
         previous, previous_index = self.consul.kv_get(current_key)
         cas = previous_index if previous else 0
         if not self.consul.kv_put(current_key, run_id, cas=cas):
@@ -89,7 +97,7 @@ class RunManager:
         if not actor or not idempotency_key:
             raise ValueError("actor and idempotency_key are required")
         idem_digest = hashlib.sha256(idempotency_key.encode("utf-8")).hexdigest()
-        idem_key = f"workflows/{req_id}/run-idempotency/{idem_digest}"
+        idem_key = f"{self._kv_prefix(req_id)}/run-idempotency/{idem_digest}"
         existing, _ = self.consul.kv_get(idem_key)
         if existing:
             return existing
@@ -97,7 +105,7 @@ class RunManager:
             raise RuntimeError("workflow already has an active run")
         run_id = _generate_run_id()
         now = _now_iso()
-        base = f"workflows/{req_id}/runs/{run_id}"
+        base = f"{self._kv_prefix(req_id)}/runs/{run_id}"
         self.consul.kv_put(f"{base}/status", "PROVISIONING")
         self.consul.kv_put(f"{base}/started_at", now)
         self.consul.kv_put(f"{base}/started_by", actor)
@@ -114,11 +122,11 @@ class RunManager:
         return run_id
 
     def activate_provisioned_run(self, req_id: str, run_id: str) -> None:
-        base = f"workflows/{req_id}/runs/{run_id}"
+        base = f"{self._kv_prefix(req_id)}/runs/{run_id}"
         status, status_index = self.consul.kv_get(f"{base}/status")
         if status != "PROVISIONING":
             raise ValueError(f"run is not provisioning: {status}")
-        current_key = f"workflows/{req_id}/current_run"
+        current_key = f"{self._kv_prefix(req_id)}/current_run"
         current, current_index = self.consul.kv_get(current_key)
         if current:
             raise RuntimeError("workflow already has an active run")
@@ -130,7 +138,7 @@ class RunManager:
             raise RuntimeError("run status changed concurrently")
 
     def fail_provisioning_run(self, req_id: str, run_id: str, reason: str) -> None:
-        base = f"workflows/{req_id}/runs/{run_id}"
+        base = f"{self._kv_prefix(req_id)}/runs/{run_id}"
         status, index = self.consul.kv_get(f"{base}/status")
         if status != "PROVISIONING":
             raise ValueError(f"run is not provisioning: {status}")
@@ -144,10 +152,10 @@ class RunManager:
         if status not in RUN_TERMINAL_STATES:
             raise ValueError(f"invalid terminal run status: {status}")
         now = _now_iso()
-        base = f"workflows/{req_id}/runs/{run_id}"
+        base = f"{self._kv_prefix(req_id)}/runs/{run_id}"
         self.consul.kv_put(f"{base}/status", status)
         self.consul.kv_put(f"{base}/finished_at", now)
-        current_key = f"workflows/{req_id}/current_run"
+        current_key = f"{self._kv_prefix(req_id)}/current_run"
         current, _ = self.consul.kv_get(current_key)
         if current == run_id:
             self.consul.kv_delete(current_key)
@@ -167,24 +175,24 @@ class RunManager:
         """
         if not actor or not change_id:
             raise ValueError("actor and change_id are required")
-        lock_key = f"workflows/{req_id}/roll_forward_lock"
+        lock_key = f"{self._kv_prefix(req_id)}/roll_forward_lock"
         lock_id = uuid.uuid4().hex
         if not self.consul.kv_put(lock_key, lock_id, cas=0):
             raise RuntimeError("another roll-forward is in progress")
         try:
-            current_key = f"workflows/{req_id}/current_run"
+            current_key = f"{self._kv_prefix(req_id)}/current_run"
             current_run, current_index = self.consul.kv_get(current_key)
             if not current_run:
                 raise ValueError("workflow has no active run to roll forward")
             current_status, _ = self.consul.kv_get(
-                f"workflows/{req_id}/runs/{current_run}/status"
+                f"{self._kv_prefix(req_id)}/runs/{current_run}/status"
             )
             if current_status in RUN_TERMINAL_STATES or not current_status:
                 raise ValueError(f"run is not active: {current_status}")
 
             new_run = _generate_run_id()
             now = _now_iso()
-            base = f"workflows/{req_id}/runs/{new_run}"
+            base = f"{self._kv_prefix(req_id)}/runs/{new_run}"
             self.consul.kv_put(f"{base}/status", "RUNNING")
             self.consul.kv_put(f"{base}/started_at", now)
             self.consul.kv_put(f"{base}/started_by", actor)
@@ -196,7 +204,7 @@ class RunManager:
             version_snapshot = {}
             for kind in ("requirement", "workflow_spec", "dag", "plan"):
                 pointer, _ = self.consul.kv_get(
-                    f"workflows/{req_id}/versions/{kind}/current"
+                    f"{self._kv_prefix(req_id)}/versions/{kind}/current"
                 )
                 if pointer:
                     version_snapshot[kind] = json.loads(pointer)
@@ -211,7 +219,7 @@ class RunManager:
             if not self.consul.kv_put(current_key, new_run, cas=current_index):
                 raise RuntimeError("active run changed concurrently")
 
-            old_base = f"workflows/{req_id}/runs/{current_run}"
+            old_base = f"{self._kv_prefix(req_id)}/runs/{current_run}"
             self.consul.kv_put(f"{old_base}/status", "SUPERSEDED")
             self.consul.kv_put(f"{old_base}/finished_at", now)
             self.consul.kv_put(f"{old_base}/superseded_by", new_run)
@@ -240,7 +248,7 @@ class RunManager:
             if t.get("status") in TASK_TERMINAL_STATES
         )
 
-        base = f"workflows/{req_id}/runs/{run_id}"
+        base = f"{self._kv_prefix(req_id)}/runs/{run_id}"
         self.consul.kv_put(f"{base}/summary", json.dumps(
             {
                 "total": total,
@@ -285,7 +293,7 @@ class RunManager:
             "reason": reason,
             "metadata": metadata or {},
         }
-        key = f"workflows/{req_id}/runs/{run_id}/transitions/{seq}"
+        key = f"{self._kv_prefix(req_id)}/runs/{run_id}/transitions/{seq}"
         self.consul.kv_put(key, json.dumps(record, ensure_ascii=False))
         log.debug("transition: %s/%s %s -> %s (%s)",
                   req_id, task_name, previous_state, new_state, actor)
@@ -298,7 +306,7 @@ class RunManager:
     ) -> None:
         """Agent 开始新 session 时写入索引条目。"""
         now = _now_iso()
-        base = f"workflows/{req_id}/runs/{run_id}/sessions/{task_name}"
+        base = f"{self._kv_prefix(req_id)}/runs/{run_id}/sessions/{task_name}"
         self.consul.kv_put(f"{base}/session_id", session_id)
         self.consul.kv_put(f"{base}/agent_id", agent_id)
         self.consul.kv_put(f"{base}/started_at", now)
@@ -319,7 +327,7 @@ class RunManager:
     ) -> None:
         """Agent 关闭 session 时更新索引条目。"""
         now = _now_iso()
-        base = f"workflows/{req_id}/runs/{run_id}/sessions/{task_name}"
+        base = f"{self._kv_prefix(req_id)}/runs/{run_id}/sessions/{task_name}"
         self.consul.kv_put(f"{base}/ended_at", now)
         self.consul.kv_put(f"{base}/event_count", str(event_count))
         self.consul.kv_put(f"{base}/error_count", str(error_count))
@@ -343,13 +351,13 @@ class RunManager:
     def get_run_sessions(self, req_id: str, run_id: str) -> list[dict]:
         """列出 run 下所有 task 的 session 元数据（按任务名排序）。"""
         items, _ = self.consul.kv_get(
-            f"workflows/{req_id}/runs/{run_id}/sessions/", recurse=True
+            f"{self._kv_prefix(req_id)}/runs/{run_id}/sessions/", recurse=True
         )
         if not items:
             return []
 
         sessions_map: dict[str, dict] = {}
-        prefix = f"workflows/{req_id}/runs/{run_id}/sessions/"
+        prefix = f"{self._kv_prefix(req_id)}/runs/{run_id}/sessions/"
         for it in items:
             rel = it["Key"][len(prefix):]
             task_name, _, field = rel.partition("/")
@@ -368,7 +376,7 @@ class RunManager:
         sessions = self.get_run_sessions(req_id, run_id)
 
         # 加载 DAG 以获得依赖顺序
-        deps_str, _ = self.consul.kv_get(f"workflows/{req_id}/dependencies")
+        deps_str, _ = self.consul.kv_get(f"{self._kv_prefix(req_id)}/dependencies")
         dependencies = {}
         try:
             dependencies = json.loads(deps_str) if deps_str else {}
@@ -416,13 +424,13 @@ class RunManager:
     def list_runs(self, req_id: str) -> list[dict]:
         """列出 workflow 的所有历史 run（按 started_at 降序）。"""
         items, _ = self.consul.kv_get(
-            f"workflows/{req_id}/runs/", recurse=True
+            f"{self._kv_prefix(req_id)}/runs/", recurse=True
         )
         if not items:
             return []
 
         runs_map: dict[str, dict] = {}
-        prefix = f"workflows/{req_id}/runs/"
+        prefix = f"{self._kv_prefix(req_id)}/runs/"
         for it in items:
             rel = it["Key"][len(prefix):]
             run_id, _, field = rel.partition("/")
@@ -450,13 +458,13 @@ class RunManager:
     def get_run(self, req_id: str, run_id: str) -> Optional[dict]:
         """获取单个 run 的详情。"""
         items, _ = self.consul.kv_get(
-            f"workflows/{req_id}/runs/{run_id}/", recurse=True
+            f"{self._kv_prefix(req_id)}/runs/{run_id}/", recurse=True
         )
         if not items:
             return None
 
         result: dict[str, Any] = {"run_id": run_id}
-        prefix = f"workflows/{req_id}/runs/{run_id}/"
+        prefix = f"{self._kv_prefix(req_id)}/runs/{run_id}/"
         for it in items:
             rel = it["Key"][len(prefix):]
             if "/" in rel:
@@ -474,13 +482,13 @@ class RunManager:
     def get_transitions(self, req_id: str, run_id: str) -> list[dict]:
         """获取某个 run 的全部转换记录（按时间升序）。"""
         items, _ = self.consul.kv_get(
-            f"workflows/{req_id}/runs/{run_id}/transitions/", recurse=True
+            f"{self._kv_prefix(req_id)}/runs/{run_id}/transitions/", recurse=True
         )
         if not items:
             return []
 
         transitions: list[dict] = []
-        prefix = f"workflows/{req_id}/runs/{run_id}/transitions/"
+        prefix = f"{self._kv_prefix(req_id)}/runs/{run_id}/transitions/"
         for it in items:
             rel = it["Key"][len(prefix):]
             try:
@@ -498,7 +506,7 @@ class RunManager:
     def _load_tasks(self, req_id: str) -> dict:
         """加载 workflow 下所有任务的状态。"""
         items, _ = self.consul.kv_get(
-            f"workflows/{req_id}/tasks/", recurse=True
+            f"{self._kv_prefix(req_id)}/tasks/", recurse=True
         )
         out: dict = {}
         if not items:
@@ -517,14 +525,14 @@ class RunManager:
                              session_id: str) -> list[dict]:
         """加载单个 session 的完整事件列表。"""
         items, _ = self.consul.kv_get(
-            f"workflows/{req_id}/sessions/{task_name}/{session_id}/events/",
+            f"{self._kv_prefix(req_id)}/sessions/{task_name}/{session_id}/events/",
             recurse=True
         )
         if not items:
             return []
 
         events: list[dict] = []
-        prefix = f"workflows/{req_id}/sessions/{task_name}/{session_id}/events/"
+        prefix = f"{self._kv_prefix(req_id)}/sessions/{task_name}/{session_id}/events/"
         for it in items:
             rel = it["Key"][len(prefix):]
             try:

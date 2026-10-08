@@ -9,6 +9,8 @@ from .kv_store_protocol import KVStore
 
 def _now_iso(): return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
+JOBFLOW_INSTANCE_PREFIX = "jobflows/instances"
+
 class PreflightError(Exception):
     def __init__(self, code: str, message: str, status: int = 422):
         self.code = code; self.message = message; self.status = status
@@ -34,7 +36,14 @@ class CapabilityPreflightService:
         self.store.kv_put(key, json.dumps(value, ensure_ascii=False))
 
     def run(self, instance_id: str) -> dict:
-        instance = self._read(f"instances/{instance_id}")
+        instance = self._read(f"{JOBFLOW_INSTANCE_PREFIX}/{instance_id}/meta")
+        storage_prefix = JOBFLOW_INSTANCE_PREFIX
+        if isinstance(instance, dict):
+            context = self._read(f"{JOBFLOW_INSTANCE_PREFIX}/{instance_id}/context", {})
+            instance = {**instance, "context": context}
+        else:
+            storage_prefix = "instances"
+            instance = self._read(f"{storage_prefix}/{instance_id}")
         if not instance:
             raise PreflightError("INSTANCE_NOT_FOUND", f"Instance {instance_id} 不存在", 404)
 
@@ -99,6 +108,10 @@ class CapabilityPreflightService:
 
         # Workspace check
         workspace_id = instance.get("run_workspace_id", "")
+        if not workspace_id:
+            context = instance.get("context") if isinstance(instance.get("context"), dict) else {}
+            workspace = context.get("workspace") if isinstance(context.get("workspace"), dict) else {}
+            workspace_id = workspace.get("workspace_id", "")
         if workspace_id:
             checks.append({"check_id": "workspace", "status": "PASS", "detail": f"Run Workspace {workspace_id}"})
         else:
@@ -134,8 +147,13 @@ class CapabilityPreflightService:
                     workspace_binding={"workspace_id": workspace_id} if workspace_id else {},
                 )
                 result["manifest_id"] = manifest["manifest_id"]
-            except Exception:
-                pass
+            except Exception as exc:
+                try:
+                    existing = self.manifest_service.get(attempt_id)
+                except Exception:
+                    raise PreflightError("MANIFEST_FAILED", str(exc), 503) from exc
+                result["manifest_id"] = existing["manifest_id"]
 
-        self._write(f"instances/{instance_id}/preflight/latest", result)
+        result["attempt_id"] = instance.get("current_attempt_id", f"attempt-{instance_id}")
+        self._write(f"{storage_prefix}/{instance_id}/preflight/latest", result)
         return result

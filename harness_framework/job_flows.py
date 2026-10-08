@@ -45,8 +45,9 @@ def _id(value: Any, prefix: str) -> str:
 class JobFlowService:
     """KV-backed domain service with immutable version boundaries."""
 
-    def __init__(self, store: KVStore):
+    def __init__(self, store: KVStore, preflight_service=None):
         self.store = store
+        self.preflight_service = preflight_service
 
     def _read(self, key: str, default: Any = None) -> Any:
         raw, _ = self.store.kv_get(key)
@@ -459,6 +460,9 @@ class JobFlowService:
             "created_by": actor, "created_at": now, "updated_at": now,
             "successor_of": body.get("successor_of"),
         }
+        if body.get("execution_profile_id"):
+            meta["execution_profile_id"] = str(body["execution_profile_id"])
+        meta["current_attempt_id"] = f"attempt-{instance_id}"
         status = {"state": "QUEUED", "revision": 1, "updated_at": now}
         self._write(f"{INSTANCE_PREFIX}/{instance_id}/meta", meta)
         self._write(f"{INSTANCE_PREFIX}/{instance_id}/context", context)
@@ -485,7 +489,7 @@ class JobFlowService:
         current = self._read(status_key, {})
         current_state = current.get("state", "QUEUED")
         allowed = {
-            "RUNNING": {"QUEUED", "PAUSED"},
+            "RUNNING": {"QUEUED", "PAUSED", "WAITING_FOR_CAPABILITY"},
             "PAUSED": {"RUNNING"},
             "DRAINING": {"QUEUED", "RUNNING", "PAUSED"},
             "ABORTED": {"QUEUED", "RUNNING", "PAUSED", "DRAINING"},
@@ -503,6 +507,28 @@ class JobFlowService:
         return self._instance_view(meta)
 
     def start_instance(self, instance_id: str, actor: str) -> dict:
+        if self.preflight_service is not None:
+            preflight = self.preflight_service.run(instance_id)
+            if preflight.get("status") != "PASSED":
+                meta = self._instance(instance_id)
+                status_key = f"{INSTANCE_PREFIX}/{instance_id}/status"
+                current = self._read(status_key, {})
+                updated = {
+                    "state": "WAITING_FOR_CAPABILITY",
+                    "revision": int(current.get("revision", 0)) + 1,
+                    "updated_at": _now(),
+                }
+                self._write(status_key, updated)
+                self._write(f"{INSTANCE_PREFIX}/{instance_id}/status_revision", updated["revision"])
+                meta["updated_at"] = updated["updated_at"]
+                self._write(f"{INSTANCE_PREFIX}/{instance_id}/meta", meta)
+                self._append_event(
+                    f"{INSTANCE_PREFIX}/{instance_id}",
+                    "INSTANCE_CAPABILITY_BLOCKED",
+                    actor,
+                    {"preflight": preflight},
+                )
+                return {"instance": self._instance_view(meta), "preflight": preflight}
         instance = self._transition(instance_id, "RUNNING", actor)
         run_id = f"run-{uuid.uuid4().hex[:12]}"
         self._write(f"{INSTANCE_PREFIX}/{instance_id}/run/current", {
@@ -557,6 +583,8 @@ class JobFlowService:
             "workspace": context["workspace"], "execution_policy": context["execution_policy"],
             "successor_of": instance_id,
         }
+        if body.get("execution_profile_id"):
+            request["execution_profile_id"] = body["execution_profile_id"]
         response = self.create_instance(request, actor, None)
         successor_id = response["instance"]["instance_id"]
         self._transition(instance_id, "DRAINING", actor)

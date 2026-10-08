@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import type { Workflow, Task } from '@/api/types'
-import { pingHarness, sendControlSignalToHarness } from '@/lib/harnessApi'
-import { listJobFlowInstances, controlJobFlowInstance } from '@/api/jobFlow'
+import { pingHarness } from '@/lib/harnessApi'
+import { listJobFlowInstances, controlJobFlowInstance, startJobFlowInstance } from '@/api/jobFlow'
 import { instancesToWorkflows } from '@/lib/instanceAdapter'
 import { fetchWorkflows as fetchWorkflowsMock, sendControlSignal as sendControlSignalMock, PHASE_CONFIG, TASK_TYPE_ICON } from '@/lib/mockData'
 import DagGraph from '@/components/DagGraph.vue'
@@ -186,12 +186,14 @@ async function handleConfirm() {
   dialogOpen.value = false
   try {
     if (dataSource.value === 'api') {
-      const actionMap: Record<string, 'pause' | 'abort'> = { PAUSE: 'pause', ABORT: 'abort' }
+      const actionMap: Record<string, 'pause' | 'abort'> = {
+        PAUSE: 'pause', ABORT: 'abort',
+      }
       const action = actionMap[pendingSignal.value]
       if (action) {
         await controlJobFlowInstance(selectedId.value, action)
-      } else {
-        await sendControlSignalToHarness(selectedId.value, pendingSignal.value, pendingTaskName.value ?? undefined)
+      } else if (pendingSignal.value === 'RESUME' || pendingSignal.value === 'RETRY') {
+        await startJobFlowInstance(selectedId.value)
       }
     } else if (dataSource.value === 'demo') {
       await sendControlSignalMock(selectedId.value, pendingSignal.value)

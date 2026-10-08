@@ -8,10 +8,11 @@ export interface PreflightCheck {
 }
 export interface PreflightResult {
   instance_id: string
-  status: 'PASSED' | 'BLOCKED'
+  status: 'IDLE' | 'PASSED' | 'BLOCKED'
   checks: PreflightCheck[]
-  manifest_id: string | null
-  checked_at: string
+  manifest_id?: string | null
+  checked_at?: string
+  attempt_id?: string
 }
 defineProps<{ result: PreflightResult | null; loading?: boolean }>()
 const emit = defineEmits<{ (e: 'rerun'): void }>()

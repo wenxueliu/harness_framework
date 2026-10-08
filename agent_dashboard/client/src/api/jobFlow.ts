@@ -122,6 +122,22 @@ export async function listJobFlowInstances(templateId?: string, groupId?: string
   return result.instances
 }
 
+export type ExecutionProfileSummary = {
+  profile_id: string
+  name: string
+  version: string
+  agent_runtime_id: string
+  status: string
+}
+
+export async function listJobFlowExecutionProfiles(groupId?: string): Promise<ExecutionProfileSummary[]> {
+  const query = groupId ? '?group_id=' + encodeURIComponent(groupId) : ''
+  const result = await apiRequest<{ execution_profiles: ExecutionProfileSummary[] }>(
+    '/api/execution-profiles' + query,
+  )
+  return result.execution_profiles
+}
+
 export async function createJobFlowInstance(input: {
   template_id: string
   version_id?: string
@@ -130,11 +146,42 @@ export async function createJobFlowInstance(input: {
   parameters: Record<string, unknown>
   git: Record<string, unknown>
   workspace: Record<string, unknown>
+  execution_profile_id?: string
 }): Promise<JobFlowInstance> {
   const result = await apiRequest<{ instance: JobFlowInstance }>(
     '/api/instances', jsonRequest('POST', input, { 'Idempotency-Key': crypto.randomUUID() }),
   )
   return result.instance
+}
+
+export type PreflightCheck = {
+  check_id: string
+  status: 'PASS' | 'FAIL'
+  detail: string
+  reason?: string
+  remediation?: string
+}
+
+export type PreflightSummary = {
+  instance_id: string
+  status: 'IDLE' | 'PASSED' | 'BLOCKED'
+  checks: PreflightCheck[]
+  manifest_id?: string | null
+  attempt_id?: string
+}
+
+export async function getJobFlowPreflight(instanceId: string): Promise<PreflightSummary> {
+  const result = await apiRequest<PreflightSummary>(
+    '/api/instances/' + encodeURIComponent(instanceId) + '/preflight/latest',
+  )
+  return result
+}
+
+export async function runJobFlowPreflight(instanceId: string): Promise<PreflightSummary> {
+  return apiRequest<PreflightSummary>(
+    '/api/instances/' + encodeURIComponent(instanceId) + '/preflight',
+    jsonRequest('POST', {}),
+  )
 }
 
 export async function getJobFlowInstance(instanceId: string): Promise<JobFlowInstance> {
@@ -153,6 +200,13 @@ export async function deleteJobFlowInstance(instanceId: string): Promise<void> {
 export async function startJobFlowInstance(instanceId: string) {
   return apiRequest<{ instance: JobFlowInstance; run?: Record<string, unknown> }>(
     '/api/instances/' + encodeURIComponent(instanceId) + '/start', jsonRequest('POST', {}),
+  )
+}
+
+export async function retryJobFlowTask(instanceId: string, taskId: string) {
+  return apiRequest<{ task: Record<string, unknown> }>(
+    `/api/instances/${encodeURIComponent(instanceId)}/tasks/${encodeURIComponent(taskId)}/retry`,
+    jsonRequest('POST', {}),
   )
 }
 

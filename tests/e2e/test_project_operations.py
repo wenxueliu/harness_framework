@@ -81,7 +81,7 @@ def test_project_group_member_workspace_lifecycle(page: Page, dashboard_url: str
         page.locator('input[placeholder="subject ID"]').fill(member)
         page.get_by_text("添加").click()
         expect(page.get_by_text(member)).to_be_visible(timeout=10000)
-        expect(page.get_by_text("DEVELOPER")).to_be_visible()
+        expect(page.get_by_text("EDITOR")).to_be_visible()
 
         page.locator('input[placeholder="Workspace 名称"]').fill(workspace_name)
         absolute_path = str(Path(__file__).resolve().parents[2] / "agent_dashboard")

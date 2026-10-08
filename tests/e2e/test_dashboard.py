@@ -64,12 +64,11 @@ class TestDashboardLoad:
 
         indicator = page.locator(".pulse-dot")
         expect(indicator).to_be_visible()
-        # Mock 模式文字
-        mock_text = page.get_by_text("Mock · 演示数据")
-        consul_text = page.get_by_text("Consul · 已连接")
+        demo_text = page.get_by_text("Demo · 模拟数据")
         api_text = page.get_by_text("Harness API · 已连接")
-        assert mock_text.is_visible() or consul_text.is_visible() or api_text.is_visible(), (
-            "数据源指示器应显示 Mock 或 Consul"
+        offline_text = page.get_by_text("离线 · 只读")
+        assert demo_text.is_visible() or api_text.is_visible() or offline_text.is_visible(), (
+            "数据源指示器应显示 Demo、Harness API 或离线状态"
         )
 
 

@@ -309,7 +309,9 @@ class APIHandler(BaseHTTPRequestHandler):
                 return self._send_json(200, {"execution_profile": self.execution_profiles.get(parts[3])})
             if path.startswith("/api/instances/") and path.endswith("/preflight/latest"):
                 instance_id = path.split("/")[3]
-                latest = self.consul.kv_get(f"instances/{instance_id}/preflight/latest")
+                latest = self.consul.kv_get(f"jobflows/instances/{instance_id}/preflight/latest")
+                if not latest[0]:
+                    latest = self.consul.kv_get(f"instances/{instance_id}/preflight/latest")
                 return self._send_json(200, json.loads(latest[0]) if latest[0] else {"status": "IDLE"})
             if path.startswith("/api/instances/") and path.endswith("/artifacts"):
                 instance_id = path.split("/")[3]
@@ -550,15 +552,15 @@ class APIHandler(BaseHTTPRequestHandler):
                 return self._send_json(201 if path in {"/api/templates", "/api/instances"} else 200, result)
             if path == "/api/agent-runtimes":
                 return self._send_json(201, self.agent_runtimes.register(body, self._authentication_context().subject))
+            if path.startswith("/api/agent-runtimes/") and path.endswith("/health"):
+                parts = path.split("/")
+                runtime = self.agent_runtimes.update_health(
+                    parts[3], str(body.get("status", "HEALTHY"))
+                )
+                return self._send_json(200, {"agent_runtime": runtime})
             if path.startswith("/api/instances/") and path.endswith("/preflight"):
                 instance_id = path.split("/")[3]
-                from .execution_manifest import ExecutionManifestService
-                preflight = CapabilityPreflightService(
-                    self.consul, self.agent_runtimes, self.execution_profiles,
-                    self.skill_bundles, self.mcp_service, self.workspace_manager,
-                    ExecutionManifestService(self.consul),
-                )
-                return self._send_json(200, preflight.run(instance_id))
+                return self._send_json(200, self.capability_preflight.run(instance_id))
             if path.startswith("/api/instances/") and path.endswith("/artifacts"):
                 instance_id = path.split("/")[3]
                 return self._send_json(200, {"artifacts": self.artifacts.list_for_instance(instance_id)})
@@ -1080,6 +1082,15 @@ class APIHandler(BaseHTTPRequestHandler):
             self._jobflow_require(context, "group:read", template)
             if len(parts) == 4:
                 return {"instance": instance}
+            if len(parts) == 6 and parts[4] == "preflight" and parts[5] == "latest":
+                latest = self.consul.kv_get(
+                    f"jobflows/instances/{instance_id}/preflight/latest"
+                )
+                if not latest[0]:
+                    latest = self.consul.kv_get(
+                        f"instances/{instance_id}/preflight/latest"
+                    )
+                return json.loads(latest[0]) if latest[0] else {"status": "IDLE"}
             if len(parts) == 5 and parts[4] == "tasks":
                 return {"tasks": instance["tasks"]}
             if len(parts) == 5 and parts[4] == "events":
@@ -2042,11 +2053,18 @@ def serve(consul: KVStore, host: str = "0.0.0.0", port: int = 8080,
     APIHandler.workspace_merge = WorkspaceMergeService(
         consul, APIHandler.workspace_manager, APIHandler.event_journal
     )
-    APIHandler.job_flows = JobFlowService(consul)
     APIHandler.execution_profiles = ExecutionProfileService(consul)
     APIHandler.agent_runtimes = AgentRuntimeService(consul)
     APIHandler.skill_bundles = SkillBundleService(consul)
     APIHandler.mcp_service = MCPService(consul)
+    from .capability_preflight import CapabilityPreflightService
+    from .execution_manifest import ExecutionManifestService
+    APIHandler.capability_preflight = CapabilityPreflightService(
+        consul, APIHandler.agent_runtimes, APIHandler.execution_profiles,
+        APIHandler.skill_bundles, APIHandler.mcp_service, APIHandler.workspace_manager,
+        ExecutionManifestService(consul),
+    )
+    APIHandler.job_flows = JobFlowService(consul, APIHandler.capability_preflight)
     APIHandler.artifacts = ArtifactService(consul)
     server = ThreadingHTTPServer((host, port), APIHandler)
     log.info("WebAPI serving on http://%s:%d/", host, port)

@@ -2,7 +2,16 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import AppShell from '@/layouts/AppShell.vue'
-import { getJobFlowTemplate, listJobFlowTemplateVersions, type JobFlowTemplate, type JobFlowVersion } from '@/api/jobFlow'
+import {
+  createJobFlowInstance,
+  getJobFlowTemplate,
+  listJobFlowExecutionProfiles,
+  listJobFlowTemplateVersions,
+  startJobFlowInstance,
+  type ExecutionProfileSummary,
+  type JobFlowTemplate,
+  type JobFlowVersion,
+} from '@/api/jobFlow'
 
 const router = useRouter()
 const route = useRoute()
@@ -13,11 +22,13 @@ const template = ref<JobFlowTemplate | null>(null)
 const versions = ref<JobFlowVersion[]>([])
 const selectedVersionId = ref('')
 const gitRef = ref('')
+const instanceName = ref('')
 const workspaceStrategy = ref('ORIGINAL')
 const executionProfileId = ref('')
 const startMode = ref<'later' | 'now'>('later')
 const parametersText = ref('{}')
 const loading = ref(true)
+const submitting = ref(false)
 const error = ref('')
 
 const parsedParameters = computed<Record<string, unknown>>(() => {
@@ -26,6 +37,7 @@ const parsedParameters = computed<Record<string, unknown>>(() => {
 
 const availableVersions = computed(() => versions.value.filter(v => v.status === 'PUBLISHED'))
 const selectedVersion = computed(() => versions.value.find(v => v.version_id === selectedVersionId.value))
+const profiles = ref<ExecutionProfileSummary[]>([])
 
 const workspaceStrategies = [
   { value: 'ORIGINAL', label: '原目录（需要检查脏修改）' },
@@ -36,37 +48,34 @@ const workspaceStrategies = [
 
 async function submit() {
   error.value = ''
+  submitting.value = true
   try {
     const body = {
       template_id: templateId.value,
       version_id: selectedVersionId.value,
+      name: instanceName.value.trim() || '未命名实例',
       parameters: parsedParameters.value,
       git: { ref: gitRef.value },
-      workspace_strategy: workspaceStrategy.value,
+      workspace: { strategy: workspaceStrategy.value },
       execution_profile_id: executionProfileId.value,
-      start: startMode.value === 'now',
     }
-    const response = await fetch('/api/instances', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    })
-    if (!response.ok) {
-      const detail = await response.json().catch(() => ({}))
-      throw new Error(detail.error ?? `HTTP ${response.status}`)
+    const created = await createJobFlowInstance(body)
+    if (startMode.value === 'now') {
+      await startJobFlowInstance(created.instance_id)
     }
-    const result = await response.json()
-    router.push(`/instances/${result.instance?.instance_id ?? result.instance_id}`)
+    router.push(`/instances/${created.instance_id}`)
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : '创建失败'
-  }
+  } finally { submitting.value = false }
 }
 
 onMounted(async () => {
   try {
     template.value = await getJobFlowTemplate(templateId.value)
     versions.value = await listJobFlowTemplateVersions(templateId.value)
+    profiles.value = await listJobFlowExecutionProfiles(template.value.group_id || undefined)
     if (availableVersions.value.length) selectedVersionId.value = availableVersions.value[0].version_id
+    if (profiles.value.length) executionProfileId.value = profiles.value[0].profile_id
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : '加载失败'
   } finally {
@@ -108,10 +117,28 @@ function prevStep() { if (step.value > 1) step.value-- }
 
         <div v-if="step === 2" data-testid="wizard-step-2" class="space-y-3">
           <div class="rounded-lg border border-border bg-card p-4">
+            <h4 class="text-sm font-medium">实例名称</h4>
+            <input v-model="instanceName" data-testid="wizard-name" placeholder="release-main"
+              class="mt-2 w-full rounded border border-border bg-transparent p-2 text-xs" />
+          </div>
+          <div class="rounded-lg border border-border bg-card p-4">
             <h4 class="text-sm font-medium">输入参数</h4>
             <textarea v-model="parametersText" data-testid="wizard-parameters" rows="4"
               class="mt-2 w-full rounded border border-border bg-transparent p-2 font-mono text-xs"
               placeholder='{"key": "value"}' />
+          </div>
+          <div class="rounded-lg border border-border bg-card p-4">
+            <h4 class="text-sm font-medium">Execution Profile</h4>
+            <select v-model="executionProfileId" data-testid="wizard-profile"
+              class="mt-2 w-full rounded border border-border bg-transparent p-2 text-xs">
+              <option value="">选择 Profile</option>
+              <option v-for="profile in profiles" :key="profile.profile_id" :value="profile.profile_id">
+                {{ profile.name }} v{{ profile.version }} · {{ profile.status }}
+              </option>
+            </select>
+            <p v-if="!profiles.length" class="mt-1 text-xs text-amber-300">
+              当前项目组没有可用 Profile，启动时会被能力预检阻塞。
+            </p>
           </div>
           <div class="rounded-lg border border-border bg-card p-4">
             <h4 class="text-sm font-medium">Git Branch / Commit</h4>
@@ -134,6 +161,7 @@ function prevStep() { if (step.value > 1) step.value-- }
           <dl class="mt-3 space-y-1 text-xs">
             <div class="flex justify-between"><dt class="text-muted-foreground">模板</dt><dd>{{ template?.name }}</dd></div>
             <div class="flex justify-between"><dt class="text-muted-foreground">版本</dt><dd>{{ selectedVersion?.version_id }}</dd></div>
+            <div class="flex justify-between"><dt class="text-muted-foreground">Profile</dt><dd>{{ profiles.find(p => p.profile_id === executionProfileId)?.name || '未选择' }}</dd></div>
             <div class="flex justify-between"><dt class="text-muted-foreground">Git</dt><dd>{{ gitRef || '未指定' }}</dd></div>
             <div class="flex justify-between"><dt class="text-muted-foreground">Workspace</dt><dd>{{ workspaceStrategy }}</dd></div>
           </dl>
@@ -154,7 +182,7 @@ function prevStep() { if (step.value > 1) step.value-- }
             class="rounded bg-blue-500 px-3 py-1.5 text-xs text-white" @click="nextStep">下一步</button>
           <button v-else data-testid="wizard-submit"
             class="rounded bg-green-600 px-3 py-1.5 text-xs text-white"
-            @click="submit">创建实例</button>
+            :disabled="submitting || !selectedVersionId || !executionProfileId" @click="submit">创建实例</button>
         </div>
       </template>
     </div>

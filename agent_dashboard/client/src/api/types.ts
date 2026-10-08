@@ -38,7 +38,7 @@ export interface ProjectWorkspace {
   workspace_id: string; group_id: string; name: string; source_type: 'LOCAL_PATH' | 'GIT_CLONE'
   root_ref: string; access: 'READ_ONLY' | 'READ_WRITE'; status: string; revision: number
 }
-export interface ProjectGroupMember { subject_id: string; role: 'OWNER' | 'MAINTAINER' | 'DEVELOPER' | 'VIEWER'; revision: number }
+export interface ProjectGroupMember { subject_id: string; role: 'ADMIN' | 'EDITOR' | 'VIEWER'; revision: number }
 export interface WorkspacePreflight { workspace_id: string; exists: boolean; readable: boolean; writable: boolean; git: boolean; head_sha?: string; branch?: string; dirty?: boolean }
 export interface EventEnvelope {
   event_id: string; sequence: number; type: string; occurred_at: string
