@@ -1,0 +1,13 @@
+{
+  "ttfb_ms": 3.700000762939453,
+  "fcp_ms": 0,
+  "lcp_ms": 0,
+  "dom_interactive_ms": 60.099998474121094,
+  "dom_complete_ms": 235.89999961853027,
+  "full_load_ms": 236.0999984741211,
+  "total_requests": 51,
+  "total_transfer_bytes": 9000,
+  "js_bundle_bytes": 9000,
+  "css_bundle_bytes": 1800,
+  "timestamp": "2026-10-02T16:43:29.600274Z"
+}

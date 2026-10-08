@@ -1,0 +1,317 @@
+# Task Decomposition — Harness Orchestration 缺口实现
+# Source: service-design.md + ui-ux-design.md + PRD product-requirements.md
+# Scope: single_service (harness_framework)
+# Date: 2026-10-03
+
+requirement_id: PRD-HARNESS-ORCH
+design_scope: single_service
+service_id: harness_framework
+max_parallel_worktrees: 4
+
+tasks:
+  # ─── Wave 1: 基础模型（无依赖，并行） ───────────────────────────
+
+  - task_id: TASK-001
+    title: 角色模型迁移（四级→三级）
+    service_id: harness_framework
+    task_type: implementation
+    wave: 1
+    depends_on: []
+    dependency_types: []
+    files:
+      - harness_framework/auth.py
+      - tests/test_auth.py
+    acceptance_criteria:
+      - Role 枚举包含 ADMIN / EDITOR / VIEWER
+      - ROLE_CAPABILITIES 按 service-design.md §4.1 映射
+      - 读取 KV 中旧角色值（OWNER→ADMIN, MAINTAINER→EDITOR, DEVELOPER→EDITOR）兼容
+      - UT-ROLE-01 / UT-ROLE-02 通过
+    test_case_ids: [UT-ROLE-01, UT-ROLE-02]
+    capability_verified: true
+
+  - task_id: TASK-002
+    title: Execution Profile 数据模型与 CRUD API
+    service_id: harness_framework
+    task_type: implementation
+    wave: 1
+    depends_on: []
+    dependency_types: []
+    files:
+      - harness_framework/execution_profiles.py
+      - harness_framework/webapi.py
+      - tests/test_execution_profiles.py
+    acceptance_criteria:
+      - ExecutionProfile dataclass 按 service-design.md §1.1
+      - GET/POST/PATCH/DELETE /api/execution-profiles 路由可用
+      - 仅 Admin 可写，Editor 可读
+      - PATCH 支持乐观锁（expected_revision）
+      - UT-PROFILE-01 / UT-PROFILE-02 / UT-PROFILE-03 通过
+    test_case_ids: [UT-PROFILE-01, UT-PROFILE-02, UT-PROFILE-03]
+    capability_verified: true
+
+  - task_id: TASK-003
+    title: Agent Runtime 注册与健康检查
+    service_id: harness_framework
+    task_type: implementation
+    wave: 1
+    depends_on: []
+    dependency_types: []
+    files:
+      - harness_framework/agent_runtimes.py
+      - harness_framework/webapi.py
+      - tests/test_agent_runtimes.py
+    acceptance_criteria:
+      - AgentRuntime dataclass 按 service-design.md §1.2
+      - GET/POST /api/agent-runtimes 路由可用
+      - GET /api/agent-runtimes/:id/health 返回当前状态
+      - 60s 定期健康轮询写入 KV
+      - UT-RUNTIME-01 / UT-RUNTIME-02 通过
+    test_case_ids: [UT-RUNTIME-01, UT-RUNTIME-02]
+    capability_verified: true
+
+  - task_id: TASK-004
+    title: Skill Bundle 数据模型与上传 API
+    service_id: harness_framework
+    task_type: implementation
+    wave: 1
+    depends_on: []
+    dependency_types: []
+    files:
+      - harness_framework/skill_bundles.py
+      - harness_framework/webapi.py
+      - tests/test_skill_bundles.py
+    acceptance_criteria:
+      - SkillBundle dataclass 按 service-design.md §1.3
+      - GET/POST /api/skill-bundles 路由可用
+      - content_hash SHA-256 非空
+      - 版本不可变（新版本 = 新 bundle_id）
+      - UT-SKILL-01 通过
+    test_case_ids: [UT-SKILL-01]
+    capability_verified: true
+
+  - task_id: TASK-005
+    title: MCP Server / Grant 数据模型与管理 API
+    service_id: harness_framework
+    task_type: implementation
+    wave: 1
+    depends_on: []
+    dependency_types: []
+    files:
+      - harness_framework/mcp_grants.py
+      - harness_framework/webapi.py
+      - tests/test_mcp_grants.py
+    acceptance_criteria:
+      - MCPServer + MCPGrant dataclass 按 service-design.md §1.4
+      - expose_tools 和 invoke_tools 分离
+      - GET/POST/PATCH/DELETE 路由可用
+      - 仅 Admin 可写
+      - UT-MCP-01 通过
+    test_case_ids: [UT-MCP-01]
+    capability_verified: true
+
+  - task_id: TASK-006
+    title: Artifact 数据模型与保留清理
+    service_id: harness_framework
+    task_type: implementation
+    wave: 1
+    depends_on: []
+    dependency_types: []
+    files:
+      - harness_framework/artifacts.py
+      - harness_framework/webapi.py
+      - tests/test_artifacts.py
+    acceptance_criteria:
+      - Artifact dataclass 按 service-design.md §1.6
+      - 终态后 N 天 retention_until 计算
+      - 清理 worker：ACTIVE → EXPIRED（元数据保留，文件删除）
+      - EXPIRED → PURGED（元数据删除，审计事件保留）
+      - GET /api/instances/:id/artifacts 路由可用
+      - 下载 EXPIRED 返回 410
+      - UT-ARTIFACT-01 / UT-ARTIFACT-02 通过
+    test_case_ids: [UT-ARTIFACT-01, UT-ARTIFACT-02]
+    capability_verified: true
+
+  # ─── Wave 2: 能力编排（依赖 Wave 1 基础模型） ────────────────────
+
+  - task_id: TASK-007
+    title: Capability Preflight 编排器
+    service_id: harness_framework
+    task_type: implementation
+    wave: 2
+    depends_on: [TASK-002, TASK-003, TASK-004, TASK-005]
+    dependency_types: [DATA, DATA, DATA, DATA]
+    files:
+      - harness_framework/capability_preflight.py
+      - harness_framework/webapi.py
+      - tests/test_capability_preflight.py
+    acceptance_criteria:
+      - run_preflight() 按 service-design.md §5 流程执行
+      - 按 Task 逐项检查：Agent Runtime + Profile + Skill + MCP + Workspace + Budget
+      - 全部通过 → 生成 Execution Manifest 并冻结
+      - 任一阻塞 → BLOCKED，含 reason 和 remediation
+      - POST /api/instances/:id/preflight 路由可用
+      - UT-PREFLIGHT-01 / UT-PREFLIGHT-02 通过
+    test_case_ids: [UT-PREFLIGHT-01, UT-PREFLIGHT-02]
+    capability_verified: true
+
+  - task_id: TASK-008
+    title: Execution Manifest 模型、生成与 Diff
+    service_id: harness_framework
+    task_type: implementation
+    wave: 2
+    depends_on: [TASK-002, TASK-003, TASK-004, TASK-005]
+    dependency_types: [DATA, DATA, DATA, DATA]
+    files:
+      - harness_framework/execution_manifest.py
+      - harness_framework/webapi.py
+      - tests/test_execution_manifest.py
+    acceptance_criteria:
+      - ExecutionManifest dataclass 按 service-design.md §1.5
+      - 生成后不可变
+      - previous_manifest_id 链接重试前 Attempt
+      - GET /api/attempts/:id/manifest 路由可用
+      - GET /api/attempts/:id/manifest/diff 返回新旧差异
+      - UT-MANIFEST-01 / UT-MANIFEST-02 通过
+    test_case_ids: [UT-MANIFEST-01, UT-MANIFEST-02]
+    capability_verified: true
+
+  - task_id: TASK-009
+    title: 前端模板详情（版本选择 + 只读 DAG + Diff）
+    service_id: harness_framework
+    task_type: implementation
+    wave: 2
+    depends_on: [TASK-001]
+    dependency_types: [API]
+    files:
+      - agent_dashboard/client/src/pages/TemplateDetail.vue
+      - agent_dashboard/client/src/api/jobFlow.ts
+    acceptance_criteria:
+      - 版本标签页横向选择器（V1/V2/V3…）
+      - 按版本切换只读 DAG
+      - 版本 Diff 入口（JSON Diff + DAG 高亮）
+      - 操作按钮按三级角色条件渲染
+      - 与 ui-ux-design.md §3.2 一致
+    test_case_ids: []
+    capability_verified: true
+
+  - task_id: TASK-010
+    title: 前端草稿冲突弹窗 + 发布确认弹窗
+    service_id: harness_framework
+    task_type: implementation
+    wave: 2
+    depends_on: [TASK-001]
+    dependency_types: [API]
+    files:
+      - agent_dashboard/client/src/components/ConflictDialog.vue
+      - agent_dashboard/client/src/components/PublishDialog.vue
+      - agent_dashboard/client/src/pages/JobFlowBuilder.vue
+    acceptance_criteria:
+      - 409 冲突弹窗：放弃修改 / 下载 / 取消三选项
+      - 发布弹窗：保存为草稿 / 仅发布 / 发布并创建实例三选项
+      - 发布弹窗显示变更 Diff 摘要
+      - 与 ui-ux-design.md §3.3 一致
+    test_case_ids: []
+    capability_verified: true
+
+  # ─── Wave 3: 前端能力面板（依赖 Wave 2 编排器和模型） ─────────────
+
+  - task_id: TASK-011
+    title: 前端 Preflight 面板 + Manifest 展示
+    service_id: harness_framework
+    task_type: implementation
+    wave: 3
+    depends_on: [TASK-007, TASK-008]
+    dependency_types: [API, API]
+    files:
+      - agent_dashboard/client/src/components/PreflightPanel.vue
+      - agent_dashboard/client/src/components/ManifestViewer.vue
+      - agent_dashboard/client/src/pages/JobFlowInstance.vue
+    acceptance_criteria:
+      - Preflight 面板逐项显示 ✓/❌ + 阻塞原因 + 修复入口
+      - 阻塞时启动按钮灰色禁用 + tooltip
+      - Manifest 只读 JSON 视图（Monaco）
+      - 新旧 Manifest Diff 行内展示
+      - 与 ui-ux-design.md §6.1 §6.2 一致
+    test_case_ids: []
+    capability_verified: true
+
+  - task_id: TASK-012
+    title: 前端实例创建向导（三步 + Workspace 隔离选择）
+    service_id: harness_framework
+    task_type: implementation
+    wave: 3
+    depends_on: [TASK-002, TASK-006]
+    dependency_types: [API, API]
+    files:
+      - agent_dashboard/client/src/pages/InstanceCreateWizard.vue
+      - agent_dashboard/client/src/api/jobFlow.ts
+    acceptance_criteria:
+      - Step 1 选择版本（DISABLED/ARCHIVED 不可选）
+      - Step 2 配置参数/Workspace 隔离等级/Profile
+      - Step 3 确认：校验摘要 + Git 解析 + Workspace 可用性
+      - 稍后启动 / 立即执行
+      - 与 ui-ux-design.md §5.2 一致
+    test_case_ids: []
+    capability_verified: true
+
+  - task_id: TASK-013
+    title: 前端 ChangeSet 影响分析 + 权限矩阵
+    service_id: harness_framework
+    task_type: implementation
+    wave: 3
+    depends_on: [TASK-001]
+    dependency_types: [API]
+    files:
+      - agent_dashboard/client/src/components/ChangeSetPanel.vue
+      - agent_dashboard/client/src/pages/Settings.vue
+    acceptance_criteria:
+      - ChangeSet 面板：直接修改/间接受影响/需重跑/可复用
+      - 产物复用依据展示
+      - 确认后创建 successor instance
+      - 权限矩阵页面：三级角色 → 操作映射可视化
+      - 与 ui-ux-design.md §7.1 §7.3 一致
+    test_case_ids: []
+    capability_verified: true
+
+  # ─── Wave 4: 前端保留策略展示（依赖 Artifact 模型和前端基础） ────
+
+  - task_id: TASK-014
+    title: 前端 Workspace 保留告警 + 产物保留展示 + Run Workspace 卡片
+    service_id: harness_framework
+    task_type: implementation
+    wave: 4
+    depends_on: [TASK-006, TASK-012]
+    dependency_types: [API, CODE]
+    files:
+      - agent_dashboard/client/src/components/WorkspaceCard.vue
+      - agent_dashboard/client/src/components/ArtifactList.vue
+      - agent_dashboard/client/src/pages/JobFlowInstance.vue
+    acceptance_criteria:
+      - Run Workspace 卡片：隔离等级徽标 + 状态（ACTIVE/RETAINED/EXPIRED）
+      - 清理前 24h 黄色告警条 + 延长保留操作（Editor/Admin）
+      - 产物列表显示 retention_until + EXPIRED 灰色删除线
+      - 与 ui-ux-design.md §5.3 一致
+    test_case_ids: []
+    capability_verified: true
+
+# ─── 集成测试（最终 Wave） ──────────────────────────────────────────
+
+  - task_id: TASK-015
+    title: 端到端集成测试
+    service_id: harness_framework
+    task_type: implementation
+    wave: 5
+    depends_on: [TASK-007, TASK-008, TASK-006, TASK-011, TASK-012]
+    dependency_types: [SEQ, SEQ, SEQ, SEQ, SEQ]
+    files:
+      - tests/test_integration_capability.py
+    acceptance_criteria:
+      - IT-01 创建 Profile → 创建实例 → 预检 → 启动 全链路 PASS
+      - IT-02 MCP 下线 → BLOCKED 不可启动
+      - IT-03 MCP 恢复 → 重新预检 → PASSED
+      - IT-04 终态 → N 天 → Artifact EXPIRED + Workspace 清理
+      - IT-05 Owner→Admin 角色映射通过
+      - IT-06 Viewer 访问 Manifest 200
+      - IT-07 Editor 修改 Profile 403
+    test_case_ids: [IT-01, IT-02, IT-03, IT-04, IT-05, IT-06, IT-07]
+    capability_verified: true
