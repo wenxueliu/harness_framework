@@ -19,6 +19,7 @@ INSTANCE_PREFIX = "jobflows/instances"
 IDEMPOTENCY_PREFIX = "jobflows/idempotency"
 TERMINAL_INSTANCE_STATES = {"SUCCEEDED", "FAILED", "ABORTED", "SUPERSEDED"}
 DELETABLE_INSTANCE_STATES = TERMINAL_INSTANCE_STATES | {"QUEUED", "ARCHIVED"}
+SUPPORTED_AGENT_PROVIDERS = {"claude", "codex"}
 
 
 def _now() -> str:
@@ -42,12 +43,93 @@ def _id(value: Any, prefix: str) -> str:
     return candidate
 
 
+def _source_line(source: str, task_id: str, field: str | None = None) -> int | None:
+    """Best-effort JSON line lookup for backend validation diagnostics."""
+    if not source:
+        return None
+    lines = source.splitlines()
+    matches = [line_no for line_no, line in enumerate(lines, 1)
+               if f'"{task_id}"' in line]
+    if not matches:
+        return None
+    start = matches[0]
+    if not field:
+        return start
+    for line_no in range(start, min(start + 24, len(lines) + 1)):
+        if f'"{field}"' in lines[line_no - 1]:
+            return line_no
+    return start
+
+
+def _validate_parameter_schema(schema: Any, parameters: Any, *, enforce_required=True) -> None:
+    if not isinstance(schema, dict) or schema.get("type", "object") != "object":
+        raise APIError(
+            "PARAMETER_SCHEMA_INVALID", "参数 Schema 根必须是 object", 422,
+            {"location": {"field": "parameter_schema"}},
+        )
+    properties = schema.get("properties", {})
+    if not isinstance(properties, dict):
+        raise APIError(
+            "PARAMETER_SCHEMA_INVALID", "参数 Schema properties 必须是对象", 422,
+            {"location": {"field": "parameter_schema.properties"}},
+        )
+    required = schema.get("required", [])
+    if not isinstance(required, list) or not all(isinstance(item, str) for item in required):
+        raise APIError(
+            "PARAMETER_SCHEMA_INVALID", "参数 Schema required 必须是字符串数组", 422,
+            {"location": {"field": "parameter_schema.required"}},
+        )
+    values = parameters if isinstance(parameters, dict) else {}
+    errors: list[dict] = []
+    if enforce_required:
+        for field in required:
+            if field not in values or values[field] in {"", None}:
+                errors.append({"field": field, "message": f"参数 {field} 必填"})
+    for field, definition in properties.items():
+        if field not in values or not isinstance(definition, dict):
+            continue
+        value = values[field]
+        expected_type = definition.get("type")
+        type_checks = {
+            "string": lambda item: isinstance(item, str),
+            "number": lambda item: isinstance(item, (int, float)) and not isinstance(item, bool),
+            "integer": lambda item: isinstance(item, int) and not isinstance(item, bool),
+            "boolean": lambda item: isinstance(item, bool),
+            "array": lambda item: isinstance(item, list),
+            "object": lambda item: isinstance(item, dict),
+        }
+        if expected_type in type_checks and not type_checks[expected_type](value):
+            errors.append({"field": field, "message": f"参数 {field} 类型必须是 {expected_type}"})
+            continue
+        allowed = definition.get("enum")
+        if isinstance(allowed, list) and value not in allowed:
+            errors.append({"field": field, "message": f"参数 {field} 不在可选范围内"})
+        if expected_type in {"string", "integer", "number"}:
+            minimum, maximum = definition.get("minimum"), definition.get("maximum")
+            if minimum is not None and value < minimum:
+                errors.append({"field": field, "message": f"参数 {field} 小于最小值"})
+            if maximum is not None and value > maximum:
+                errors.append({"field": field, "message": f"参数 {field} 大于最大值"})
+        if expected_type == "string":
+            length = len(value)
+            if "minLength" in definition and length < definition["minLength"]:
+                errors.append({"field": field, "message": f"参数 {field} 长度不足"})
+            if "maxLength" in definition and length > definition["maxLength"]:
+                errors.append({"field": field, "message": f"参数 {field} 长度超出"})
+    if errors:
+        raise APIError(
+            "PARAMETER_SCHEMA_INVALID", "输入参数不符合模板 Schema", 422, {"errors": errors},
+        )
+
+
 class JobFlowService:
     """KV-backed domain service with immutable version boundaries."""
 
-    def __init__(self, store: KVStore, preflight_service=None):
+    def __init__(self, store: KVStore, preflight_service=None,
+                 workspace_manager=None):
         self.store = store
         self.preflight_service = preflight_service
+        self.workspace_manager = workspace_manager
 
     def _read(self, key: str, default: Any = None) -> Any:
         raw, _ = self.store.kv_get(key)
@@ -107,39 +189,82 @@ class JobFlowService:
             raise APIError("TASKS_REQUIRED", "至少需要一个作业流节点", 422)
         normalized: list[dict] = []
         ids: set[str] = set()
-        for raw in tasks:
+        raw_source = body.get("_source")
+        raw_source = raw_source if isinstance(raw_source, str) else ""
+        for index, raw in enumerate(tasks):
             if not isinstance(raw, dict):
                 raise APIError("INVALID_TASK", "作业流节点必须是对象", 422)
-            task_id = _id(raw.get("id") or raw.get("task_id"), "task")
+            raw_id = raw.get("id", raw.get("task_id"))
+            if not isinstance(raw_id, (str, int)) or not str(raw_id).strip():
+                raise APIError("TASK_FIELD_REQUIRED", "节点必填字段 id 不能为空", 422, {
+                    "location": {"node": f"#node-{index + 1}", "field": "id"},
+                })
+            task_id = _id(raw_id, "task")
             if task_id in ids:
-                raise APIError("DUPLICATE_TASK_ID", f"节点 ID 重复: {task_id}", 422)
+                raise APIError("DUPLICATE_TASK_ID", f"节点 ID 重复: {task_id}", 422, {
+                    "location": {"node": task_id, "field": "id",
+                                 "line": _source_line(raw_source, task_id)},
+                })
             ids.add(task_id)
             depends = raw.get("depends_on", raw.get("dependsOn", []))
             if not isinstance(depends, list):
-                raise APIError("INVALID_DEPENDENCIES", f"节点 {task_id} 的依赖必须是数组", 422)
+                raise APIError("INVALID_DEPENDENCIES", f"节点 {task_id} 的依赖必须是数组", 422, {
+                    "location": {"node": task_id, "field": "depends_on"},
+                })
+            if "type" in raw and raw["type"] in {"", None}:
+                raise APIError("TASK_FIELD_REQUIRED", f"节点 {task_id} 必填字段 type 不能为空", 422, {
+                    "location": {"node": task_id, "field": "type",
+                                 "line": _source_line(raw_source, task_id, "type")},
+                })
+            agent = raw.get("agent")
+            if isinstance(raw.get("acp"), dict):
+                agent = agent or raw["acp"].get("agent")
+            if agent is None:
+                agent = "codex"
+            elif agent == "":
+                raise APIError("TASK_FIELD_REQUIRED", f"节点 {task_id} 必填字段 agent 不能为空", 422, {
+                    "location": {"node": task_id, "field": "agent",
+                                 "line": _source_line(raw_source, task_id, "agent")},
+                })
+            if str(agent) not in SUPPORTED_AGENT_PROVIDERS:
+                raise APIError("INVALID_AGENT", f"节点 {task_id} 的 Agent 不受支持", 422, {
+                    "location": {"node": task_id, "field": "agent",
+                                 "line": _source_line(raw_source, task_id, "agent")},
+                })
             item = dict(raw)
             item["id"] = task_id
+            item.setdefault("type", "backend")
+            item["agent"] = str(agent)
             item["depends_on"] = [str(item).strip() for item in depends if str(item).strip()]
             item.pop("dependsOn", None)
             normalized.append(item)
         known = {item["id"] for item in normalized}
-        unknown = sorted({
-            dep for item in normalized for dep in item["depends_on"] if dep not in known
-        })
-        if unknown:
-            raise APIError("UNKNOWN_DEPENDENCY", "依赖节点不存在", 422, {"tasks": unknown})
+        for item in normalized:
+            for dependency in item["depends_on"]:
+                if dependency not in known:
+                    raise APIError("UNKNOWN_DEPENDENCY", f"依赖节点 {dependency} 不存在", 422, {
+                        "location": {"node": item["id"],
+                                     "edge": f"{item['id']}->{dependency}",
+                                     "field": "depends_on",
+                                     "line": _source_line(raw_source, dependency)},
+                    })
         visiting: set[str] = set()
         visited: set[str] = set()
 
-        def visit(task_id: str) -> None:
+        def visit(task_id: str, parent: str | None = None) -> None:
             if task_id in visiting:
-                raise APIError("TASK_GRAPH_CYCLE", "作业流依赖不能形成环", 422)
+                raise APIError("TASK_GRAPH_CYCLE", "作业流依赖不能形成环", 422, {
+                    "location": {"node": task_id,
+                                 "edge": f"{parent or task_id}->{task_id}",
+                    "line": _source_line(raw_source, parent or task_id),
+                                 },
+                })
             if task_id in visited:
                 return
             visiting.add(task_id)
             item = next(node for node in normalized if node["id"] == task_id)
             for dependency in item["depends_on"]:
-                visit(dependency)
+                visit(dependency, task_id)
             visiting.remove(task_id)
             visited.add(task_id)
 
@@ -147,9 +272,26 @@ class JobFlowService:
             visit(task["id"])
         manifest["tasks"] = normalized
         manifest["parameters"] = manifest.get("parameters", body.get("parameters", {}))
+        if "parameter_schema" in body:
+            parameter_schema = body.get("parameter_schema")
+            if parameter_schema is not None:
+                _validate_parameter_schema(
+                    parameter_schema,
+                    parameter_schema.get("default", {}) if isinstance(parameter_schema, dict) else {},
+                    enforce_required=False,
+                )
+            manifest["parameter_schema"] = parameter_schema
+        elif "parameter_schema" in manifest:
+            schema = manifest["parameter_schema"]
+            _validate_parameter_schema(
+                schema,
+                schema.get("default", {}) if isinstance(schema, dict) else {},
+                enforce_required=False,
+            )
         manifest["manifest_hash"] = _hash({
             key: value for key, value in manifest.items() if key != "manifest_hash"
         })
+        manifest.pop("_source", None)
         return manifest
 
     def _template_view(self, meta: dict) -> dict:
@@ -484,6 +626,8 @@ class JobFlowService:
         instance_id = _id(body.get("instance_id"), "inst")
         if self._read(f"{INSTANCE_PREFIX}/{instance_id}/meta") is not None:
             raise APIError("INSTANCE_ALREADY_EXISTS", "实例已存在", 409, {"instance_id": instance_id})
+        if manifest.get("parameter_schema"):
+            _validate_parameter_schema(manifest["parameter_schema"], body.get("parameters", {}))
         now = _now()
         context = {
             "parameters": body.get("parameters", {}),
@@ -520,6 +664,28 @@ class JobFlowService:
 
     def get_instance(self, instance_id: str) -> dict:
         return self._instance_view(self._instance(instance_id))
+
+    def update_instance_profile(self, instance_id: str, body: dict, actor: str) -> dict:
+        """Bind or rebind an Execution Profile on a startable instance."""
+        meta = self._instance(instance_id)
+        status = self._read(f"{INSTANCE_PREFIX}/{instance_id}/status", {})
+        state = status.get("state", "") if isinstance(status, dict) else ""
+        if state not in {"QUEUED", "WAITING_FOR_CAPABILITY"}:
+            raise APIError(
+                "INSTANCE_STATE_INVALID",
+                f"只有 QUEUED 或 WAITING_FOR_CAPABILITY 状态的实例才能修改 Execution Profile，当前状态: {state}",
+                422,
+            )
+        profile_id = str(body.get("execution_profile_id", "")).strip()
+        if not profile_id:
+            raise APIError("PROFILE_ID_REQUIRED", "execution_profile_id 不能为空", 422)
+        meta["execution_profile_id"] = profile_id
+        meta["updated_at"] = _now()
+        self._write(f"{INSTANCE_PREFIX}/{instance_id}/meta", meta)
+        self._append_event(f"{INSTANCE_PREFIX}/{instance_id}", "INSTANCE_PROFILE_UPDATED", actor, {
+            "instance_id": instance_id, "execution_profile_id": profile_id,
+        })
+        return self._instance_view(meta)
 
     def _transition(self, instance_id: str, state: str, actor: str) -> dict:
         meta = self._instance(instance_id)
@@ -572,27 +738,122 @@ class JobFlowService:
         )
         if current_run_raw:
             run_id = str(current_run_raw)
+            run_status, _ = self.store.kv_get(
+                f"{INSTANCE_PREFIX}/{instance_id}/runs/{run_id}/status"
+            )
+            if run_status in {"RUNNING", "PROVISIONING"}:
+                return {"instance": self._instance_view(self._instance(instance_id)),
+                        "run": self._read(
+                            f"{INSTANCE_PREFIX}/{instance_id}/run/current"
+                        )}
         else:
             run_id = f"run-{uuid.uuid4().hex[:12]}"
-            if not self.store.kv_put(
-                f"{INSTANCE_PREFIX}/{instance_id}/current_run", run_id,
-                cas=current_run_index,
-            ):
-                winner, _ = self.store.kv_get(
-                    f"{INSTANCE_PREFIX}/{instance_id}/current_run"
-                )
+            current_run_key = f"{INSTANCE_PREFIX}/{instance_id}/current_run"
+            if not self.store.kv_put(current_run_key, run_id, cas=current_run_index):
+                winner, _ = self.store.kv_get(current_run_key)
                 if not winner:
                     raise APIError("RUN_REGISTRATION_CONFLICT", "运行注册冲突", 409)
                 run_id = str(winner)
+        if self.workspace_manager is not None:
+            result = self._start_with_run_workspace(
+                instance_id, run_id, actor, keep_existing=bool(current_run_raw)
+            )
+        else:
+            result = self._activate_run(instance_id, run_id, actor)
+        return {"instance": result["instance"], "run": self._read(
+            f"{INSTANCE_PREFIX}/{instance_id}/run/current"
+        ), **({
+            "workspace": result["workspace"]
+        } if result.get("workspace") is not None else {})}
+
+    def _activate_run(self, instance_id: str, run_id: str, actor: str) -> dict:
         self._write(f"{INSTANCE_PREFIX}/{instance_id}/run/current", {
             "run_id": run_id, "status": "RUNNING", "started_at": _now(),
         })
         self.store.kv_put(f"{INSTANCE_PREFIX}/{instance_id}/current_run", run_id)
-        self.store.kv_put(f"{INSTANCE_PREFIX}/{instance_id}/runs/{run_id}/status", "RUNNING")
-        instance = self._transition(instance_id, "RUNNING", actor)
-        return {"instance": instance, "run": self._read(
-            f"{INSTANCE_PREFIX}/{instance_id}/run/current"
-        )}
+        self.store.kv_put(
+            f"{INSTANCE_PREFIX}/{instance_id}/runs/{run_id}/status", "RUNNING"
+        )
+        return {"instance": self._transition(instance_id, "RUNNING", actor),
+                "workspace": None}
+
+    def _workspace_request(self, instance_id: str) -> dict[str, Any]:
+        context = self._read(f"{INSTANCE_PREFIX}/{instance_id}/context", {})
+        request = context.get("workspace") if isinstance(context, dict) else None
+        if not isinstance(request, dict) or not request:
+            if bool(getattr(self.workspace_manager, "demo_mode", False)):
+                return {"strategy": "DEMO_TEMP"}
+            return {}
+        strategy = str(request.get("strategy", "")).strip().upper()
+        project_workspace_id = request.get("project_workspace_id") or request.get(
+            "workspace_id"
+        )
+        if strategy == "PROJECT_WORKSPACE":
+            strategy = "ORIGINAL"
+        if not project_workspace_id and not strategy:
+            if bool(getattr(self.workspace_manager, "demo_mode", False)):
+                return {"strategy": "DEMO_TEMP"}
+            return {}
+        return {
+            "project_workspace_id": project_workspace_id,
+            "strategy": strategy or ("DEMO_TEMP" if not project_workspace_id else "ORIGINAL"),
+            "git_ref": request.get("git_ref"),
+            "accept_dirty": bool(request.get("accept_dirty", False)),
+        }
+
+    def _start_with_run_workspace(
+        self, instance_id: str, run_id: str, actor: str, *, keep_existing: bool
+    ) -> dict:
+        base = f"{INSTANCE_PREFIX}/{instance_id}/runs/{run_id}"
+        workspace_request = self._workspace_request(instance_id)
+        if not workspace_request:
+            return self._activate_run(instance_id, run_id, actor)
+        if not keep_existing:
+            self.store.kv_put(f"{INSTANCE_PREFIX}/{instance_id}/current_run", run_id)
+        self.store.kv_put(f"{base}/status", "PROVISIONING")
+        self.store.kv_put(f"{base}/started_at", _now())
+        self.store.kv_put(f"{base}/started_by", actor)
+        self.store.kv_put(f"{base}/execution_mode", "managed-workspace")
+        try:
+            workspace = self.workspace_manager.provision_run_workspace(
+                req_id=instance_id, run_id=run_id,
+                project_workspace_id=workspace_request.get("project_workspace_id"),
+                strategy=workspace_request["strategy"],
+                git_ref=workspace_request.get("git_ref"),
+                accept_dirty=workspace_request.get("accept_dirty", False),
+            )
+        except Exception as exc:
+            self.store.kv_put(f"{base}/status", "FAILED")
+            self.store.kv_put(f"{base}/finished_at", _now())
+            message = str(exc) or exc.__class__.__name__
+            self.store.kv_put(f"{base}/error_message", message)
+            current_run, _ = self.store.kv_get(
+                f"{INSTANCE_PREFIX}/{instance_id}/current_run"
+            )
+            if current_run == run_id:
+                self.store.kv_delete(
+                    f"{INSTANCE_PREFIX}/{instance_id}/current_run"
+                )
+            self._append_event(
+                f"{INSTANCE_PREFIX}/{instance_id}",
+                "INSTANCE_WORKSPACE_PROVISION_FAILED",
+                actor,
+                {"run_id": run_id, "error": message},
+            )
+            raise
+        self.store.kv_put(f"{base}/status", "RUNNING")
+        self._write(f"{INSTANCE_PREFIX}/{instance_id}/run/current", {
+            "run_id": run_id, "status": "RUNNING", "started_at": _now(),
+        })
+        self.store.kv_put(f"{INSTANCE_PREFIX}/{instance_id}/execution_mode",
+                          "managed-workspace")
+        self._append_event(
+            f"{INSTANCE_PREFIX}/{instance_id}", "INSTANCE_WORKSPACE_READY",
+            actor,
+            {"run_id": run_id, "workspace": workspace},
+        )
+        return {"instance": self._transition(instance_id, "RUNNING", actor),
+                "workspace": workspace}
 
     def control_instance(self, instance_id: str, action: str, actor: str) -> dict:
         transitions = {"pause": "PAUSED", "abort": "ABORTED", "drain": "DRAINING"}

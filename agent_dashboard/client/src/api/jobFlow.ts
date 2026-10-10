@@ -3,6 +3,7 @@ import { apiRequest, jsonRequest } from './client'
 export interface JobFlowTask {
   id: string
   name?: string
+  agent?: string
   type?: string
   depends_on?: string[]
   description?: string
@@ -16,7 +17,12 @@ export interface JobFlowTemplate {
   group_id?: string
   status?: string
   current_version_id?: string | null
-  draft?: { tasks: JobFlowTask[]; parameters?: Record<string, unknown>; manifest_hash?: string }
+  draft?: {
+    tasks: JobFlowTask[]
+    parameters?: Record<string, unknown>
+    parameter_schema?: Record<string, unknown>
+    manifest_hash?: string
+  }
   draft_revision: number
 }
 
@@ -41,8 +47,25 @@ export interface JobFlowInstance {
     workspace: Record<string, unknown>
   }
   status: { state: string; revision: number }
+  execution_profile_id?: string
   tasks: Record<string, { state: string; attempt_count: number; current_attempt?: string; depends_on?: string[] }>
   successor_of?: string
+}
+
+export interface JobFlowArtifact {
+  artifact_id: string
+  type: string
+  path: string
+  size_bytes: number
+  retention_until: string
+  status: 'ACTIVE' | 'EXPIRED' | 'PURGED'
+}
+
+export type JobFlowValidation = {
+  valid: boolean
+  errors: Array<Record<string, unknown>>
+  manifest_hash?: string
+  task_count?: number
 }
 
 export async function listJobFlowTemplates(groupId?: string): Promise<JobFlowTemplate[]> {
@@ -69,6 +92,7 @@ export async function createJobFlowTemplate(input: {
   name: string
   description?: string
   tasks: JobFlowTask[]
+  parameter_schema?: Record<string, unknown>
   group_id?: string
 }): Promise<JobFlowTemplate> {
   const result = await apiRequest<{ template: JobFlowTemplate }>(
@@ -89,6 +113,7 @@ export async function updateJobFlowDraft(templateId: string, input: {
   name?: string
   description?: string
   tasks?: JobFlowTask[]
+  parameter_schema?: Record<string, unknown>
 }): Promise<JobFlowTemplate> {
   const result = await apiRequest<{ template: JobFlowTemplate }>(
     '/api/templates/' + encodeURIComponent(templateId) + '/draft',
@@ -98,7 +123,7 @@ export async function updateJobFlowDraft(templateId: string, input: {
 }
 
 export async function validateJobFlowTemplate(templateId: string) {
-  const result = await apiRequest<{ validation: { valid: boolean; errors: Array<{ message: string }> } }>(
+  const result = await apiRequest<{ validation: JobFlowValidation }>(
     '/api/templates/' + encodeURIComponent(templateId) + '/validate',
     jsonRequest('POST', {}),
   )
@@ -136,6 +161,32 @@ export async function listJobFlowExecutionProfiles(groupId?: string): Promise<Ex
     '/api/execution-profiles' + query,
   )
   return result.execution_profiles
+}
+
+export async function createJobFlowExecutionProfile(input: {
+  group_id: string
+  name: string
+  version?: string
+  agent_runtime_id: string
+}): Promise<ExecutionProfileSummary> {
+  const result = await apiRequest<{ execution_profile: ExecutionProfileSummary }>(
+    '/api/execution-profiles', jsonRequest('POST', input),
+  )
+  return result.execution_profile
+}
+
+export async function listAgentRuntimes(): Promise<{ runtime_id: string; name: string; status: string }[]> {
+  const result = await apiRequest<{ agent_runtimes: { runtime_id: string; name: string; status: string }[] }>(
+    '/api/agent-runtimes',
+  )
+  return result.agent_runtimes
+}
+
+export async function updateInstanceProfile(instanceId: string, profileId: string): Promise<JobFlowInstance> {
+  const result = await apiRequest<{ instance: JobFlowInstance }>(
+    '/api/instances/' + encodeURIComponent(instanceId), jsonRequest('PATCH', { execution_profile_id: profileId }),
+  )
+  return result.instance
 }
 
 export async function createJobFlowInstance(input: {
@@ -189,6 +240,19 @@ export async function getJobFlowInstance(instanceId: string): Promise<JobFlowIns
     '/api/instances/' + encodeURIComponent(instanceId),
   )
   return result.instance
+}
+
+export async function getJobFlowAttemptManifest(attemptId: string): Promise<Record<string, unknown>> {
+  return apiRequest<Record<string, unknown>>(
+    '/api/attempts/' + encodeURIComponent(attemptId) + '/manifest',
+  )
+}
+
+export async function listJobFlowInstanceArtifacts(instanceId: string): Promise<JobFlowArtifact[]> {
+  const result = await apiRequest<{ artifacts: JobFlowArtifact[] }>(
+    '/api/instances/' + encodeURIComponent(instanceId) + '/artifacts',
+  )
+  return result.artifacts ?? []
 }
 
 export async function deleteJobFlowInstance(instanceId: string): Promise<void> {

@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 import pytest
+import os
 import time
 
 from tests.e2e.webbridge import Page
 
-BASE_URL = "http://127.0.0.1:3000"
+BASE_URL = os.environ.get("E2E_BASE_URL", "http://127.0.0.1:3000")
 
 
 def _create_template(page: Page, name: str, tasks_json: str) -> str:
@@ -14,11 +15,22 @@ def _create_template(page: Page, name: str, tasks_json: str) -> str:
     page.goto(BASE_URL + "/#/templates/new")
     page.wait_for_selector('[data-testid="template-name"]')
     page.fill('[data-testid="template-name"]', unique_name)
-    page.fill('[data-testid="tasks-editor"]', tasks_json)
+    _set_tasks_json(page, tasks_json)
     page.click('[data-testid="save-draft"]')
     page.wait_for_selector('[data-testid="builder-message"], [role="alert"]')
     url = page.evaluate("window.location.hash")
     return url
+
+
+def _set_tasks_json(page: Page, tasks_json: str) -> None:
+    """Set Monaco content through its native edit context."""
+    page.locator('[data-testid="tasks-editor"] .native-edit-context').click()
+    inserted = page.evaluate("""(value) => {
+      if (document.activeElement?.getAttribute('contenteditable') !== 'true') return false;
+      document.execCommand('selectAll');
+      return document.execCommand('insertText', false, value);
+    }""", tasks_json)
+    assert inserted is True
 
 
 class TestTemplateEditorDag:
@@ -54,8 +66,9 @@ class TestTemplateEditorDag:
             '[{"id":"a","depends_on":[]}]')
         page.goto(page.evaluate("window.location.href"))
         page.wait_for_selector('[data-testid="dag-preview"]')
-        page.fill('[data-testid="tasks-editor"]',
-            '[{"id":"a","depends_on":[]},{"id":"b","depends_on":["a"]}]')
+        _set_tasks_json(
+            page, '[{"id":"a","depends_on":[]},{"id":"b","depends_on":["a"]}]'
+        )
         page.wait_for_timeout(500)
         text = page.content()
         assert "2 个节点" in text

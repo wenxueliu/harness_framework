@@ -240,9 +240,18 @@ class Page:
     @classmethod
     def available(cls) -> bool:
         try:
-            response = requests.get(WEBBRIDGE_URL.rsplit("/command", 1)[0], timeout=1)
-            return response.status_code < 500
-        except requests.RequestException:
+            response = requests.post(
+                WEBBRIDGE_URL,
+                json={
+                    "action": "list_tabs",
+                    "args": {},
+                    "session": "harness-availability-check",
+                },
+                timeout=1,
+            )
+            payload = response.json()
+            return response.status_code == 200 and bool(payload.get("ok"))
+        except (requests.RequestException, ValueError):
             return False
 
     def set_default_timeout(self, timeout: int) -> None:

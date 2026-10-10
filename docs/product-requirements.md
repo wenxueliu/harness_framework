@@ -298,6 +298,7 @@ RUNNING ⇄ PAUSED
 - FR-INS-04：Task 重试产生新 Attempt；整实例重跑产生 successor instance。
 - FR-INS-05：实例删除按状态执行，删除前二次确认并审计。
 - FR-INS-06：Run Workspace 在实例创建时初始化（按 ADR §5 的隔离等级选择 ORIGINAL/GIT_WORKTREE/CONTROLLED_COPY/DEMO_TEMP）；实例进入终态后保留 N 天（N 由项目组配置，默认 7），到期自动清理；清理前通知项目组管理员。ORIGINAL 级别的 Run Workspace 不参与自动清理，仅允许项目组 Admin 手动释放。Attempt Workspace Binding 不可变，Workspace 清理后 Binding 保留审计记录但路径标记为 EXPIRED。
+- FR-INS-07：项目组 Admin 可以删除从未被运行中实例锁定的 Project Workspace。删除前二次确认并审计；已存在的 Run Workspace Binding 和审计记录保留不删除。
 
 ### 执行能力与 ACP
 

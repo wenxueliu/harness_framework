@@ -95,7 +95,6 @@ def test_template_version_and_multiple_instance_lifecycle():
             "name": "release-main",
             "parameters": {"region": "cn"},
             "git": {"ref": "main"},
-            "workspace": {"workspace_id": "ws-main"},
             "execution_profile_id": profile_id,
         }
         status, first = request(
@@ -300,6 +299,110 @@ def test_template_delete_requires_no_bound_instances():
         assert status == 409
         assert rejected["error"]["code"] == "TEMPLATE_HAS_INSTANCES"
         assert created["instance"]["instance_id"] in rejected["error"]["details"]["instance_ids"]
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_template_editor_validation_locations_and_revision_conflict():
+    server = serve(
+        MockConsulStore(),
+        host="127.0.0.1",
+        port=0,
+        auth_config=AuthConfig(mode="local", local_user="job-flow-test"),
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    port = server.server_address[1]
+    try:
+        status, _ = request(port, "POST", "/api/templates", {
+            "template_id": "editor-template",
+            "name": "Editor",
+            "parameter_schema": {
+                "type": "object",
+                "properties": {"region": {"type": "string"}},
+                "required": ["region"],
+            },
+            "tasks": [
+                {"id": "build", "type": "backend", "agent": "claude", "depends_on": []},
+                {"id": "test", "type": "test", "agent": "codex", "depends_on": ["build"]},
+            ],
+        })
+        assert status == 201
+
+        status, conflict = request(port, "PATCH", "/api/templates/editor-template/draft", {
+            "expected_revision": 0,
+            "tasks": [],
+        })
+        assert status == 409
+        assert conflict["error"]["code"] == "REVISION_CONFLICT"
+        assert conflict["error"]["details"]["actual_revision"] == 1
+
+        status, cycle = request(port, "PATCH", "/api/templates/editor-template/draft", {
+            "expected_revision": 1,
+            "tasks": [
+                {"id": "build", "type": "backend", "agent": "claude", "depends_on": ["test"]},
+                {"id": "test", "type": "test", "agent": "codex", "depends_on": ["build"]},
+            ],
+        })
+        assert status == 422
+        location = cycle["error"]["details"]["location"]
+        assert location["node"] and "->" in location["edge"]
+        assert isinstance(location["line"], int) and location["line"] >= 1
+
+        status, dangling = request(port, "PATCH", "/api/templates/editor-template/draft", {
+            "expected_revision": 1,
+            "tasks": [{"id": "build", "type": "backend", "agent": "claude", "depends_on": ["missing"]}],
+        })
+        assert status == 422
+        location = dangling["error"]["details"]["location"]
+        assert location == {
+            "node": "build", "edge": "build->missing", "field": "depends_on",
+            "line": 1,
+        }
+
+        status, invalid_agent = request(port, "PATCH", "/api/templates/editor-template/draft", {
+            "expected_revision": 1,
+            "tasks": [{"id": "build", "type": "backend", "agent": "unknown", "depends_on": []}],
+        })
+        assert status == 422
+        assert invalid_agent["error"]["code"] == "INVALID_AGENT"
+        assert invalid_agent["error"]["details"]["location"]["field"] == "agent"
+
+        status, empty_fields = request(port, "PATCH", "/api/templates/editor-template/draft", {
+            "expected_revision": 1,
+            "tasks": [{"id": "build", "type": "", "agent": "", "depends_on": []}],
+        })
+        assert status == 422
+        assert empty_fields["error"]["code"] == "TASK_FIELD_REQUIRED"
+        assert empty_fields["error"]["details"]["location"]["field"] == "type"
+
+        status, updated = request(port, "PATCH", "/api/templates/editor-template/draft", {
+            "expected_revision": 1,
+            "tasks": [
+                {"id": "build", "type": "backend", "agent": "claude", "depends_on": []},
+                {"id": "test", "type": "test", "agent": "codex", "depends_on": ["build"]},
+            ],
+        })
+        assert status == 200 and updated["template"]["draft_revision"] == 2
+
+        status, _ = request(port, "POST", "/api/templates/editor-template/publish", {},
+                            {"Idempotency-Key": "editor-publish"})
+        assert status == 200
+
+        status, rejected = request(port, "POST", "/api/instances", {
+            "template_id": "editor-template", "name": "Missing params",
+            "parameters": {}, "git": {}, "workspace": {},
+        }, {"Idempotency-Key": "editor-instance-invalid"})
+        assert status == 422
+        assert rejected["error"]["code"] == "PARAMETER_SCHEMA_INVALID"
+        assert rejected["error"]["details"]["errors"][0]["field"] == "region"
+
+        status, created = request(port, "POST", "/api/instances", {
+            "template_id": "editor-template", "name": "Schema run",
+            "parameters": {"region": "cn"}, "git": {}, "workspace": {},
+        }, {"Idempotency-Key": "editor-instance-valid"})
+        assert status == 201 and created["instance"]["status"]["state"] == "QUEUED"
     finally:
         server.shutdown()
         server.server_close()

@@ -50,6 +50,7 @@ def test_template_instance_task_detail_and_theme(
     wait_for_network_idle(page)
     expect(page.get_by_text("Instance Detail")).to_be_visible(timeout=10000)
 
+    page.locator('[data-testid="instance-task"]').first.wait_for("visible", timeout=10000)
     page.locator('[data-testid="instance-task"]').first.click()
     wait_for_network_idle(page)
     expect(page.get_by_text("Task Detail")).to_be_visible(timeout=10000)

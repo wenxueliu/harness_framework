@@ -62,6 +62,10 @@ export async function preflightProjectWorkspace(workspaceId: string): Promise<Wo
   return payload.preflight
 }
 
+export async function deleteProjectWorkspace(workspaceId: string): Promise<void> {
+  await apiRequest(`/api/workspaces/${encodeURIComponent(workspaceId)}`, { method: 'DELETE' })
+}
+
 export async function listRuns(reqId: string): Promise<RunSummary[]> {
   const payload = await apiRequest<{ runs: RunSummary[] }>(`/api/workflow/${encodeURIComponent(reqId)}/runs`)
   return payload.runs

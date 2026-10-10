@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import base64
 import json
+from dataclasses import replace
 from io import BytesIO
 from unittest.mock import MagicMock, Mock
 
@@ -20,6 +21,12 @@ from harness_framework.project_groups import ProjectGroupService
 from harness_framework.workspace_manager import WorkspaceManager
 from harness_framework.workspace_security import WorkspaceSecurity
 from harness_framework.workspace_files import WorkspaceFileService
+from harness_framework.workspace_models import (
+    RunWorkspace,
+    WorkspaceStatus,
+    WorkspaceStrategy,
+)
+from harness_framework.event_journal import EventJournal
 
 
 def make_mock_run_manager():
@@ -106,6 +113,7 @@ def make_handler(store: dict, workspace_root: str = ".", real_run_manager: bool 
         FeatureConfig({"project_groups": False, "sse_events": True}),
     )
     TestHandler.project_groups = ProjectGroupService(consul)
+    TestHandler.event_journal = EventJournal(consul)
     TestHandler.workspace_manager = WorkspaceManager(
         consul, WorkspaceSecurity({"test": workspace_root}),
         TestHandler.project_groups,
@@ -271,6 +279,68 @@ class TestWebAPI:
         )
         assert preflight["code"] == 200
         assert preflight["body"]["preflight"]["exists"] is True
+
+    def test_project_workspace_delete_preserves_bindings_and_audits(self, tmp_path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        store = {}
+        handler, consul, _, _ = make_handler(store, str(tmp_path))
+        created_group = call_do_method(
+            handler, "POST", "/api/project-groups",
+            json.dumps({"name": "Core"}).encode(),
+        )
+        group_id = created_group["body"]["project_group"]["group_id"]
+        created = call_do_method(
+            handler, "POST", f"/api/project-groups/{group_id}/workspaces",
+            json.dumps({
+                "name": "Repo", "root_alias": "test", "relative_path": "repo",
+                "access": "READ_ONLY",
+            }).encode(),
+        )
+        workspace_id = created["body"]["workspace"]["workspace_id"]
+        run_workspace = RunWorkspace(
+            run_workspace_id="rws-active", req_id="req-1", run_id="run-1",
+            project_workspace_id=workspace_id, strategy=WorkspaceStrategy.ORIGINAL,
+            resolved_commit_sha=None, status=WorkspaceStatus.READY,
+            read_write=False, temporary_demo=False, retention_until=None,
+            snapshot_manifest_id=None, root_ref="test:repo",
+        )
+        consul.kv_put("workflows/req-1/runs/run-1/workspace/record", json.dumps(
+            run_workspace.to_dict()
+        ))
+        consul.kv_put(
+            "workflows/req-1/runs/run-1/attempts/attempt-1/bindings/run",
+            json.dumps({
+                "binding_id": "binding-1", "req_id": "req-1", "run_id": "run-1",
+                "task_id": "task", "attempt_id": "attempt-1",
+                "workspace_id": "rws-active", "binding_type": "RUN_SHARED",
+                "write_scope": [], "base_commit_sha": None, "writable": False,
+                "bound_at": "2026-01-01T00:00:00Z",
+            }),
+        )
+
+        rejected = call_do_method(
+            handler, "DELETE", f"/api/workspaces/{workspace_id}"
+        )
+        assert rejected["code"] == 409
+        assert rejected["body"]["error"]["message"] == (
+            "Workspace 正在被运行中的实例使用，无法删除"
+        )
+
+        consul.kv_put("workflows/req-1/runs/run-1/workspace/record", json.dumps(
+            replace(run_workspace, status=WorkspaceStatus.RETAINED).to_dict()
+        ))
+        deleted = call_do_method(
+            handler, "DELETE", f"/api/workspaces/{workspace_id}"
+        )
+        assert deleted["code"] == 200
+        assert "workflows/req-1/runs/run-1/workspace/record" in consul._store
+        assert ("workflows/req-1/runs/run-1/attempts/attempt-1/"
+                "bindings/run") in consul._store
+        events, _ = EventJournal(consul).replay()
+        assert [event.type for event in events] == [
+            "WORKSPACE_REGISTERED", "WORKSPACE_DELETED"
+        ]
 
     def test_project_workspace_absolute_path_requires_allowed_existing_directory(self, tmp_path):
         repo = tmp_path / "repo"

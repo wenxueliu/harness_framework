@@ -140,6 +140,7 @@ class APIHandler(BaseHTTPRequestHandler):
             raise APIError("INVALID_JSON", "请求正文不是有效 JSON", 400) from exc
         if not isinstance(body, dict):
             raise APIError("INVALID_JSON_OBJECT", "请求正文必须是 JSON 对象", 400)
+        self.raw_body = raw.decode("utf-8")
         return body
 
     def _handle_api_error(self, error: APIError) -> None:
@@ -558,12 +559,6 @@ class APIHandler(BaseHTTPRequestHandler):
                     parts[3], str(body.get("status", "HEALTHY"))
                 )
                 return self._send_json(200, {"agent_runtime": runtime})
-            if path.startswith("/api/instances/") and path.endswith("/preflight"):
-                instance_id = path.split("/")[3]
-                return self._send_json(200, self.capability_preflight.run(instance_id))
-            if path.startswith("/api/instances/") and path.endswith("/artifacts"):
-                instance_id = path.split("/")[3]
-                return self._send_json(200, {"artifacts": self.artifacts.list_for_instance(instance_id)})
             if path == "/api/execution-profiles":
                 return self._send_json(201, self.execution_profiles.create(body, self._authentication_context().subject))
             if path.startswith("/api/execution-profiles/"):
@@ -760,6 +755,15 @@ class APIHandler(BaseHTTPRequestHandler):
                         access=str(body.get("access", "READ_WRITE")),
                         policy=body.get("policy", {}),
                     )
+                self._append_event(
+                    "WORKSPACE_REGISTERED",
+                    subject={"group_id": group_id,
+                             "workspace_id": workspace["workspace_id"]},
+                    actor={"type": "human", "id": context.subject},
+                    data={"name": workspace["name"],
+                          "source_type": workspace["source_type"],
+                          "access": workspace["access"]},
+                )
                 return self._send_json(201, {"workspace": workspace})
             if (len(parts) == 5 and parts[1:3] == ["api", "workspaces"]
                     and parts[4] == "preflight"):
@@ -863,6 +867,7 @@ class APIHandler(BaseHTTPRequestHandler):
             parts = path.split("/")
             if path.startswith("/api/templates/") and len(parts) == 5 and parts[4] == "draft":
                 context = self._authentication_context()
+                body = {**body, "_source": getattr(self, "raw_body", "")}
                 template = self.job_flows.get_template(unquote(parts[3]))
                 self._jobflow_require(context, "workflow:draft", template)
                 self._jobflow_require_active_group(template)
@@ -896,6 +901,15 @@ class APIHandler(BaseHTTPRequestHandler):
                     workspace_id, expected_revision=int(body["expected_revision"]), changes=changes
                 )
                 return self._send_json(200, {"workspace": updated})
+            if (len(parts) == 4 and parts[1:3] == ["api", "instances"]):
+                context = self._authentication_context()
+                instance_id = unquote(parts[3])
+                instance = self.job_flows.get_instance(instance_id)
+                template = self.job_flows.get_template(instance["template_id"])
+                self._require(context, "run:create", template["group_id"])
+                return self._send_json(200, {"instance": self.job_flows.update_instance_profile(
+                    instance_id, body, context.subject,
+                )})
             self._send_error(404, "NOT_FOUND", "接口不存在")
         except APIError as error:
             self._handle_api_error(error)
@@ -995,6 +1009,21 @@ class APIHandler(BaseHTTPRequestHandler):
                 group_id, subject_id = unquote(parts[3]), unquote(parts[5])
                 self._require(context, "member:manage", group_id)
                 self.project_groups.delete_member(group_id, subject_id)
+                return self._send_json(200, {"ok": True})
+            if (len(parts) == 4 and parts[1:3] == ["api", "workspaces"]):
+                context = self._authentication_context()
+                workspace_id = unquote(parts[3])
+                workspace = self.workspace_manager.get(workspace_id)
+                self._require(context, "workspace:register", workspace["group_id"])
+                self.workspace_manager.delete(workspace_id)
+                self._append_event(
+                    "WORKSPACE_DELETED",
+                    subject={"group_id": workspace["group_id"],
+                             "workspace_id": workspace_id},
+                    actor={"type": "human", "id": context.subject},
+                    data={"name": workspace["name"],
+                          "root_ref": workspace["root_ref"]},
+                )
                 return self._send_json(200, {"ok": True})
             self._send_error(404, "NOT_FOUND", "接口不存在")
         except APIError as error:
@@ -1105,6 +1134,10 @@ class APIHandler(BaseHTTPRequestHandler):
         parts = path.split("/")
         actor = context.subject
         key = self.headers.get("Idempotency-Key")
+        if path == "/api/templates" or (
+            path.startswith("/api/templates/") and not path.endswith("/validate")
+        ):
+            body = {**body, "_source": getattr(self, "raw_body", "")}
         if path == "/api/templates":
             group_id = str(body.get("group_id") or UNASSIGNED_GROUP_ID).strip()
             if group_id != UNASSIGNED_GROUP_ID:
@@ -2071,7 +2104,9 @@ def serve(consul: KVStore, host: str = "0.0.0.0", port: int = 8080,
         APIHandler.skill_bundles, APIHandler.mcp_service, APIHandler.workspace_manager,
         ExecutionManifestService(consul),
     )
-    APIHandler.job_flows = JobFlowService(consul, APIHandler.capability_preflight)
+    APIHandler.job_flows = JobFlowService(
+        consul, APIHandler.capability_preflight, APIHandler.workspace_manager
+    )
     APIHandler.artifacts = ArtifactService(consul)
     server = ThreadingHTTPServer((host, port), APIHandler)
     log.info("WebAPI serving on http://%s:%d/", host, port)

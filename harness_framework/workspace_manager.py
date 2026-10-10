@@ -234,6 +234,59 @@ class WorkspaceManager:
                 continue
         return sorted(result, key=lambda item: item["name"].casefold())
 
+    def delete(self, workspace_id: str) -> None:
+        """Remove a Project Workspace registration.
+
+        The workspace must not be locked by an active ORIGINAL-strategy Run.
+        Existing Run Workspace bindings and audit records are preserved.
+        """
+        record = _decode(json.dumps(self.get(workspace_id)))
+        lock_key = f"workspaces/projects/{workspace_id}/original-write-lock"
+        lock_raw, _ = self.store.kv_get(lock_key)
+        if lock_raw:
+            raise ConflictError(
+                "Workspace 正在被运行中的实例使用，无法删除",
+                code="WORKSPACE_IN_USE",
+                details={"run_id": lock_raw},
+            )
+        active_binding = self.active_run_workspace(workspace_id)
+        if active_binding:
+            raise ConflictError(
+                "Workspace 正在被运行中的实例使用，无法删除",
+                code="WORKSPACE_IN_USE",
+                details={"req_id": active_binding["req_id"],
+                         "run_id": active_binding["run_id"]},
+            )
+        record_key = f"workspaces/projects/{workspace_id}/record"
+        index_key = f"project-groups/{record.group_id}/workspaces/{workspace_id}"
+        self.store.kv_delete(record_key)
+        self.store.kv_delete(index_key)
+
+    def active_run_workspace(self, project_workspace_id: str) -> dict[str, Any] | None:
+        """Return the earliest nonterminal Run Workspace bound to a project."""
+        terminal = {
+            WorkspaceStatus.RETAINED, WorkspaceStatus.CLEANUP_PENDING,
+            WorkspaceStatus.TRASHED, WorkspaceStatus.DELETED, WorkspaceStatus.FAILED,
+        }
+        cursor = None
+        while True:
+            items, cursor = self.store.kv_list(
+                "workflows/", cursor=cursor, limit=1000
+            )
+            for item in items:
+                key = item["key"]
+                if not key.endswith("/workspace/record"):
+                    continue
+                try:
+                    run_workspace = _decode_run_workspace(item["value"])
+                except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                    continue
+                if (run_workspace.project_workspace_id == project_workspace_id
+                        and run_workspace.status not in terminal):
+                    return run_workspace.to_dict()
+            if not cursor:
+                return None
+
     def preflight(self, workspace_id: str) -> dict[str, Any]:
         record = _decode(json.dumps(self.get(workspace_id)))
         path = self.security.resolve_root_ref(record.root_ref)

@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { Archive, FolderPlus, ShieldCheck, UserPlus } from 'lucide-vue-next'
+import { Archive, FolderPlus, ShieldCheck, Trash2, UserPlus } from 'lucide-vue-next'
 import AppShell from '@/layouts/AppShell.vue'
 import { useCapabilityStore } from '@/stores/capabilities'
-import { archiveProjectGroup, createProjectGroup, deleteProjectGroupMember, listProjectGroupMembers, listProjectGroups, listProjectWorkspaces, preflightProjectWorkspace, putProjectGroupMember, registerProjectWorkspace } from '@/api/dashboard'
+import { archiveProjectGroup, createProjectGroup, deleteProjectGroupMember, deleteProjectWorkspace, listProjectGroupMembers, listProjectGroups, listProjectWorkspaces, preflightProjectWorkspace, putProjectGroupMember, registerProjectWorkspace } from '@/api/dashboard'
+import { createJobFlowExecutionProfile, listAgentRuntimes, listJobFlowExecutionProfiles } from '@/api/jobFlow'
 import type { ProjectGroup, ProjectGroupMember, ProjectWorkspace, WorkspacePreflight } from '@/api/types'
 
 const capabilities = useCapabilityStore()
@@ -12,7 +13,12 @@ const selectedId = ref('')
 const members = ref<ProjectGroupMember[]>([])
 const workspaces = ref<ProjectWorkspace[]>([])
 const preflights = ref<Record<string, WorkspacePreflight>>({})
+const executionProfiles = ref<{ profile_id: string; name: string; version: string; agent_runtime_id: string; status: string }[]>([])
+const agentRuntimes = ref<{ runtime_id: string; name: string; status: string }[]>([])
+const profileName = ref('')
+const profileRuntimeId = ref('')
 const error = ref('')
+const workspaceError = ref('')
 const busy = ref(false)
 const groupName = ref('')
 const groupDescription = ref('')
@@ -51,8 +57,9 @@ async function load() {
 async function selectGroup(groupId: string) {
   selectedId.value = groupId
   await capabilities.load(groupId)
-  ;[members.value, workspaces.value] = await Promise.all([
+  ;[members.value, workspaces.value, executionProfiles.value, agentRuntimes.value] = await Promise.all([
     listProjectGroupMembers(groupId), listProjectWorkspaces(groupId),
+    listJobFlowExecutionProfiles(groupId), listAgentRuntimes(),
   ])
 }
 
@@ -60,6 +67,7 @@ async function createGroup() {
   if (!groupName.value.trim()) return
   busy.value = true; error.value = ''
   try {
+    workspaceError.value = ''
     const group = await createProjectGroup(groupName.value.trim(), groupDescription.value.trim())
     groupName.value = ''; groupDescription.value = ''
     groups.value.push(group); await selectGroup(group.group_id)
@@ -104,6 +112,26 @@ async function preflight(workspaceId: string) {
   catch (cause) { error.value = cause instanceof Error ? cause.message : 'Preflight 失败' }
 }
 
+async function removeWorkspace(workspaceId: string) {
+  workspaceError.value = ''
+  if (!confirm('确认删除此 Workspace？删除后不可恢复。')) return
+  try {
+    await deleteProjectWorkspace(workspaceId)
+    if (selectedId.value) workspaces.value = await listProjectWorkspaces(selectedId.value)
+  } catch (cause) {
+    workspaceError.value = cause instanceof Error ? cause.message : '删除 Workspace 失败'
+  }
+}
+
+async function createProfile() {
+  if (!selectedId.value || !profileName.value.trim() || !profileRuntimeId.value) return
+  try {
+    await createJobFlowExecutionProfile({ group_id: selectedId.value, name: profileName.value.trim(), agent_runtime_id: profileRuntimeId.value })
+    profileName.value = ''; profileRuntimeId.value = ''
+    executionProfiles.value = await listJobFlowExecutionProfiles(selectedId.value)
+  } catch (cause) { error.value = cause instanceof Error ? cause.message : '创建 Execution Profile 失败' }
+}
+
 async function archive() {
   if (!selectedGroup.value || !confirm(`确认归档项目组 ${selectedGroup.value.name}？`)) return
   try {
@@ -126,8 +154,10 @@ onMounted(() => load().catch((cause) => { error.value = cause instanceof Error ?
       <div class="space-y-4">
         <div class="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-card p-4"><ShieldCheck :size="16" class="text-emerald-300" /><strong class="text-sm">{{ capabilities.snapshot?.actor.display_name || '未知身份' }}</strong><span class="text-xs text-muted-foreground">{{ capabilities.snapshot?.mode }}</span><button v-if="selectedGroup?.status === 'ACTIVE' && capabilities.permitted('group:archive')" class="ml-auto flex items-center gap-1 rounded border border-red-400/30 px-2 py-1 text-xs text-red-300" @click="archive"><Archive :size="12" />归档</button></div>
         <p v-if="error" role="alert" class="rounded border border-red-400/30 bg-red-400/10 p-3 text-xs text-red-200">{{ error }}</p>
+        <p v-if="workspaceError" data-testid="workspace-error" role="alert" class="rounded border border-red-400/30 bg-red-400/10 p-3 text-xs text-red-200">{{ workspaceError }}</p>
         <article class="rounded-lg border border-border bg-card p-4"><h2 class="mb-3 font-display text-sm font-semibold">成员与角色</h2><div v-for="member in members" :key="member.subject_id" class="flex items-center gap-2 border-b border-border/60 py-2 text-xs"><span class="min-w-0 flex-1 truncate font-mono">{{ member.subject_id }}</span><span class="text-blue-300">{{ member.role }}</span><button v-if="capabilities.permitted('member:manage')" class="text-red-300" @click="removeMember(member.subject_id)">移除</button></div><form v-if="capabilities.permitted('member:manage') && selectedGroup?.status === 'ACTIVE'" class="mt-3 flex flex-wrap gap-2" @submit.prevent="addMember"><input v-model="memberSubject" required class="min-w-48 flex-1 rounded border border-border bg-background p-2 text-xs" placeholder="subject ID" /><select v-model="memberRole" class="rounded border border-border bg-background p-2 text-xs"><option>ADMIN</option><option>EDITOR</option><option>VIEWER</option></select><button class="rounded bg-blue-500 px-3 text-xs text-white"><UserPlus :size="12" class="mr-1 inline" />添加</button></form></article>
-        <article class="rounded-lg border border-border bg-card p-4"><h2 class="mb-3 font-display text-sm font-semibold">Project Workspaces</h2><div v-for="workspace in workspaces" :key="workspace.workspace_id" class="mb-2 rounded border border-border p-3 text-xs"><div class="flex gap-2"><strong>{{ workspace.name }}</strong><span class="font-mono text-muted-foreground">{{ workspace.root_ref }}</span><button class="ml-auto text-blue-300" @click="preflight(workspace.workspace_id)">Preflight</button></div><p v-if="preflights[workspace.workspace_id]" class="mt-2 font-mono text-muted-foreground">read={{ preflights[workspace.workspace_id].readable }} · write={{ preflights[workspace.workspace_id].writable }} · git={{ preflights[workspace.workspace_id].git }} · dirty={{ preflights[workspace.workspace_id].dirty ?? 'n/a' }}</p></div><form v-if="capabilities.permitted('workspace:register') && selectedGroup?.status === 'ACTIVE'" class="mt-3 grid gap-2 border-t border-border pt-3 sm:grid-cols-2" @submit.prevent="registerWorkspace"><input v-model="workspaceName" required class="rounded border border-border bg-background p-2 text-xs" placeholder="Workspace 名称" /><select v-model="workspaceSource" class="rounded border border-border bg-background p-2 text-xs"><option value="LOCAL_PATH">本地目录</option><option value="GIT_CLONE">Git Clone</option></select><select v-model="workspaceAccess" class="rounded border border-border bg-background p-2 text-xs"><option value="READ_WRITE">读写</option><option value="READ_ONLY">只读</option></select><template v-if="workspaceSource === 'LOCAL_PATH'"><select v-model="workspacePathType" class="rounded border border-border bg-background p-2 text-xs"><option value="RELATIVE_PATH">相对路径（使用服务端根目录）</option><option value="ABSOLUTE_PATH">绝对路径（服务端目录）</option></select><template v-if="workspacePathType === 'RELATIVE_PATH'"><input v-model="rootAlias" required class="rounded border border-border bg-background p-2 font-mono text-xs" placeholder="服务端 root alias" /><input v-model="relativePath" required class="rounded border border-border bg-background p-2 font-mono text-xs" placeholder="相对目录，例如 harness" /></template><input v-else v-model="absolutePath" required class="rounded border border-border bg-background p-2 font-mono text-xs sm:col-span-2" placeholder="服务端绝对目录，例如 /srv/projects/my-app" /></template><template v-else><input v-model="gitUrl" required class="rounded border border-border bg-background p-2 font-mono text-xs sm:col-span-2" placeholder="https://git.example.com/org/repo.git" /><input v-model="defaultRef" required class="rounded border border-border bg-background p-2 font-mono text-xs" placeholder="默认 ref" /></template><p class="text-[11px] text-muted-foreground sm:col-span-2">本地目录必须存在，并且位于 Harness 服务端配置的允许根目录内。</p><button class="rounded bg-blue-500 px-3 py-2 text-xs text-white disabled:cursor-not-allowed disabled:opacity-50 sm:col-span-2" :disabled="!workspaceFormValid">登记 Workspace</button></form></article>
+        <article class="rounded-lg border border-border bg-card p-4"><h2 class="mb-3 font-display text-sm font-semibold">Project Workspaces</h2><div v-for="workspace in workspaces" :key="workspace.workspace_id" class="mb-2 rounded border border-border p-3 text-xs"><div class="flex gap-2"><strong>{{ workspace.name }}</strong><span class="font-mono text-muted-foreground">{{ workspace.root_ref }}</span><button class="ml-auto text-blue-300" @click="preflight(workspace.workspace_id)">Preflight</button><button v-if="capabilities.permitted('workspace:register') && selectedGroup?.status === 'ACTIVE'" class="flex items-center gap-1 text-red-300 hover:text-red-200" title="删除 Workspace" @click="removeWorkspace(workspace.workspace_id)"><Trash2 :size="12" /></button></div><p v-if="preflights[workspace.workspace_id]" class="mt-2 font-mono text-muted-foreground">read={{ preflights[workspace.workspace_id].readable }} · write={{ preflights[workspace.workspace_id].writable }} · git={{ preflights[workspace.workspace_id].git }} · dirty={{ preflights[workspace.workspace_id].dirty ?? 'n/a' }}</p></div><form v-if="capabilities.permitted('workspace:register') && selectedGroup?.status === 'ACTIVE'" class="mt-3 grid gap-2 border-t border-border pt-3 sm:grid-cols-2" @submit.prevent="registerWorkspace"><input v-model="workspaceName" required class="rounded border border-border bg-background p-2 text-xs" placeholder="Workspace 名称" /><select v-model="workspaceSource" class="rounded border border-border bg-background p-2 text-xs"><option value="LOCAL_PATH">本地目录</option><option value="GIT_CLONE">Git Clone</option></select><select v-model="workspaceAccess" class="rounded border border-border bg-background p-2 text-xs"><option value="READ_WRITE">读写</option><option value="READ_ONLY">只读</option></select><template v-if="workspaceSource === 'LOCAL_PATH'"><select v-model="workspacePathType" class="rounded border border-border bg-background p-2 text-xs"><option value="RELATIVE_PATH">相对路径（使用服务端根目录）</option><option value="ABSOLUTE_PATH">绝对路径（服务端目录）</option></select><template v-if="workspacePathType === 'RELATIVE_PATH'"><input v-model="rootAlias" required class="rounded border border-border bg-background p-2 font-mono text-xs" placeholder="服务端 root alias" /><input v-model="relativePath" required class="rounded border border-border bg-background p-2 font-mono text-xs" placeholder="相对目录，例如 harness" /></template><input v-else v-model="absolutePath" required class="rounded border border-border bg-background p-2 font-mono text-xs sm:col-span-2" placeholder="服务端绝对目录，例如 /srv/projects/my-app" /></template><template v-else><input v-model="gitUrl" required class="rounded border border-border bg-background p-2 font-mono text-xs sm:col-span-2" placeholder="https://git.example.com/org/repo.git" /><input v-model="defaultRef" required class="rounded border border-border bg-background p-2 font-mono text-xs" placeholder="默认 ref" /></template><p class="text-[11px] text-muted-foreground sm:col-span-2">本地目录必须存在，并且位于 Harness 服务端配置的允许根目录内。</p><button class="rounded bg-blue-500 px-3 py-2 text-xs text-white disabled:cursor-not-allowed disabled:opacity-50 sm:col-span-2" :disabled="!workspaceFormValid">登记 Workspace</button></form></article>
+        <article class="rounded-lg border border-border bg-card p-4"><h2 class="mb-3 font-display text-sm font-semibold">Execution Profiles</h2><div v-for="profile in executionProfiles" :key="profile.profile_id" class="mb-2 flex items-center gap-2 rounded border border-border p-3 text-xs"><strong>{{ profile.name }}</strong><span class="font-mono text-muted-foreground">v{{ profile.version }} · {{ profile.agent_runtime_id }}</span><span class="ml-auto rounded border border-border px-2 py-0.5 text-[10px]">{{ profile.status }}</span></div><p v-if="!executionProfiles.length" class="text-xs text-muted-foreground">暂无 Execution Profile，先创建一个。</p><form v-if="capabilities.permitted('profile:manage') && selectedGroup?.status === 'ACTIVE'" class="mt-3 grid gap-2 border-t border-border pt-3 sm:grid-cols-2" @submit.prevent="createProfile"><input v-model="profileName" required class="rounded border border-border bg-background p-2 text-xs" placeholder="Profile 名称" /><select v-model="profileRuntimeId" required class="rounded border border-border bg-background p-2 text-xs"><option value="" disabled>选择 Agent Runtime</option><option v-for="rt in agentRuntimes" :key="rt.runtime_id" :value="rt.runtime_id">{{ rt.name }} ({{ rt.status }})</option></select><button class="rounded bg-blue-500 px-3 py-2 text-xs text-white sm:col-span-2" :disabled="!profileName.trim() || !profileRuntimeId">创建 Execution Profile</button></form></article>
       </div>
     </section>
   </AppShell>

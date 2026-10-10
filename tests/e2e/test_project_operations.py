@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+import json
 import time
 from pathlib import Path
 from urllib.parse import quote
@@ -9,7 +10,7 @@ from urllib.parse import quote
 import pytest
 import requests
 
-from .conftest import CONSUL_URL, WEBAPI_URL
+from .conftest import CONSUL_URL, WEBAPI_URL, consul_delete, consul_put
 from .helpers import wait_for_network_idle
 from .webbridge import Page, expect
 
@@ -66,6 +67,7 @@ def test_project_group_member_workspace_lifecycle(page: Page, dashboard_url: str
     group_name = f"UI 项目组 {time.time_ns()}"
     member = f"ui-member-{time.time_ns()}"
     workspace_name = f"UI Workspace {time.time_ns()}"
+    run_workspace_key = ""
     page.goto(dashboard_url + "/#/")
     wait_for_network_idle(page)
     try:
@@ -93,7 +95,7 @@ def test_project_group_member_workspace_lifecycle(page: Page, dashboard_url: str
             select.dispatchEvent(new Event('change', { bubbles: true }));
         }""")
         absolute_input = page.locator('input[placeholder*="服务端绝对目录"]')
-        absolute_input.fill("/tmp")
+        absolute_input.fill("/var/tmp")
         page.get_by_text("登记 Workspace").click()
         expect(page.locator('[role="alert"]')).to_be_visible(timeout=10000)
         assert page.get_by_text(workspace_name).count() == 0
@@ -104,7 +106,73 @@ def test_project_group_member_workspace_lifecycle(page: Page, dashboard_url: str
 
         page.get_by_text("Preflight").click()
         expect(page.get_by_text("read=true")).to_be_visible(timeout=10000)
+
+        group_response = requests.get(
+            f"{WEBAPI_URL}/api/project-groups", timeout=10
+        )
+        group_id = next(
+            item["group_id"] for item in group_response.json()["project_groups"]
+            if item["name"] == group_name
+        )
+        workspace_id = requests.get(
+            f"{WEBAPI_URL}/api/project-groups/{quote(group_id, safe='')}/workspaces",
+            timeout=10,
+        ).json()["workspaces"][0]["workspace_id"]
+        run_workspace_key = (
+            f"workflows/ui-workspace-lifecycle/runs/run/workspace/record"
+        )
+        consul_put(run_workspace_key, json.dumps({
+            "run_workspace_id": "rws-ui-lifecycle", "req_id": "ui-workspace-lifecycle",
+            "run_id": "run", "project_workspace_id": workspace_id,
+            "strategy": "ORIGINAL", "resolved_commit_sha": None,
+            "status": "READY", "read_write": False, "temporary_demo": False,
+            "retention_until": None, "snapshot_manifest_id": None, "revision": 1,
+            "root_ref": "default:workspace",
+        }))
+
+        page.evaluate("""() => {
+            window.__workspaceConfirmMessages = [];
+            window.confirm = (message) => {
+                window.__workspaceConfirmMessages.push(message);
+                return true;
+            };
+        }""")
+        page.evaluate(
+            "() => document.querySelector('[role=\"alert\"]')?.remove()"
+        )
+        page.evaluate(
+            "() => document.querySelector('button[title=\"删除 Workspace\"]')?.click()"
+        )
+        time.sleep(0.5)
+        workspace_error = page.locator('[data-testid="workspace-error"]')
+        workspace_error.wait_for("visible", timeout=10000)
+        assert page.evaluate(
+            "() => document.querySelector('[data-testid=\"workspace-error\"]')?.textContent || ''"
+        ) == "Workspace 正在被运行中的实例使用，无法删除"
+
+        consul_delete(run_workspace_key)
+        page.evaluate("""() => {
+            window.__workspaceConfirmMessages = [];
+            window.confirm = (message) => {
+                window.__workspaceConfirmMessages.push(message);
+                return false;
+            };
+        }""")
+        page.evaluate(
+            "() => document.querySelector('button[title=\"删除 Workspace\"]')?.click()"
+        )
+        expect(page.get_by_text(workspace_name)).to_be_visible(timeout=10000)
+        confirm_messages = page.evaluate("() => window.__workspaceConfirmMessages")
+        assert confirm_messages == ["确认删除此 Workspace？删除后不可恢复。"]
+
+        page.evaluate("() => { window.confirm = () => true; }")
+        page.evaluate(
+            "() => document.querySelector('button[title=\"删除 Workspace\"]')?.click()"
+        )
+        expect(page.get_by_text(workspace_name)).to_be_hidden(timeout=10000)
     finally:
+        if run_workspace_key:
+            consul_delete(run_workspace_key)
         _cleanup_group(group_name)
 
 

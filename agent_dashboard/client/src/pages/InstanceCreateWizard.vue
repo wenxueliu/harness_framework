@@ -57,7 +57,7 @@ async function submit() {
       parameters: parsedParameters.value,
       git: { ref: gitRef.value },
       workspace: { strategy: workspaceStrategy.value },
-      execution_profile_id: executionProfileId.value,
+      execution_profile_id: executionProfileId.value || undefined,
     }
     const created = await createJobFlowInstance(body)
     if (startMode.value === 'now') {
@@ -181,8 +181,8 @@ function prevStep() { if (step.value > 1) step.value-- }
           <button v-if="step < 3" data-testid="wizard-next"
             class="rounded bg-blue-500 px-3 py-1.5 text-xs text-white" @click="nextStep">下一步</button>
           <button v-else data-testid="wizard-submit"
-            class="rounded bg-green-600 px-3 py-1.5 text-xs text-white"
-            :disabled="submitting || !selectedVersionId || !executionProfileId" @click="submit">创建实例</button>
+            class="rounded bg-green-600 px-3 py-1.5 text-xs text-white disabled:cursor-not-allowed disabled:opacity-50"
+            :disabled="submitting || !selectedVersionId" @click="submit">创建实例</button>
         </div>
       </template>
     </div>

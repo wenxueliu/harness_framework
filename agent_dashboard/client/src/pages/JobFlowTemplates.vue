@@ -80,6 +80,12 @@ async function removeTemplate(template: JobFlowTemplate) {
             <p class="mt-3 line-clamp-2 text-sm text-muted-foreground">{{ template.description || '暂无描述' }}</p>
             <div class="mt-4 text-xs text-muted-foreground">{{ template.draft?.tasks?.length || 0 }} 个节点 · 草稿修订 {{ template.draft_revision }}</div>
           </RouterLink>
+          <div v-if="template.current_version_id" class="mt-3 flex justify-end">
+            <RouterLink
+              :to="'/templates/' + encodeURIComponent(template.template_id) + '/instances/new'"
+              class="rounded bg-blue-500 px-3 py-1.5 text-xs text-white"
+            >创建实例</RouterLink>
+          </div>
         </article>
       </div>
     </div>

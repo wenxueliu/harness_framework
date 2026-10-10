@@ -375,6 +375,15 @@ ChangeSet CS-20261001-001
 
 全局设置 → 项目组 → 权限。展示当前三级角色到操作的可视化矩阵（复用 §2 表格）。Admin 可以查看但不能在 UI 中修改角色定义（角色固定，成员分配通过项目管理完成）。
 
+### 7.4 Project Workspace 管理（Admin）
+
+全局设置 → 项目组 → Project Workspaces。展示已登记的 Workspace 列表，每个卡片提供 Preflight 和删除操作。
+
+- **登记**：Admin 填写名称、来源类型（本地目录 / Git Clone）、权限（读写 / 只读）和路径，确认后创建。
+- **Preflight**：检查 Workspace 是否可读、可写、是否为 Git 仓库、是否有脏修改。
+- **删除**：Admin 可以删除未被运行中实例锁定的 Workspace。点击删除后弹出确认对话框（"确认删除此 Workspace？删除后不可恢复。"），确认后调用 `DELETE /api/workspaces/:workspace_id` 并刷新列表。如果 Workspace 正在被使用，显示错误提示"Workspace 正在被运行中的实例使用，无法删除"。
+- 已删除 Workspace 的历史 Run Workspace Binding 和审计记录保留不删除。
+
 ## 8. 全局横切面
 
 ### 8.1 主题与可访问性

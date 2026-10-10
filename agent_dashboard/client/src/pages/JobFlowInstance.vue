@@ -7,22 +7,32 @@ import PreflightPanel, { type PreflightResult } from '@/components/PreflightPane
 import ManifestViewer from '@/components/ManifestViewer.vue'
 import ChangeSetPanel from '@/components/ChangeSetPanel.vue'
 import WorkspaceCard from '@/components/WorkspaceCard.vue'
-import ArtifactList, { type ArtifactItem } from '@/components/ArtifactList.vue'
+import ArtifactList from '@/components/ArtifactList.vue'
 import type { Task } from '@/api/types'
 import {
   controlJobFlowInstance,
   deleteJobFlowInstance,
+  getJobFlowAttemptManifest,
   getJobFlowInstance,
   getJobFlowPreflight,
+  listJobFlowInstanceArtifacts,
   rerunJobFlowInstance,
   runJobFlowPreflight,
   startJobFlowInstance,
+  getJobFlowTemplate,
+  listJobFlowExecutionProfiles,
+  updateInstanceProfile,
   type JobFlowInstance,
+  type JobFlowArtifact,
 } from '@/api/jobFlow'
 
 const route = useRoute()
 const router = useRouter()
 const instance = ref<JobFlowInstance | null>(null)
+const templateName = ref('')
+const editingProfile = ref(false)
+const selectedProfileId = ref('')
+const profileOptions = ref<{ profile_id: string; name: string; version: string }[]>([])
 const error = ref('')
 const rerunning = ref(false)
 const controlling = ref(false)
@@ -51,7 +61,7 @@ const TASK_STATE_MAP: Record<string, Task['status']> = {
 const dagTasks = ref<Record<string, Task>>({})
 const preflight = ref<PreflightResult | null>(null)
 const manifest = ref<Record<string, unknown> | null>(null)
-const artifactList = ref<ArtifactItem[]>([])
+const artifactList = ref<JobFlowArtifact[]>([])
 const activeTab = ref('preflight')
 
 function buildDagTasks() {
@@ -72,18 +82,19 @@ function buildDagTasks() {
 
 async function loadCapability() {
   try {
+    if (instance.value?.group_id) {
+      profileOptions.value = await listJobFlowExecutionProfiles(instance.value.group_id)
+    }
     const latest = await getJobFlowPreflight(instanceId)
     preflight.value = latest.status === 'IDLE'
       ? await runJobFlowPreflight(instanceId)
       : latest
     if (preflight.value?.attempt_id) {
-      const response = await fetch(`/api/attempts/${encodeURIComponent(preflight.value.attempt_id)}/manifest`)
-      if (response.ok) manifest.value = await response.json()
+      manifest.value = await getJobFlowAttemptManifest(preflight.value.attempt_id)
     }
   } catch { /* offline */ }
   try {
-    const res = await fetch(`/api/instances/${instanceId}/artifacts`)
-    if (res.ok) { const data = await res.json(); artifactList.value = data.artifacts ?? [] }
+    artifactList.value = await listJobFlowInstanceArtifacts(instanceId)
   } catch { /* offline */ }
 }
 
@@ -94,6 +105,16 @@ async function start() {
     await Promise.all([load(), loadCapability()])
   }
   catch (cause) { error.value = cause instanceof Error ? cause.message : '实例启动失败' }
+  finally { controlling.value = false }
+}
+
+async function bindProfile() {
+  if (!instance.value || !selectedProfileId.value) return
+  controlling.value = true
+  try {
+    instance.value = await updateInstanceProfile(instanceId, selectedProfileId.value)
+    editingProfile.value = false
+  } catch (cause) { error.value = cause instanceof Error ? cause.message : '绑定 Profile 失败' }
   finally { controlling.value = false }
 }
 
@@ -110,6 +131,12 @@ async function control(action: 'pause' | 'abort' | 'drain' | 'archive') {
 async function load() {
   try {
     instance.value = await getJobFlowInstance(instanceId)
+    if (instance.value.template_id) {
+      try {
+        const tpl = await getJobFlowTemplate(instance.value.template_id)
+        templateName.value = tpl.name
+      } catch { /* template may have been deleted */ }
+    }
     buildDagTasks()
     gitRef.value = String(instance.value.context.git?.ref || '')
     parameterText.value = JSON.stringify(instance.value.context.parameters || {}, null, 2)
@@ -156,11 +183,16 @@ onMounted(() => { load(); loadCapability() })
       <nav data-testid="instance-breadcrumb" class="flex items-center gap-1.5 text-xs text-muted-foreground">
         <RouterLink to="/templates" class="hover:text-foreground">{{ instance.group_id || 'unassigned' }}</RouterLink>
         <span>›</span>
-        <RouterLink :to="`/templates/${instance.template_id}`" class="hover:text-foreground">{{ instance.template_id }}</RouterLink>
+        <RouterLink :to="`/templates/${instance.template_id}`" class="text-blue-300 hover:underline">
+          {{ templateName || instance.template_id }}
+          <span class="font-mono text-[11px] text-muted-foreground">{{ instance.template_id }}</span>
+        </RouterLink>
         <span>›</span>
         <span class="font-mono">{{ instance.version_id }}</span>
         <span>›</span>
         <span class="text-foreground">{{ instance.name }}</span>
+        <RouterLink v-if="instance.template_id" :to="`/templates/${instance.template_id}`"
+          class="ml-3 rounded border border-border px-2 py-1 text-[11px] text-blue-300 hover:bg-accent">查看模板</RouterLink>
       </nav>
       <section class="grid gap-3 md:grid-cols-5">
         <div class="rounded border border-border bg-card p-3"><p class="text-[11px] text-muted-foreground">状态</p><p class="mt-1 font-semibold">{{ instance.status.state }}</p></div>
@@ -168,6 +200,25 @@ onMounted(() => { load(); loadCapability() })
         <div class="rounded border border-border bg-card p-3"><p class="text-[11px] text-muted-foreground">所属项目组</p><p class="mt-1 font-mono text-xs">{{ instance.group_id || 'unassigned' }}</p></div>
         <div class="rounded border border-border bg-card p-3"><p class="text-[11px] text-muted-foreground">Git</p><p class="mt-1 font-mono text-xs">{{ instance.context.git?.ref || '未指定' }}</p></div>
         <div class="rounded border border-border bg-card p-3"><p class="text-[11px] text-muted-foreground">Workspace</p><p class="mt-1 font-mono text-xs">{{ instance.context.workspace?.workspace_id || '未指定' }}</p></div>
+      </section>
+      <section v-if="['QUEUED', 'WAITING_FOR_CAPABILITY'].includes(instance.status.state)" class="rounded-lg border border-border bg-card p-4">
+        <div class="flex items-center justify-between">
+          <h2 class="text-sm font-semibold">Execution Profile</h2>
+          <button v-if="!editingProfile" class="rounded border border-border px-2 py-1 text-xs text-blue-300 hover:bg-accent" @click="editingProfile = true; selectedProfileId = instance.execution_profile_id || ''">绑定 Profile</button>
+        </div>
+        <template v-if="editingProfile">
+          <select v-model="selectedProfileId" class="mt-2 w-full rounded border border-border bg-background p-2 text-xs">
+            <option value="" disabled>选择 Execution Profile</option>
+            <option v-for="p in profileOptions" :key="p.profile_id" :value="p.profile_id">{{ p.name }} v{{ p.version }}</option>
+          </select>
+          <div class="mt-2 flex gap-2">
+            <button class="rounded bg-blue-500 px-3 py-1.5 text-xs text-white disabled:opacity-40" :disabled="!selectedProfileId || controlling" @click="bindProfile">确认绑定</button>
+            <button class="rounded border border-border px-3 py-1.5 text-xs" @click="editingProfile = false">取消</button>
+          </div>
+        </template>
+        <template v-else>
+          <p class="mt-1 text-xs text-muted-foreground">{{ instance.execution_profile_id || '未绑定 Profile' }}</p>
+        </template>
       </section>
       <section class="rounded-lg border border-border bg-card p-4">
         <h2 class="text-sm font-semibold mb-2">运行 DAG</h2>
