@@ -23,9 +23,20 @@ def _create_template(page: Page, name: str, tasks_json: str) -> str:
 
 
 def _set_tasks_json(page: Page, tasks_json: str) -> None:
-    """Set Monaco content through its native edit context."""
-    page.locator('[data-testid="tasks-editor"] .native-edit-context').click()
-    inserted = page.evaluate("""(value) => {
+    """Set Monaco content via the exposed editor instance, falling back to edit-context typing."""
+    inserted = page.evaluate("""async (value) => {
+      const deadline = Date.now() + 10000;
+      while (Date.now() < deadline) {
+        const store = window.__harnessMonacoEditors || {};
+        if (store.tasks && typeof store.tasks.setValue === 'function') {
+          store.tasks.setValue(value);
+          return true;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      const el = document.querySelector('[data-testid="tasks-editor"] .native-edit-context');
+      if (!el) return false;
+      el.focus();
       if (document.activeElement?.getAttribute('contenteditable') !== 'true') return false;
       document.execCommand('selectAll');
       return document.execCommand('insertText', false, value);
@@ -79,14 +90,47 @@ class TestInstanceDetailDag:
 
     def test_instance_dag_renders(self, page: Page):
         """UI-05: 实例详情页显示运行 DAG 画布。"""
-        page.goto(BASE_URL + "/#/instances")
-        page.wait_for_timeout(1000)
-        links = page.query_selector_all('[data-testid="instance-task"]')
-        if not links:
-            pytest.skip("No instances available")
-        links[0].click()
-        page.wait_for_selector('[data-testid="instance-dag"]')
-        assert page.query_selector('[data-testid="instance-dag"] .vue-flow') is not None
+        from tests.e2e.conftest import api_json
+
+        suffix = str(time.time_ns())
+        template_id = "ui-dag-" + suffix
+        instance_name = "UI DAG " + suffix
+        instance_id = None
+        try:
+            api_json("POST", "/api/templates", {
+                "template_id": template_id,
+                "name": "UI DAG template " + suffix,
+                "tasks": [
+                    {"id": "build", "type": "backend", "depends_on": []},
+                    {"id": "test", "type": "test", "depends_on": ["build"]},
+                ],
+            })
+            published = api_json("POST", "/api/templates/" + template_id + "/publish", {})
+            created = api_json("POST", "/api/instances", {
+                "template_id": template_id,
+                "version_id": published["version"]["version_id"],
+                "name": instance_name,
+                "parameters": {},
+                "git": {"ref": "ui-test"},
+                "workspace": {"workspace_id": "ui-dag-workspace"},
+            })
+            instance_id = created.get("instance", {}).get("instance_id") or created.get("instance_id")
+
+            page.goto(BASE_URL + "/#/instances")
+            page.wait_for_selector('[data-testid="instance-card"]', timeout=10000)
+            page.locator('[data-testid="instance-card"] a').first.click()
+            page.wait_for_selector('[data-testid="instance-dag"]', timeout=10000)
+            assert page.query_selector('[data-testid="instance-dag"] .vue-flow') is not None
+        finally:
+            for path, kwargs in (
+                (f"/api/instances/{instance_id}" if instance_id else None, {}),
+                (f"/api/templates/{template_id}", {}),
+            ):
+                if path:
+                    try:
+                        api_json("DELETE", path)
+                    except RuntimeError:
+                        pass
 
     def test_instance_dag_empty_state(self, page: Page):
         """UI-06: 实例无任务时显示空状态提示。"""

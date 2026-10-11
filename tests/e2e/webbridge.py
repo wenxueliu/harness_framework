@@ -239,20 +239,26 @@ class Page:
 
     @classmethod
     def available(cls) -> bool:
-        try:
-            response = requests.post(
-                WEBBRIDGE_URL,
-                json={
-                    "action": "list_tabs",
-                    "args": {},
-                    "session": "harness-availability-check",
-                },
-                timeout=1,
-            )
-            payload = response.json()
-            return response.status_code == 200 and bool(payload.get("ok"))
-        except (requests.RequestException, ValueError):
-            return False
+        # Chrome can be briefly busy (startup, heavy page); probe a few times
+        # before declaring the bridge unavailable.
+        for _ in range(3):
+            try:
+                response = requests.post(
+                    WEBBRIDGE_URL,
+                    json={
+                        "action": "list_tabs",
+                        "args": {},
+                        "session": "harness-availability-check",
+                    },
+                    timeout=2,
+                )
+                payload = response.json()
+                if response.status_code == 200 and bool(payload.get("ok")):
+                    return True
+            except (requests.RequestException, ValueError):
+                pass
+            time.sleep(0.5)
+        return False
 
     def set_default_timeout(self, timeout: int) -> None:
         self.default_timeout = timeout

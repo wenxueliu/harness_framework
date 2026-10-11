@@ -12,19 +12,30 @@ from .webbridge import Page, expect
 
 
 def _editor_payload(page: Page, key: str, value: object) -> None:
-    """Set Monaco values through its native edit context."""
+    """Set Monaco values via the exposed editor instance, falling back to edit-context typing."""
     text = json.dumps(value, ensure_ascii=False, indent=2)
-    selector = (
+    fallback_selector = (
         '[data-testid="tasks-editor"] .native-edit-context' if key == 'tasks'
         else '[data-testid="schema-editor"] .native-edit-context'
     )
-    page.locator(selector).wait_for("visible", timeout=10000)
-    page.locator(selector).click()
-    inserted = page.evaluate("""(value) => {
+    page.locator(fallback_selector).wait_for("visible", timeout=10000)
+    inserted = page.evaluate("""async ([key, value]) => {
+      const deadline = Date.now() + 10000;
+      while (Date.now() < deadline) {
+        const store = window.__harnessMonacoEditors || {};
+        if (store[key] && typeof store[key].setValue === 'function') {
+          store[key].setValue(value);
+          return true;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      const el = document.querySelector(`[data-testid="${key === 'tasks' ? 'tasks-editor' : 'schema-editor'}"] .native-edit-context`);
+      if (!el) return false;
+      el.click();
       if (document.activeElement?.getAttribute('contenteditable') !== 'true') return false;
       document.execCommand('selectAll');
       return document.execCommand('insertText', false, value);
-    }""", text)
+    }""", [key, text])
     assert inserted is True
 
 
@@ -78,6 +89,12 @@ def test_template_editor_blocks_cycle_with_location(
         {"id": "test", "type": "test", "agent": "codex", "depends_on": ["build"]},
     ])
     page.click('[data-testid="publish-only"]')
+    # New interaction: the toolbar button opens PublishDialog first; the publish
+    # (and its local cycle validation) only runs after confirming in the dialog.
+    # The dialog confirm button shares the "publish-only" testid, so scope to the dialog.
+    expect(page.locator('[data-testid="publish-dialog"]')).to_be_visible(timeout=10000)
+    expect(page.locator('[data-testid="publish-change-summary"]')).to_be_visible(timeout=5000)
+    page.click('[data-testid="publish-dialog"] [data-testid="publish-only"]')
     expect(page.get_by_text('作业流依赖不能形成环')).to_be_visible(timeout=15000)
     body = page.content()
     assert '边 build->test' in body or '边 test->build' in body
@@ -111,10 +128,10 @@ def test_template_editor_shows_revision_conflict(
     })
     page.fill('[data-testid="template-name"]', 'UI conflict changed ' + suffix)
     page.click('[data-testid="save-draft"]')
-    expect(page.locator('[data-testid="revision-conflict"]')).to_be_visible(timeout=15000)
-    expect(page.get_by_text('草稿已被他人修改，请刷新后重试')).to_be_visible(timeout=5000)
-    page.click('[data-testid="conflict-refresh"]')
-    expect(page.locator('[data-testid="revision-conflict"]')).to_be_hidden(timeout=15000)
+    expect(page.locator('[data-testid="conflict-dialog"]')).to_be_visible(timeout=15000)
+    expect(page.get_by_text('草稿已被他人修改')).to_be_visible(timeout=5000)
+    page.click('[data-testid="conflict-discard"]')
+    expect(page.locator('[data-testid="conflict-dialog"]')).to_be_hidden(timeout=15000)
     try:
         api_json('DELETE', f'/api/templates/{template_id}')
     except RuntimeError:

@@ -122,3 +122,6 @@ _bmad-output/
 .codegraph/
 skills-lock.json
 
+
+# Test failure artifacts
+tests/e2e/reports/

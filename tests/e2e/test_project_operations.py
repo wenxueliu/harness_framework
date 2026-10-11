@@ -194,6 +194,11 @@ def test_workflow_builder_publish_shows_created_task_list(page: Page, dashboard_
         expect(page.get_by_text("草稿已保存")).to_be_visible(timeout=10000)
 
         page.locator('[data-testid="publish-only"]').click()
+        # New interaction: the toolbar button opens PublishDialog first; the actual
+        # publish runs after confirming inside the dialog. Scope to the dialog
+        # because the confirm button shares the "publish-only" testid.
+        page.locator('[data-testid="publish-dialog"]').wait_for("visible", timeout=10000)
+        page.locator('[data-testid="publish-dialog"] [data-testid="publish-only"]').click()
         expect(page.get_by_text("已发布")).to_be_visible(timeout=10000)
         template_id = "e2e-builder-" + suffix
     finally:
@@ -210,7 +215,13 @@ def test_selected_project_workflow_is_not_created_under_unassigned(page: Page, d
     """Creating a template from a selected project navigates to the builder."""
     group_name = f"UI Workflow Project {time.time_ns()}"
     group_id = _create_group_via_api(group_name)
+    # ProjectGroupSidebar is `hidden lg:flex`: it only renders at >=1024px.
+    # WebBridge's CDP metrics need an attached tab, so navigate first, widen
+    # the viewport, then interact. Restore desktop metrics at the end because
+    # WebBridge applies CDP metrics at browser level.
     page.goto(dashboard_url + "/#/")
+    page.set_viewport_size({"width": 1440, "height": 900})
+    wait_for_network_idle(page)
     wait_for_network_idle(page)
     try:
         group_item = page.get_by_text(group_name)
@@ -220,4 +231,8 @@ def test_selected_project_workflow_is_not_created_under_unassigned(page: Page, d
         wait_for_network_idle(page)
         expect(page.get_by_text("作业流模板")).to_be_visible(timeout=10000)
     finally:
+        try:
+            page.set_viewport_size({"width": 1280, "height": 900})
+        except Exception:
+            pass
         _cleanup_group(group_name)

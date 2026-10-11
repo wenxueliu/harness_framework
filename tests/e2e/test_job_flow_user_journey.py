@@ -53,7 +53,9 @@ def test_template_instance_task_detail_and_theme(
     page.locator('[data-testid="instance-task"]').first.wait_for("visible", timeout=10000)
     page.locator('[data-testid="instance-task"]').first.click()
     wait_for_network_idle(page)
-    expect(page.get_by_text("Task Detail")).to_be_visible(timeout=10000)
+    # The task page was redesigned as the Task Workbench (eyebrow text), but the
+    # back button keeps its `task-detail-back` testid.
+    expect(page.get_by_text("Task Workbench")).to_be_visible(timeout=10000)
     page.locator('[data-testid="task-detail-back"]').click()
     wait_for_network_idle(page)
     expect(page.get_by_text("Instance Detail")).to_be_visible(timeout=10000)

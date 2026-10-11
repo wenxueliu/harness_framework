@@ -10,21 +10,21 @@
 
 ## 2. TODO
 
-- [ ] TASK-001: 角色模型迁移（四级→三级）
-- [ ] TASK-002: Execution Profile 模型与 CRUD API
-- [ ] TASK-003: Agent Runtime 注册与健康检查
-- [ ] TASK-004: Skill Bundle 模型与上传 API
-- [ ] TASK-005: MCP Server/Grant 模型与管理 API
-- [ ] TASK-006: Artifact 模型与保留清理
-- [ ] TASK-007: Capability Preflight 编排器
-- [ ] TASK-008: Execution Manifest 模型、生成与 Diff
-- [ ] TASK-009: 前端模板详情（版本选择 + Diff）
-- [ ] TASK-010: 前端草稿冲突弹窗 + 发布确认弹窗
-- [ ] TASK-011: 前端 Preflight 面板 + Manifest 展示
-- [ ] TASK-012: 前端实例创建向导
-- [ ] TASK-013: 前端 ChangeSet 影响分析 + 权限矩阵
-- [ ] TASK-014: 前端 Workspace 保留告警 + 产物展示
-- [ ] TASK-015: 端到端集成测试
+- [x] TASK-001: 角色模型迁移（四级→三级）
+- [x] TASK-002: Execution Profile 模型与 CRUD API
+- [x] TASK-003: Agent Runtime 注册与健康检查
+- [x] TASK-004: Skill Bundle 模型与上传 API
+- [x] TASK-005: MCP Server/Grant 模型与管理 API
+- [x] TASK-006: Artifact 模型与保留清理
+- [x] TASK-007: Capability Preflight 编排器
+- [x] TASK-008: Execution Manifest 模型、生成与 Diff
+- [x] TASK-009: 前端模板详情（版本选择 + Diff）
+- [x] TASK-010: 前端草稿冲突弹窗 + 发布确认弹窗
+- [x] TASK-011: 前端 Preflight 面板 + Manifest 展示
+- [x] TASK-012: 前端实例创建向导
+- [x] TASK-013: 前端 ChangeSet 影响分析 + 权限矩阵
+- [x] TASK-014: 前端 Workspace 保留告警 + 产物展示
+- [x] TASK-015: 端到端集成测试
 
 ## 3. 依赖与波次
 
