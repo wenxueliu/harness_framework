@@ -147,6 +147,12 @@ async function load(silent = false) {
       dataSource.value = 'demo'
     }
     workflows.value = data
+    if (selectedId.value && !data.some((workflow) => workflow.id === selectedId.value)) {
+      // 切换项目组后原选中的需求不属于当前组，清空以避免选中悬空
+      selectedId.value = null
+      selectedTask.value = null
+      taskDrawerOpen.value = false
+    }
     if (selectedTask.value && selectedId.value) {
       const refreshedWorkflow = data.find((workflow) => workflow.id === selectedId.value)
       selectedTask.value = refreshedWorkflow?.tasks[selectedTask.value.id] ?? null
@@ -173,6 +179,15 @@ onUnmounted(() => {
 })
 
 watch(() => route.fullPath, () => syncRouteSelection())
+
+// 切换项目组时重新加载需求列表（load 依赖 route.params.groupId 过滤）
+watch(() => route.params.groupId, (next, prev) => {
+  if (next === prev) return
+  selectedId.value = null
+  selectedTask.value = null
+  taskDrawerOpen.value = false
+  load()
+})
 
 // ─── Actions ─────────────────────────────────────────────────────────────────
 function handleControl(signal: ControlSignal, taskName?: string) {
@@ -250,6 +265,12 @@ async function selectProjectGroup(groupId: string) {
   if (workflowId) {
     selectedId.value = workflowId
     await router.push({ name: 'workflow-dashboard', params: { groupId, workflowId } })
+  } else {
+    // 新组还没有需求，跳到组首页（无 workflowId 参数），由 groupId watch 触发重载
+    selectedId.value = null
+    selectedTask.value = null
+    taskDrawerOpen.value = false
+    await router.push({ name: 'group-dashboard', params: { groupId } })
   }
 }
 

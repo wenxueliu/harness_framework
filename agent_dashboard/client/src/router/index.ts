@@ -14,6 +14,11 @@ const router = createRouter({
     { path: '/templates/:templateId/instances/new', name: 'instance-create-wizard', component: () => import('@/pages/InstanceCreateWizard.vue') },
     { path: '/instances/:instanceId/tasks/:taskId', name: 'job-flow-task', component: () => import('@/pages/JobFlowTask.vue') },
     {
+      path: '/groups/:groupId',
+      name: 'group-dashboard',
+      component: Home,
+    },
+    {
       path: '/groups/:groupId/workflows/:workflowId',
       name: 'workflow-dashboard',
       component: Home,
