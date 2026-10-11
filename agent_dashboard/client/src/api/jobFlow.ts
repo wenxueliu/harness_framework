@@ -47,6 +47,7 @@ export interface JobFlowInstance {
     workspace: Record<string, unknown>
   }
   status: { state: string; revision: number }
+  created_at?: string
   execution_profile_id?: string
   tasks: Record<string, { state: string; attempt_count: number; current_attempt?: string; depends_on?: string[] }>
   successor_of?: string
@@ -59,6 +60,29 @@ export interface JobFlowArtifact {
   size_bytes: number
   retention_until: string
   status: 'ACTIVE' | 'EXPIRED' | 'PURGED'
+}
+
+export interface JobFlowChangeSet {
+  changeset_id: string
+  instance_id?: string
+  state?: string
+  status?: string
+  created_by?: string
+  created_at: string
+  applied_at?: string
+  changed_tasks: string[]
+  impacted_tasks?: string[]
+  reuse?: Record<string, boolean>
+  changes?: Record<string, unknown>
+  successor_instance_id?: string
+}
+
+export interface JobFlowEvent {
+  event_id: string
+  type: string
+  actor: string
+  created_at: string
+  data?: Record<string, unknown>
 }
 
 export type JobFlowValidation = {
@@ -235,11 +259,44 @@ export async function runJobFlowPreflight(instanceId: string): Promise<Preflight
   )
 }
 
+/** 逐项重新预检：按契约调用 POST /api/instances/{id}/preflight，附 check_id */
+export async function retryJobFlowPreflightCheck(instanceId: string, checkId: string): Promise<PreflightSummary> {
+  return apiRequest<PreflightSummary>(
+    '/api/instances/' + encodeURIComponent(instanceId) + '/preflight',
+    jsonRequest('POST', { check_id: checkId }),
+  )
+}
+
 export async function getJobFlowInstance(instanceId: string): Promise<JobFlowInstance> {
   const result = await apiRequest<{ instance: JobFlowInstance }>(
     '/api/instances/' + encodeURIComponent(instanceId),
   )
   return result.instance
+}
+
+export async function listJobFlowChangesets(instanceId: string): Promise<JobFlowChangeSet[]> {
+  const result = await apiRequest<{ changesets: JobFlowChangeSet[] }>(
+    '/api/instances/' + encodeURIComponent(instanceId) + '/changesets',
+  )
+  return result.changesets ?? []
+}
+
+export async function applyJobFlowChangeset(
+  instanceId: string,
+  changesetId: string,
+  input: Partial<JobFlowInstance['context']> = {},
+) {
+  return apiRequest<{ instance: JobFlowInstance; changeset: JobFlowChangeSet; successor_of: string }>(
+    `/api/instances/${encodeURIComponent(instanceId)}/changesets/${encodeURIComponent(changesetId)}/apply`,
+    jsonRequest('POST', input, { 'Idempotency-Key': crypto.randomUUID() }),
+  )
+}
+
+export async function listJobFlowInstanceEvents(instanceId: string): Promise<JobFlowEvent[]> {
+  const result = await apiRequest<{ events: JobFlowEvent[] }>(
+    '/api/instances/' + encodeURIComponent(instanceId) + '/events',
+  )
+  return result.events ?? []
 }
 
 export async function getJobFlowAttemptManifest(attemptId: string): Promise<Record<string, unknown>> {

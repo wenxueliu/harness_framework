@@ -62,6 +62,35 @@ export async function preflightProjectWorkspace(workspaceId: string): Promise<Wo
   return payload.preflight
 }
 
+export async function getProjectWorkspace(workspaceId: string): Promise<ProjectWorkspace> {
+  const payload = await apiRequest<{ workspace: ProjectWorkspace }>(
+    `/api/workspaces/${encodeURIComponent(workspaceId)}`,
+  )
+  return payload.workspace
+}
+
+export interface WorkspaceRecord extends ProjectWorkspace {
+  retention_until?: string | null
+}
+
+export async function getWorkspaceDetail(workspaceId: string): Promise<WorkspaceRecord> {
+  const payload = await apiRequest<{ workspace: WorkspaceRecord }>(
+    `/api/workspaces/${encodeURIComponent(workspaceId)}`,
+  )
+  return payload.workspace
+}
+
+export async function updateWorkspace(workspaceId: string, input: {
+  expected_revision: number
+  retention_until?: string
+  status?: string
+}): Promise<WorkspaceRecord> {
+  const payload = await apiRequest<{ workspace: WorkspaceRecord }>(
+    `/api/workspaces/${encodeURIComponent(workspaceId)}`, jsonRequest('PATCH', input),
+  )
+  return payload.workspace
+}
+
 export async function deleteProjectWorkspace(workspaceId: string): Promise<void> {
   await apiRequest(`/api/workspaces/${encodeURIComponent(workspaceId)}`, { method: 'DELETE' })
 }

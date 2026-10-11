@@ -3,11 +3,15 @@ import { computed, defineAsyncComponent, nextTick, onMounted, ref, watch } from 
 import { useRoute, useRouter } from 'vue-router'
 import AppShell from '@/layouts/AppShell.vue'
 import DagGraph from '@/components/DagGraph.vue'
+import ConflictDialog from '@/components/ConflictDialog.vue'
+import PublishDialog from '@/components/PublishDialog.vue'
+import { useCapabilityStore } from '@/stores/capabilities'
 import type { Task } from '@/api/types'
 import {
   createJobFlowInstance,
   createJobFlowTemplate,
   getJobFlowTemplate,
+  getJobFlowTemplateVersion,
   publishJobFlowTemplate,
   updateJobFlowDraft,
   validateJobFlowTemplate,
@@ -24,6 +28,19 @@ const MonacoEditor = defineAsyncComponent(async () => {
   return module.VueMonacoEditor
 })
 
+// 测试钩子：暴露 Monaco editor 实例，供 UI 自动化通过模型 API 写入内容
+type MonacoEditorLike = { setValue: (value: string) => void }
+type HarnessMonacoWindow = Window & { __harnessMonacoEditors?: Record<string, MonacoEditorLike> }
+function trackEditor(key: string) {
+  return (editor: MonacoEditorLike) => {
+    const store = (window as HarnessMonacoWindow).__harnessMonacoEditors ?? {}
+    store[key] = editor
+    ;(window as HarnessMonacoWindow).__harnessMonacoEditors = store
+  }
+}
+const onTasksEditorMounted = trackEditor('tasks')
+const onSchemaEditorMounted = trackEditor('schema')
+
 const route = useRoute()
 const router = useRouter()
 const template = ref<JobFlowTemplate | null>(null)
@@ -36,8 +53,15 @@ const error = ref('')
 const saving = ref(false)
 const parseError = ref('')
 const validationErrors = ref<JobFlowValidation['errors']>([])
-const conflict = ref('')
+const conflictVisible = ref(false)
+const serverRevision = ref(0)
+const publishing = ref(false)
+const publishDialogVisible = ref(false)
+const publishChangeSummary = ref('')
 const parameterValues = ref<Record<string, unknown>>({})
+const capabilityStore = useCapabilityStore()
+const canEdit = computed(() => capabilityStore.permitted('workflow:draft'))
+const canPublish = computed(() => capabilityStore.permitted('workflow:publish'))
 
 type EditorSnapshot = { name: string; description: string; tasksText: string; parameterSchemaText: string }
 const history = ref<EditorSnapshot[]>([])
@@ -214,8 +238,46 @@ async function refreshDraft() {
   description.value = template.value.description || ''
   tasksText.value = JSON.stringify(template.value.draft?.tasks || [], null, 2)
   parameterSchemaText.value = JSON.stringify(template.value.draft?.parameter_schema || { type: 'object', properties: {}, required: [] }, null, 2)
-  conflict.value = ''
+  conflictVisible.value = false
   await nextTick(); resetHistory()
+}
+
+async function showRevisionConflict() {
+  serverRevision.value = template.value?.draft_revision ?? 0
+  conflictVisible.value = true
+  if (template.value) {
+    try {
+      const server = await getJobFlowTemplate(template.value.template_id)
+      serverRevision.value = server.draft_revision
+    } catch { /* 无法读取服务端修订时保留本地修订号 */ }
+  }
+}
+
+function downloadDraftSnapshot() {
+  let payload: Record<string, unknown>
+  try {
+    payload = {
+      name: name.value, description: description.value,
+      tasks: JSON.parse(tasksText.value), parameter_schema: JSON.parse(parameterSchemaText.value),
+    }
+  } catch {
+    payload = {
+      name: name.value, description: description.value,
+      tasks: tasksText.value, parameter_schema: parameterSchemaText.value,
+    }
+  }
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
+  const url = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = `${template.value?.template_id || 'draft'}-revision-${template.value?.draft_revision ?? 0}.json`
+  anchor.click()
+  URL.revokeObjectURL(url)
+}
+
+function discardDraftAndRefresh() {
+  conflictVisible.value = false
+  refreshDraft().catch(() => undefined)
 }
 
 async function saveDraft() {
@@ -238,22 +300,52 @@ async function saveDraft() {
     message.value = '草稿已保存'
   } catch (cause) {
     if (cause instanceof HarnessApiError && cause.status === 409) {
-      conflict.value = '草稿已被他人修改，请刷新后重试'
-      error.value = conflict.value
+      await showRevisionConflict()
     } else error.value = cause instanceof Error ? cause.message : '保存失败'
   } finally { saving.value = false }
 }
 
-async function publish(run: boolean) {
+async function computeChangeSummary(): Promise<string> {
+  try {
+    const tasks = parseTasks()
+    const currentVersionId = template.value?.current_version_id
+    if (!currentVersionId) {
+      return `全新模板：将创建包含 ${tasks.length} 个节点的首个发布版本`
+    }
+    const { manifest } = await getJobFlowTemplateVersion(template.value!.template_id, currentVersionId)
+    const previous = new Map((manifest.tasks ?? []).map((task) => [task.id, task]))
+    const current = new Map(tasks.map((task) => [task.id, task]))
+    const added = tasks.filter((task) => !previous.has(task.id)).length
+    const removed = (manifest.tasks ?? []).filter((task) => !current.has(task.id)).length
+    let changed = 0
+    for (const task of tasks) {
+      const before = previous.get(task.id)
+      if (before && JSON.stringify(before) !== JSON.stringify(task)) changed += 1
+    }
+    return `与上一版本对比：新增 ${added} 个节点，删除 ${removed} 个节点，修改 ${changed} 个节点`
+  } catch {
+    return ''
+  }
+}
+
+async function openPublishDialog() {
+  message.value = ''
+  error.value = ''
+  publishChangeSummary.value = await computeChangeSummary()
+  publishDialogVisible.value = true
+}
+
+async function doPublish(run: boolean) {
   const local = localValidation()
   if (!local.valid) {
     validationErrors.value = local.errors
     error.value = '存在校验错误，已阻止发布'
     return
   }
-  await saveDraft()
-  if (!template.value || error.value) return
+  publishing.value = true
   try {
+    await saveDraft()
+    if (!template.value || error.value) return
     const result = await publishJobFlowTemplate(template.value.template_id, template.value.draft_revision)
     template.value = result.template
     if (run) {
@@ -268,6 +360,15 @@ async function publish(run: boolean) {
     }
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : '发布失败'
+  } finally { publishing.value = false }
+}
+
+function confirmPublishDialog(mode: 'save-draft' | 'publish-only' | 'publish-and-create') {
+  publishDialogVisible.value = false
+  if (mode === 'save-draft') {
+    saveDraft()
+  } else {
+    doPublish(mode === 'publish-and-create')
   }
 }
 
@@ -283,7 +384,7 @@ async function validate() {
     validationErrors.value = result.errors
     message.value = result.valid ? '校验通过' : result.errors.map((item) => String(item.message || '')).join('；')
   } catch (cause) {
-    if (cause instanceof HarnessApiError && cause.status === 409) conflict.value = '草稿已被他人修改，请刷新后重试'
+    if (cause instanceof HarnessApiError && cause.status === 409) await showRevisionConflict()
     else error.value = cause instanceof Error ? cause.message : '校验失败'
   }
 }
@@ -305,9 +406,11 @@ const requiredParameters = computed(() => {
 })
 
 onMounted(async () => {
+  capabilityStore.load(groupId.value).catch(() => undefined)
   if (!templateId.value) return
   try {
     template.value = await getJobFlowTemplate(templateId.value)
+    capabilityStore.load(template.value.group_id).catch(() => undefined)
     name.value = template.value.name
     description.value = template.value.description || ''
     tasksText.value = JSON.stringify(template.value.draft?.tasks || [], null, 2)
@@ -315,6 +418,29 @@ onMounted(async () => {
     await nextTick(); resetHistory()
   } catch (cause) { error.value = cause instanceof Error ? cause.message : '模板加载失败' }
 })
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+type MonacoNavigator = MonacoEditorLike & {
+  getModel?: () => { getLinesContent?: () => string[] } | null
+  revealLineInCenter?: (lineNumber: number) => void
+  setPosition?: (position: { lineNumber: number; column: number }) => void
+}
+
+// 节点图点击节点时，把 JSON 编辑器滚动到该节点的 id 定义行
+function scrollToTaskLine(task: Task) {
+  const editor = (window as HarnessMonacoWindow).__harnessMonacoEditors?.tasks as MonacoNavigator | undefined
+  if (!editor?.revealLineInCenter) return
+  const lines = editor.getModel?.()?.getLinesContent?.() ?? tasksText.value.split('\n')
+  const pattern = new RegExp(`"id"\\s*:\\s*"${escapeRegExp(task.id)}"`)
+  const index = lines.findIndex((line) => pattern.test(line))
+  if (index < 0) return
+  const lineNumber = index + 1
+  editor.revealLineInCenter(lineNumber)
+  editor.setPosition?.({ lineNumber, column: 1 })
+}
 </script>
 
 <template>
@@ -323,9 +449,9 @@ onMounted(async () => {
       <button data-testid="undo-editor" class="rounded border border-border px-3 py-2 text-xs" :disabled="historyIndex <= 0" @click="undo">撤销</button>
       <button data-testid="redo-editor" class="rounded border border-border px-3 py-2 text-xs" :disabled="historyIndex >= history.length - 1" @click="redo">重做</button>
       <button v-if="template" data-testid="restore-draft" class="rounded border border-border px-3 py-2 text-xs" @click="refreshDraft">恢复草稿</button>
-      <button data-testid="save-draft" class="rounded border border-border px-3 py-2 text-xs" :disabled="saving" @click="saveDraft">保存草稿</button>
-      <button data-testid="publish-only" class="rounded border border-blue-400/50 px-3 py-2 text-xs text-blue-300" :disabled="saving" @click="publish(false)">仅发布</button>
-      <button data-testid="publish-and-run" class="rounded bg-blue-500 px-3 py-2 text-xs text-white" :disabled="saving" @click="publish(true)">发布并执行</button>
+      <button v-if="canEdit" data-testid="save-draft" class="rounded border border-border px-3 py-2 text-xs" :disabled="saving" @click="saveDraft">保存草稿</button>
+      <button v-if="canPublish" data-testid="publish-only" class="rounded border border-blue-400/50 px-3 py-2 text-xs text-blue-300" :disabled="saving || publishing" @click="openPublishDialog">仅发布</button>
+      <button v-if="canPublish" data-testid="publish-and-run" class="rounded bg-blue-500 px-3 py-2 text-xs text-white" :disabled="saving || publishing" @click="openPublishDialog">发布并执行</button>
     </template>
     <div class="mx-auto grid max-w-6xl gap-4 p-4 sm:p-6 lg:grid-cols-[minmax(0,1fr)_minmax(20rem,0.8fr)]">
       <section class="space-y-4">
@@ -336,14 +462,14 @@ onMounted(async () => {
         <div class="rounded-lg border border-border bg-card p-4">
           <div class="mb-2 flex items-center justify-between"><h2 class="text-sm font-semibold">节点定义 JSON</h2><button class="text-xs text-blue-300" @click="validate">校验 DAG</button></div>
           <div data-testid="tasks-editor" class="min-h-80 overflow-hidden rounded border border-input">
-            <MonacoEditor v-model:value="tasksText" language="json" theme="vs-dark" :options="{ automaticLayout: true, minimap: { enabled: false }, fontSize: 12 }" />
+            <MonacoEditor v-model:value="tasksText" language="json" theme="vs-dark" :options="{ automaticLayout: true, minimap: { enabled: false }, fontSize: 12 }" @mount="onTasksEditorMounted" />
           </div>
           <p class="mt-2 text-[11px] text-muted-foreground">支持节点数组或“节点 ID → 配置”对象；节点可使用 id、depends_on、type、service_name 及 ACP、资源预算等扩展字段。</p>
         </div>
         <div class="rounded-lg border border-border bg-card p-4">
           <div class="mb-2 flex items-center justify-between"><h2 class="text-sm font-semibold">参数 Schema</h2><button class="text-xs text-blue-300" data-testid="schema-editor-toggle" @click="parameterSchemaText = JSON.stringify(parseSchema(), null, 2)">格式化</button></div>
           <div data-testid="schema-editor" class="min-h-48 overflow-hidden rounded border border-input">
-            <MonacoEditor v-model:value="parameterSchemaText" language="json" theme="vs-dark" :options="{ automaticLayout: true, minimap: { enabled: false }, fontSize: 12 }" />
+            <MonacoEditor v-model:value="parameterSchemaText" language="json" theme="vs-dark" :options="{ automaticLayout: true, minimap: { enabled: false }, fontSize: 12 }" @mount="onSchemaEditorMounted" />
           </div>
           <div v-if="schemaProperties.length" class="mt-3 space-y-3">
             <div v-for="property in schemaProperties" :key="property.key" class="text-xs">
@@ -368,7 +494,7 @@ onMounted(async () => {
             <span v-else class="text-[11px] text-muted-foreground">{{ Object.keys(dagTasks).length }} 个节点</span>
           </div>
           <div class="min-h-[280px]" data-testid="dag-preview">
-            <DagGraph v-if="Object.keys(dagTasks).length" :tasks="dagTasks" />
+            <DagGraph v-if="Object.keys(dagTasks).length" :tasks="dagTasks" :on-task-click="scrollToTaskLine" />
             <p v-else class="p-6 text-center text-xs text-muted-foreground">输入有效 JSON 后显示 DAG</p>
           </div>
         </div>
@@ -394,14 +520,21 @@ onMounted(async () => {
         </div>
       </aside>
     </div>
-    <div v-if="conflict" data-testid="revision-conflict" class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-      <div class="w-full max-w-md rounded-lg border border-border bg-card p-5">
-        <h2 class="text-base font-semibold">保存冲突</h2>
-        <p class="mt-2 text-sm text-muted-foreground">{{ conflict }}</p>
-        <div class="mt-4 flex justify-end gap-2">
-          <button data-testid="conflict-refresh" class="rounded bg-blue-500 px-3 py-2 text-xs text-white" @click="refreshDraft">刷新后重试</button>
-        </div>
-      </div>
-    </div>
+    <ConflictDialog
+      :visible="conflictVisible"
+      :current-revision="template?.draft_revision ?? 0"
+      :server-revision="serverRevision"
+      @discard="discardDraftAndRefresh"
+      @download="downloadDraftSnapshot"
+      @cancel="conflictVisible = false"
+    />
+    <PublishDialog
+      :visible="publishDialogVisible"
+      :change-summary="publishChangeSummary"
+      @save-draft="confirmPublishDialog('save-draft')"
+      @publish-only="confirmPublishDialog('publish-only')"
+      @publish-and-create="confirmPublishDialog('publish-and-create')"
+      @cancel="publishDialogVisible = false"
+    />
   </AppShell>
 </template>

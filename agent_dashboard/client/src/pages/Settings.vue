@@ -140,6 +140,38 @@ async function archive() {
   } catch (cause) { error.value = cause instanceof Error ? cause.message : '归档失败' }
 }
 
+interface PermissionMatrixRow {
+  operation: string
+  admin: boolean
+  editor: boolean
+  viewer: boolean
+}
+
+const PERMISSION_MATRIX: PermissionMatrixRow[] = [
+  { operation: '管理项目组成员', admin: true, editor: false, viewer: false },
+  { operation: '删除项目组', admin: true, editor: false, viewer: false },
+  { operation: '配置 Workspace 保留策略', admin: true, editor: false, viewer: false },
+  { operation: '配置 Execution Profile', admin: true, editor: false, viewer: false },
+  { operation: '创建/编辑模板', admin: false, editor: true, viewer: false },
+  { operation: '发布版本', admin: false, editor: true, viewer: false },
+  { operation: '创建/启动/暂停/中止实例', admin: false, editor: true, viewer: false },
+  { operation: '发起变更重执行', admin: false, editor: true, viewer: false },
+  { operation: '查看模板/版本/实例/日志/产物', admin: true, editor: true, viewer: true },
+]
+
+const currentRole = computed<'ADMIN' | 'EDITOR' | 'VIEWER'>(() => {
+  const permissions = capabilities.snapshot?.permissions ?? []
+  if (permissions.includes('member:manage') || permissions.includes('group:manage')) return 'ADMIN'
+  if (permissions.includes('run:create') || permissions.includes('workflow:draft')) return 'EDITOR'
+  return 'VIEWER'
+})
+
+function roleCan(row: PermissionMatrixRow, role: 'ADMIN' | 'EDITOR' | 'VIEWER'): boolean {
+  if (role === 'ADMIN') return row.admin
+  if (role === 'EDITOR') return row.editor
+  return row.viewer
+}
+
 onMounted(() => load().catch((cause) => { error.value = cause instanceof Error ? cause.message : '配置加载失败' }))
 </script>
 
@@ -158,6 +190,38 @@ onMounted(() => load().catch((cause) => { error.value = cause instanceof Error ?
         <article class="rounded-lg border border-border bg-card p-4"><h2 class="mb-3 font-display text-sm font-semibold">成员与角色</h2><div v-for="member in members" :key="member.subject_id" class="flex items-center gap-2 border-b border-border/60 py-2 text-xs"><span class="min-w-0 flex-1 truncate font-mono">{{ member.subject_id }}</span><span class="text-blue-300">{{ member.role }}</span><button v-if="capabilities.permitted('member:manage')" class="text-red-300" @click="removeMember(member.subject_id)">移除</button></div><form v-if="capabilities.permitted('member:manage') && selectedGroup?.status === 'ACTIVE'" class="mt-3 flex flex-wrap gap-2" @submit.prevent="addMember"><input v-model="memberSubject" required class="min-w-48 flex-1 rounded border border-border bg-background p-2 text-xs" placeholder="subject ID" /><select v-model="memberRole" class="rounded border border-border bg-background p-2 text-xs"><option>ADMIN</option><option>EDITOR</option><option>VIEWER</option></select><button class="rounded bg-blue-500 px-3 text-xs text-white"><UserPlus :size="12" class="mr-1 inline" />添加</button></form></article>
         <article class="rounded-lg border border-border bg-card p-4"><h2 class="mb-3 font-display text-sm font-semibold">Project Workspaces</h2><div v-for="workspace in workspaces" :key="workspace.workspace_id" class="mb-2 rounded border border-border p-3 text-xs"><div class="flex gap-2"><strong>{{ workspace.name }}</strong><span class="font-mono text-muted-foreground">{{ workspace.root_ref }}</span><button class="ml-auto text-blue-300" @click="preflight(workspace.workspace_id)">Preflight</button><button v-if="capabilities.permitted('workspace:register') && selectedGroup?.status === 'ACTIVE'" class="flex items-center gap-1 text-red-300 hover:text-red-200" title="删除 Workspace" @click="removeWorkspace(workspace.workspace_id)"><Trash2 :size="12" /></button></div><p v-if="preflights[workspace.workspace_id]" class="mt-2 font-mono text-muted-foreground">read={{ preflights[workspace.workspace_id].readable }} · write={{ preflights[workspace.workspace_id].writable }} · git={{ preflights[workspace.workspace_id].git }} · dirty={{ preflights[workspace.workspace_id].dirty ?? 'n/a' }}</p></div><form v-if="capabilities.permitted('workspace:register') && selectedGroup?.status === 'ACTIVE'" class="mt-3 grid gap-2 border-t border-border pt-3 sm:grid-cols-2" @submit.prevent="registerWorkspace"><input v-model="workspaceName" required class="rounded border border-border bg-background p-2 text-xs" placeholder="Workspace 名称" /><select v-model="workspaceSource" class="rounded border border-border bg-background p-2 text-xs"><option value="LOCAL_PATH">本地目录</option><option value="GIT_CLONE">Git Clone</option></select><select v-model="workspaceAccess" class="rounded border border-border bg-background p-2 text-xs"><option value="READ_WRITE">读写</option><option value="READ_ONLY">只读</option></select><template v-if="workspaceSource === 'LOCAL_PATH'"><select v-model="workspacePathType" class="rounded border border-border bg-background p-2 text-xs"><option value="RELATIVE_PATH">相对路径（使用服务端根目录）</option><option value="ABSOLUTE_PATH">绝对路径（服务端目录）</option></select><template v-if="workspacePathType === 'RELATIVE_PATH'"><input v-model="rootAlias" required class="rounded border border-border bg-background p-2 font-mono text-xs" placeholder="服务端 root alias" /><input v-model="relativePath" required class="rounded border border-border bg-background p-2 font-mono text-xs" placeholder="相对目录，例如 harness" /></template><input v-else v-model="absolutePath" required class="rounded border border-border bg-background p-2 font-mono text-xs sm:col-span-2" placeholder="服务端绝对目录，例如 /srv/projects/my-app" /></template><template v-else><input v-model="gitUrl" required class="rounded border border-border bg-background p-2 font-mono text-xs sm:col-span-2" placeholder="https://git.example.com/org/repo.git" /><input v-model="defaultRef" required class="rounded border border-border bg-background p-2 font-mono text-xs" placeholder="默认 ref" /></template><p class="text-[11px] text-muted-foreground sm:col-span-2">本地目录必须存在，并且位于 Harness 服务端配置的允许根目录内。</p><button class="rounded bg-blue-500 px-3 py-2 text-xs text-white disabled:cursor-not-allowed disabled:opacity-50 sm:col-span-2" :disabled="!workspaceFormValid">登记 Workspace</button></form></article>
         <article class="rounded-lg border border-border bg-card p-4"><h2 class="mb-3 font-display text-sm font-semibold">Execution Profiles</h2><div v-for="profile in executionProfiles" :key="profile.profile_id" class="mb-2 flex items-center gap-2 rounded border border-border p-3 text-xs"><strong>{{ profile.name }}</strong><span class="font-mono text-muted-foreground">v{{ profile.version }} · {{ profile.agent_runtime_id }}</span><span class="ml-auto rounded border border-border px-2 py-0.5 text-[10px]">{{ profile.status }}</span></div><p v-if="!executionProfiles.length" class="text-xs text-muted-foreground">暂无 Execution Profile，先创建一个。</p><form v-if="capabilities.permitted('profile:manage') && selectedGroup?.status === 'ACTIVE'" class="mt-3 grid gap-2 border-t border-border pt-3 sm:grid-cols-2" @submit.prevent="createProfile"><input v-model="profileName" required class="rounded border border-border bg-background p-2 text-xs" placeholder="Profile 名称" /><select v-model="profileRuntimeId" required class="rounded border border-border bg-background p-2 text-xs"><option value="" disabled>选择 Agent Runtime</option><option v-for="rt in agentRuntimes" :key="rt.runtime_id" :value="rt.runtime_id">{{ rt.name }} ({{ rt.status }})</option></select><button class="rounded bg-blue-500 px-3 py-2 text-xs text-white sm:col-span-2" :disabled="!profileName.trim() || !profileRuntimeId">创建 Execution Profile</button></form></article>
+        <article data-testid="permission-matrix" class="rounded-lg border border-border bg-card p-4">
+          <div class="mb-3 flex items-center gap-2">
+            <h2 class="font-display text-sm font-semibold">权限矩阵</h2>
+            <span class="rounded-full border border-border px-2 py-0.5 text-[10px] text-muted-foreground">只读 · 角色固定，成员分配通过项目管理完成</span>
+            <span class="ml-auto text-xs text-muted-foreground">当前角色：<strong class="text-blue-300">{{ currentRole }}</strong></span>
+          </div>
+          <div class="overflow-x-auto">
+            <table class="w-full min-w-[28rem] text-left text-xs">
+              <thead class="border-b border-border text-muted-foreground">
+                <tr>
+                  <th class="px-3 py-2 font-medium">操作</th>
+                  <th class="px-3 py-2 font-medium" :class="currentRole === 'ADMIN' ? 'text-blue-300' : ''">Admin<sup v-if="currentRole === 'ADMIN'"> ← 当前</sup></th>
+                  <th class="px-3 py-2 font-medium" :class="currentRole === 'EDITOR' ? 'text-blue-300' : ''">Editor<sup v-if="currentRole === 'EDITOR'"> ← 当前</sup></th>
+                  <th class="px-3 py-2 font-medium" :class="currentRole === 'VIEWER' ? 'text-blue-300' : ''">Viewer<sup v-if="currentRole === 'VIEWER'"> ← 当前</sup></th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="row in PERMISSION_MATRIX" :key="row.operation"
+                  class="border-b border-border/60"
+                  :class="roleCan(row, currentRole) ? 'bg-blue-400/5' : ''">
+                  <td class="px-3 py-2">
+                    {{ row.operation }}
+                    <span v-if="roleCan(row, currentRole)" class="ml-1.5 rounded bg-blue-400/10 px-1.5 py-0.5 text-[10px] text-blue-300">你有权限</span>
+                  </td>
+                  <td class="px-3 py-2" :class="row.admin ? 'text-emerald-300' : 'text-muted-foreground'">{{ row.admin ? '✅' : '—' }}</td>
+                  <td class="px-3 py-2" :class="row.editor ? 'text-emerald-300' : 'text-muted-foreground'">{{ row.editor ? '✅' : '—' }}</td>
+                  <td class="px-3 py-2" :class="row.viewer ? 'text-emerald-300' : 'text-muted-foreground'">{{ row.viewer ? '✅' : '—' }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </article>
       </div>
     </section>
   </AppShell>

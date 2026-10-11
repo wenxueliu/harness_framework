@@ -3,13 +3,21 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import AppShell from '@/layouts/AppShell.vue'
 import DagGraph from '@/components/DagGraph.vue'
+import PublishDialog from '@/components/PublishDialog.vue'
+import { useCapabilityStore } from '@/stores/capabilities'
 import type { Task } from '@/api/types'
 import {
   diffJobFlowVersions, getJobFlowTemplate, getJobFlowTemplateVersion,
   listJobFlowTemplateVersions, listJobFlowInstances,
-  archiveJobFlowTemplate, deleteJobFlowTemplate,
-  type JobFlowTemplate, type JobFlowVersion, type JobFlowTask, type JobFlowInstance, type VersionDiff,
+  archiveJobFlowTemplate, deleteJobFlowTemplate, publishJobFlowTemplate,
+  validateJobFlowTemplate,
+  type JobFlowTemplate, type JobFlowVersion, type JobFlowTask, type JobFlowInstance, type JobFlowValidation, type VersionDiff,
 } from '@/api/jobFlow'
+
+const capabilityStore = useCapabilityStore()
+const canEdit = computed(() => capabilityStore.permitted('workflow:draft'))
+const canPublish = computed(() => capabilityStore.permitted('workflow:publish'))
+const canRun = computed(() => capabilityStore.permitted('instance:create'))
 
 const route = useRoute()
 const router = useRouter()
@@ -21,9 +29,15 @@ const instances = ref<JobFlowInstance[]>([])
 const selectedVersionId = ref<string>('')
 const selectedManifest = ref<{ tasks: JobFlowTask[] } | null>(null)
 const versionDiff = ref<VersionDiff | null>(null)
+const diffBaseVersionId = ref('')
 const loading = ref(true)
 const error = ref('')
 const actionError = ref('')
+const actionMessage = ref('')
+const validation = ref<JobFlowValidation | null>(null)
+const validationLoading = ref(false)
+const publishing = ref(false)
+const publishDialogVisible = ref(false)
 
 const selectedVersion = computed(() =>
   versions.value.find((v) => v.version_id === selectedVersionId.value) ?? null
@@ -59,17 +73,50 @@ async function load() {
   loading.value = true
   try {
     template.value = await getJobFlowTemplate(templateId.value)
+    capabilityStore.load(template.value.group_id).catch(() => undefined)
     versions.value = await listJobFlowTemplateVersions(templateId.value)
     instances.value = await listJobFlowInstances(templateId.value)
     if (versions.value.length) {
       selectedVersionId.value = versions.value[0].version_id
     }
+    runValidation()
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : '模板加载失败'
   } finally {
     loading.value = false
   }
 }
+
+async function runValidation() {
+  validationLoading.value = true
+  try {
+    validation.value = await validateJobFlowTemplate(templateId.value)
+  } catch {
+    validation.value = null
+  } finally {
+    validationLoading.value = false
+  }
+}
+
+const draftTasks = computed<JobFlowTask[]>(() =>
+  template.value?.draft?.tasks ?? []
+)
+const draftEdgeCount = computed(() =>
+  draftTasks.value.reduce(
+    (total, task) => total + (task.depends_on ?? []).filter((dependency) =>
+      draftTasks.value.some((item) => item.id === dependency)).length,
+    0,
+  )
+)
+const draftRootCount = computed(() =>
+  draftTasks.value.filter((task) => !(task.depends_on ?? []).some((dependency) =>
+    draftTasks.value.some((item) => item.id === dependency))).length
+)
+const draftLeafCount = computed(() =>
+  draftTasks.value.filter((task) =>
+    !draftTasks.value.some((item) => (item.depends_on ?? []).includes(task.id))).length
+)
+const validationErrorCount = computed(() => validation.value?.errors.length ?? 0)
 
 async function loadVersion() {
   if (!selectedVersionId.value) {
@@ -80,17 +127,30 @@ async function loadVersion() {
   const result = await getJobFlowTemplateVersion(templateId.value, selectedVersionId.value)
   selectedManifest.value = result.manifest
   const index = versions.value.findIndex(item => item.version_id === selectedVersionId.value)
-  const previous = index > 0 ? versions.value[index - 1] : null
-  versionDiff.value = previous
-    ? await diffJobFlowVersions(templateId.value, previous.version_id, selectedVersionId.value)
+  const baseId = diffBaseVersionId.value
+    && diffBaseVersionId.value !== selectedVersionId.value
+    ? diffBaseVersionId.value
+    : (index > 0 ? versions.value[index - 1].version_id : '')
+  versionDiff.value = baseId
+    ? await diffJobFlowVersions(templateId.value, baseId, selectedVersionId.value)
     : null
 }
+
+const diffBaseOptions = computed(() =>
+  versions.value.filter((v) => v.version_id !== selectedVersionId.value)
+)
 
 function versionLabel(v: JobFlowVersion): string {
   return `V${v.version} · ${v.status}`
 }
 
-watch(selectedVersionId, () => { loadVersion() })
+watch(selectedVersionId, () => {
+  if (diffBaseVersionId.value && diffBaseVersionId.value === selectedVersionId.value) {
+    diffBaseVersionId.value = ''
+  }
+  loadVersion()
+})
+watch(diffBaseVersionId, () => { loadVersion() })
 
 async function handleArchive() {
   if (!template.value) return
@@ -115,6 +175,40 @@ async function handleDelete() {
     actionError.value = cause instanceof Error ? cause.message : '删除失败'
   }
 }
+
+const publishChangeSummary = computed(() => {
+  const nodeCount = draftTasks.value.length
+  if (!template.value?.current_version_id) {
+    return `将基于当前草稿（revision #${template.value?.draft_revision ?? 0}，${nodeCount} 个节点）创建首个发布版本。`
+  }
+  return `将基于当前草稿（revision #${template.value?.draft_revision ?? 0}，${nodeCount} 个节点）生成新版本，替代当前最新发布版本 ${template.value.current_version_id}。`
+})
+
+function openPublishDialog() {
+  actionError.value = ''
+  actionMessage.value = ''
+  publishDialogVisible.value = true
+}
+
+async function confirmPublish(createInstance: boolean) {
+  if (!template.value) return
+  publishing.value = true
+  actionError.value = ''
+  try {
+    const result = await publishJobFlowTemplate(templateId.value, template.value.draft_revision)
+    publishDialogVisible.value = false
+    actionMessage.value = `已发布 ${result.version.version_id}`
+    await load()
+    if (createInstance) {
+      await router.push(`/templates/${encodeURIComponent(templateId.value)}/instances/new`)
+    }
+  } catch (cause) {
+    publishDialogVisible.value = false
+    actionError.value = cause instanceof Error ? cause.message : '发布失败'
+  } finally {
+    publishing.value = false
+  }
+}
 </script>
 
 <template>
@@ -124,6 +218,7 @@ async function handleDelete() {
       <div v-else-if="error" role="alert" class="rounded border border-red-400/30 bg-red-400/10 p-4 text-sm text-red-200">{{ error }}</div>
       <template v-else-if="template">
         <div v-if="actionError" role="alert" class="rounded bg-red-400/10 p-3 text-sm text-red-300">{{ actionError }}</div>
+        <div v-if="actionMessage" data-testid="template-action-message" class="rounded bg-emerald-400/10 p-3 text-sm text-emerald-300">{{ actionMessage }}</div>
 
         <div class="flex items-start justify-between gap-3">
           <div>
@@ -135,18 +230,35 @@ async function handleDelete() {
             </div>
           </div>
           <div class="flex flex-wrap gap-2">
-            <RouterLink v-if="!isArchived" :to="`/templates/${templateId}/edit`" data-testid="edit-template"
+            <RouterLink v-if="canEdit && !isArchived" :to="`/templates/${templateId}/edit`" data-testid="edit-template"
               class="rounded bg-blue-500 px-3 py-1.5 text-xs text-white">编辑草稿</RouterLink>
-            <button v-if="!isArchived" data-testid="archive-template"
+            <button v-if="canPublish && !isArchived" data-testid="publish-template"
+              class="rounded border border-blue-400/50 px-3 py-1.5 text-xs text-blue-300 hover:bg-blue-500/10"
+              :disabled="publishing" @click="openPublishDialog">发布</button>
+            <button v-if="canEdit && !isArchived" data-testid="archive-template"
               class="rounded border border-amber-400/50 px-3 py-1.5 text-xs text-amber-300 hover:bg-amber-500/10"
               @click="handleArchive">归档</button>
-            <button data-testid="delete-template"
+            <button v-if="canEdit" data-testid="delete-template"
               class="rounded border border-red-400/50 px-3 py-1.5 text-xs text-red-300 hover:bg-red-500/10"
               @click="handleDelete">删除</button>
           </div>
         </div>
 
-        <div v-if="versions.length" class="flex gap-1 border-b border-border" data-testid="version-tabs">
+        <div class="flex flex-wrap items-center gap-3 rounded-lg border border-border bg-card px-4 py-2 text-xs text-muted-foreground" data-testid="validation-summary">
+          <span class="font-medium text-foreground">校验摘要</span>
+          <span data-testid="validation-node-count">节点数 {{ draftTasks.length }}</span>
+          <span data-testid="validation-edge-count">边数 {{ draftEdgeCount }}</span>
+          <span>根节点 {{ draftRootCount }}</span>
+          <span>叶节点 {{ draftLeafCount }}</span>
+          <span
+            data-testid="validation-result"
+            class="rounded px-2 py-0.5"
+            :class="validationErrorCount ? 'bg-red-400/10 text-red-300' : 'bg-emerald-400/10 text-emerald-300'"
+          >{{ validationLoading ? '校验中…' : validationErrorCount ? `${validationErrorCount} ERRORS` : validation ? 'PASS' : '—' }}</span>
+          <button type="button" data-testid="revalidate-template" class="ml-auto text-blue-300 hover:underline" @click="runValidation">重新校验</button>
+        </div>
+
+        <div v-if="versions.length" class="flex flex-wrap items-center gap-3 border-b border-border" data-testid="version-tabs">
           <button v-for="v in versions" :key="v.version_id"
             :data-testid="`version-tab-${v.version_id}`"
             class="px-3 py-1.5 text-xs transition"
@@ -156,6 +268,17 @@ async function handleDelete() {
             @click="selectedVersionId = v.version_id">
             {{ versionLabel(v) }}
           </button>
+          <label v-if="versions.length > 1" class="ml-auto flex items-center gap-2 pb-1 text-xs text-muted-foreground">
+            对比版本
+            <select
+              v-model="diffBaseVersionId"
+              data-testid="version-diff-base"
+              class="rounded border border-input bg-background px-2 py-1 text-xs"
+            >
+              <option value="">与上一版本对比</option>
+              <option v-for="v in diffBaseOptions" :key="v.version_id" :value="v.version_id">{{ versionLabel(v) }}</option>
+            </select>
+          </label>
         </div>
 
         <div v-if="versionDiff" class="rounded-lg border border-border bg-card p-4" data-testid="version-diff">
@@ -185,7 +308,7 @@ async function handleDelete() {
                 活跃 {{ activeInstances.length }} · 历史 {{ instances.length - activeInstances.length }}
               </p>
             </div>
-            <RouterLink v-if="hasPublishedVersion && !isArchived"
+            <RouterLink v-if="canRun && hasPublishedVersion && !isArchived"
               :to="`/templates/${templateId}/instances/new`"
               data-testid="create-instance"
               class="rounded bg-blue-500 px-3 py-1.5 text-xs text-white">创建实例</RouterLink>
@@ -204,5 +327,13 @@ async function handleDelete() {
         </div>
       </template>
     </div>
+    <PublishDialog
+      :visible="publishDialogVisible"
+      :change-summary="publishChangeSummary"
+      @save-draft="publishDialogVisible = false"
+      @publish-only="confirmPublish(false)"
+      @publish-and-create="confirmPublish(true)"
+      @cancel="publishDialogVisible = false"
+    />
   </AppShell>
 </template>

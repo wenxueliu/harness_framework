@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import AppShell from '@/layouts/AppShell.vue'
 import DagGraph from '@/components/DagGraph.vue'
@@ -8,7 +8,10 @@ import ManifestViewer from '@/components/ManifestViewer.vue'
 import ChangeSetPanel from '@/components/ChangeSetPanel.vue'
 import WorkspaceCard from '@/components/WorkspaceCard.vue'
 import ArtifactList from '@/components/ArtifactList.vue'
+import { HarnessApiError } from '@/api/client'
 import type { Task } from '@/api/types'
+import { useCapabilityStore } from '@/stores/capabilities'
+import { getWorkspaceDetail, updateWorkspace, type WorkspaceRecord } from '@/api/dashboard'
 import {
   controlJobFlowInstance,
   deleteJobFlowInstance,
@@ -18,12 +21,18 @@ import {
   listJobFlowInstanceArtifacts,
   rerunJobFlowInstance,
   runJobFlowPreflight,
+  retryJobFlowPreflightCheck,
   startJobFlowInstance,
   getJobFlowTemplate,
   listJobFlowExecutionProfiles,
   updateInstanceProfile,
+  listJobFlowChangesets,
+  applyJobFlowChangeset,
+  listJobFlowInstanceEvents,
   type JobFlowInstance,
   type JobFlowArtifact,
+  type JobFlowChangeSet,
+  type JobFlowEvent,
 } from '@/api/jobFlow'
 
 const route = useRoute()
@@ -62,7 +71,29 @@ const dagTasks = ref<Record<string, Task>>({})
 const preflight = ref<PreflightResult | null>(null)
 const manifest = ref<Record<string, unknown> | null>(null)
 const artifactList = ref<JobFlowArtifact[]>([])
+const changesets = ref<JobFlowChangeSet[]>([])
+const changesetsLoading = ref(false)
+const changesetError = ref('')
+const applyingChangesetId = ref('')
+const events = ref<JobFlowEvent[]>([])
+const eventsLoading = ref(false)
+const eventFilter = ref('')
 const activeTab = ref('preflight')
+const deleteDialogOpen = ref(false)
+const deleting = ref(false)
+const capabilities = useCapabilityStore()
+const retryingCheckId = ref('')
+const workspaceDetail = ref<WorkspaceRecord | null>(null)
+const extendingRetention = ref(false)
+
+const TAB_ITEMS = [
+  { key: 'preflight', label: '预检' },
+  { key: 'manifest', label: 'Manifest' },
+  { key: 'artifacts', label: '产物' },
+  { key: 'changeset', label: 'ChangeSet' },
+  { key: 'events', label: '审计时间线' },
+]
+const TAB_KEYS = TAB_ITEMS.map((item) => item.key)
 
 function buildDagTasks() {
   const record: Record<string, Task> = {}
@@ -96,6 +127,97 @@ async function loadCapability() {
   try {
     artifactList.value = await listJobFlowInstanceArtifacts(instanceId)
   } catch { /* offline */ }
+  void loadWorkspaceDetail()
+}
+
+async function loadWorkspaceDetail() {
+  const workspaceId = String(instance.value?.context?.workspace?.workspace_id || '')
+  if (!workspaceId || workspaceId === '未指定') { workspaceDetail.value = null; return }
+  try { workspaceDetail.value = await getWorkspaceDetail(workspaceId) }
+  catch { workspaceDetail.value = null }
+}
+
+async function retryCheck(checkId: string) {
+  retryingCheckId.value = checkId
+  try {
+    preflight.value = await retryJobFlowPreflightCheck(instanceId, checkId)
+  } catch (cause) {
+    error.value = cause instanceof Error ? cause.message : '预检重试失败'
+  } finally { retryingCheckId.value = '' }
+}
+
+const canExtendRetention = computed(() =>
+  capabilities.permitted('workspace:policy') && Boolean(workspaceDetail.value?.revision))
+const extendDisabledReason = computed(() => {
+  if (!capabilities.permitted('workspace:policy')) return '仅 Admin 可延长保留'
+  if (!workspaceDetail.value) return 'Workspace 保留数据不可得'
+  if (!workspaceDetail.value.revision) return '缺少 Workspace 版本信息'
+  return ''
+})
+
+async function extendRetention() {
+  const detail = workspaceDetail.value
+  if (!detail?.revision) return
+  extendingRetention.value = true
+  try {
+    const current = detail.retention_until ? new Date(detail.retention_until).getTime() : 0
+    const base = Math.max(current, Date.now())
+    const next = new Date(base + 7 * 24 * 3_600_000)
+    workspaceDetail.value = await updateWorkspace(detail.workspace_id, {
+      expected_revision: detail.revision,
+      retention_until: next.toISOString(),
+    })
+  } catch (cause) {
+    error.value = cause instanceof Error ? cause.message : '延长保留失败'
+  } finally { extendingRetention.value = false }
+}
+
+async function loadChangesets() {
+  changesetsLoading.value = true
+  changesetError.value = ''
+  try {
+    changesets.value = await listJobFlowChangesets(instanceId)
+  } catch (cause) {
+    changesetError.value = cause instanceof HarnessApiError && cause.status === 404
+      ? '后端尚未提供 ChangeSet 列表接口'
+      : cause instanceof Error ? cause.message : 'ChangeSet 加载失败'
+  } finally {
+    changesetsLoading.value = false
+  }
+}
+
+async function loadEvents() {
+  eventsLoading.value = true
+  try {
+    events.value = await listJobFlowInstanceEvents(instanceId)
+  } catch (cause) {
+    error.value = cause instanceof Error ? cause.message : '审计记录加载失败'
+  } finally {
+    eventsLoading.value = false
+  }
+}
+
+function loadTab(tab: string) {
+  activeTab.value = tab
+  if (tab === 'changeset') void loadChangesets()
+  if (tab === 'events') void loadEvents()
+}
+
+async function confirmChangeset(changeset: JobFlowChangeSet) {
+  applyingChangesetId.value = changeset.changeset_id
+  changesetError.value = ''
+  try {
+    await applyJobFlowChangeset(instanceId, changeset.changeset_id, {
+      parameters: instance.value?.context.parameters ?? {},
+      git: instance.value?.context.git ?? {},
+      workspace: instance.value?.context.workspace ?? {},
+    })
+    await Promise.all([load(), loadChangesets(), loadEvents()])
+  } catch (cause) {
+    changesetError.value = cause instanceof Error ? cause.message : 'ChangeSet 应用失败'
+  } finally {
+    applyingChangesetId.value = ''
+  }
 }
 
 async function start() {
@@ -156,14 +278,46 @@ async function rerun() {
 }
 async function removeInstance() {
   if (!instance.value || !deletableStates.has(instance.value.status.state)) return
-  if (!window.confirm(`确定删除实例“${instance.value.name}”吗？删除后实例日志、任务和执行记录将不可恢复。`)) return
+  deleteDialogOpen.value = true
+}
+
+async function confirmRemoveInstance() {
+  deleting.value = true
   try {
     await deleteJobFlowInstance(instanceId)
+    deleteDialogOpen.value = false
     await router.push('/instances')
   }
   catch (cause) { error.value = cause instanceof Error ? cause.message : '实例删除失败' }
+  finally { deleting.value = false }
 }
-onMounted(() => { load(); loadCapability() })
+
+const filteredEvents = computed(() => {
+  const keyword = eventFilter.value.trim().toLowerCase()
+  if (!keyword) return events.value
+  return events.value.filter((event) =>
+    [event.type, event.actor, JSON.stringify(event.data ?? {})]
+      .join(' ').toLowerCase().includes(keyword),
+  )
+})
+
+function enterTask(task: Task) {
+  void router.push('/instances/' + encodeURIComponent(instanceId) + '/tasks/' + encodeURIComponent(task.id))
+}
+
+function applyTabFromQuery() {
+  const tab = route.query.tab
+  if (typeof tab === 'string' && TAB_KEYS.includes(tab) && tab !== activeTab.value) loadTab(tab)
+}
+onMounted(() => {
+  applyTabFromQuery()
+  load()
+  loadCapability()
+})
+watch(() => route.query.tab, applyTabFromQuery)
+watch(() => instance.value?.group_id, (groupId) => {
+  if (groupId) capabilities.load(groupId).catch(() => { /* 权限快照不可用时按钮按无权限隐藏 */ })
+}, { immediate: true })
 </script>
 
 <template>
@@ -223,7 +377,7 @@ onMounted(() => { load(); loadCapability() })
       <section class="rounded-lg border border-border bg-card p-4">
         <h2 class="text-sm font-semibold mb-2">运行 DAG</h2>
         <div class="rounded border border-border overflow-hidden min-h-[300px]" data-testid="instance-dag">
-          <DagGraph v-if="Object.keys(dagTasks).length" :tasks="dagTasks" />
+          <DagGraph v-if="Object.keys(dagTasks).length" :tasks="dagTasks" :on-task-click="enterTask" />
           <p v-else class="p-6 text-center text-xs text-muted-foreground">暂无任务节点</p>
         </div>
       </section>
@@ -236,19 +390,56 @@ onMounted(() => { load(); loadCapability() })
           :created-at="String(instance.context.workspace?.created_at ?? '')"
           :retention-days="7"
           :is-terminal="['SUCCEEDED','FAILED','ABORTED','SUPERSEDED'].includes(instance.status.state)"
+          :cleanup-at="workspaceDetail?.retention_until ?? null"
+          :can-manage="capabilities.permitted('workspace:policy')"
+          :extend-disabled="!canExtendRetention || extendingRetention"
+          :extend-disabled-reason="extendDisabledReason"
+          @extend="extendRetention"
         />
       </section>
       <section class="rounded-lg border border-border bg-card p-4">
         <div class="flex gap-2 border-b border-border mb-3">
-          <button v-for="tab in ['preflight','manifest','artifacts','changeset']" :key="tab"
+          <button v-for="tab in TAB_ITEMS" :key="tab.key"
             class="px-3 py-1.5 text-xs transition"
-            :class="activeTab === tab ? 'border-b-2 border-blue-400 text-blue-300 font-medium' : 'text-muted-foreground'"
-            @click="activeTab = tab">{{ tab }}</button>
+            :class="activeTab === tab.key ? 'border-b-2 border-blue-400 text-blue-300 font-medium' : 'text-muted-foreground'"
+            @click="loadTab(tab.key)">{{ tab.label }}</button>
         </div>
-        <PreflightPanel v-if="activeTab === 'preflight'" :result="preflight" @rerun="loadCapability" />
-        <ManifestViewer v-if="activeTab === 'manifest'" :manifest="manifest" />
+        <PreflightPanel
+          v-if="activeTab === 'preflight'"
+          :result="preflight"
+          :retrying-check-id="retryingCheckId"
+          :can-skip="instance.status.state === 'WAITING_FOR_CAPABILITY' && capabilities.permitted('run:control')"
+          :skipping="controlling"
+          @rerun="loadCapability"
+          @retry-check="retryCheck"
+          @skip-start="start"
+        />
+        <ManifestViewer v-if="activeTab === 'manifest'" :manifest="manifest" :instance-id="instanceId" />
         <ArtifactList v-if="activeTab === 'artifacts'" :artifacts="artifactList" />
-        <ChangeSetPanel v-if="activeTab === 'changeset'" :changeset="null" />
+        <ChangeSetPanel
+          v-if="activeTab === 'changeset'"
+          :changesets="changesets"
+          :loading="changesetsLoading"
+          :applying-id="applyingChangesetId"
+          :error="changesetError"
+          @confirm="confirmChangeset"
+        />
+        <div v-if="activeTab === 'events'" data-testid="audit-timeline" class="rounded-lg border border-border bg-card p-4">
+          <div class="flex items-center gap-2">
+            <h4 class="text-sm font-medium">审计时间线</h4>
+            <input v-model="eventFilter" data-testid="audit-filter" class="ml-auto rounded border border-border bg-background px-2 py-1 text-xs" placeholder="按类型/操作人筛选" />
+          </div>
+          <div v-if="eventsLoading" class="mt-3 animate-pulse text-xs text-muted-foreground">正在加载审计记录…</div>
+          <div v-else-if="!filteredEvents.length" class="mt-3 text-xs text-muted-foreground">暂无审计记录</div>
+          <ol v-else class="mt-3 space-y-3 border-l border-border pl-4">
+            <li v-for="event in filteredEvents" :key="event.event_id" data-testid="audit-event" class="relative text-xs">
+              <span class="absolute -left-[1.28rem] top-1 h-2 w-2 rounded-full bg-blue-400" aria-hidden="true" />
+              <div class="font-medium">{{ event.type }}</div>
+              <div class="text-muted-foreground">{{ event.created_at }} · {{ event.actor }}</div>
+              <pre v-if="event.data && Object.keys(event.data).length" class="mt-1 overflow-auto rounded bg-background p-2 text-[10px]">{{ JSON.stringify(event.data, null, 2) }}</pre>
+            </li>
+          </ol>
+        </div>
       </section>
       <section class="rounded-lg border border-border bg-card p-4">
         <h2 class="text-sm font-semibold">实例任务</h2>
@@ -266,5 +457,23 @@ onMounted(() => { load(); loadCapability() })
         <button data-testid="confirm-rerun" class="mt-3 rounded bg-blue-500 px-3 py-2 text-xs text-white" :disabled="rerunning" @click="rerun">创建后继并执行</button>
       </section>
     </div>
+    <dialog
+      :open="deleteDialogOpen"
+      class="fixed inset-0 z-50 m-0 h-screen w-screen max-h-none max-w-none border-0 bg-black/60 p-0"
+      @click.self="deleteDialogOpen = false"
+    >
+      <div class="fixed inset-0 flex items-center justify-center p-4" @click.self="deleteDialogOpen = false">
+        <div v-if="instance" class="w-full max-w-md space-y-4 rounded-xl border border-border bg-card p-6" role="alertdialog" aria-modal="true" aria-labelledby="delete-instance-title">
+          <h2 id="delete-instance-title" class="text-base font-semibold text-red-300">确认删除实例</h2>
+          <p class="text-sm text-muted-foreground">
+            将永久删除实例 <span class="font-mono text-foreground">{{ instance.name }}</span> 及其任务、审计记录和执行数据。此操作不可撤销。
+          </p>
+          <div class="flex gap-3">
+            <button data-testid="cancel-delete-instance" class="flex-1 rounded border border-border px-4 py-2 text-sm hover:bg-accent" @click="deleteDialogOpen = false">取消</button>
+            <button data-testid="confirm-delete-instance" class="flex-1 rounded bg-red-600 px-4 py-2 text-sm text-white disabled:opacity-50" :disabled="deleting" @click="confirmRemoveInstance">确认删除</button>
+          </div>
+        </div>
+      </div>
+    </dialog>
   </AppShell>
 </template>
