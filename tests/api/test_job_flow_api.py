@@ -1197,3 +1197,50 @@ def test_audit_query_requires_group_scope_for_proxy_users():
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_execution_profile_revision_and_full_update():
+    """Profile 查询返回 revision，PUT 携带 expected_revision 可全量更新策略。"""
+    server = serve(
+        MockConsulStore(),
+        host="127.0.0.1",
+        port=0,
+        auth_config=AuthConfig(mode="local", local_user="job-flow-test"),
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    port = server.server_address[1]
+    try:
+        profile_id = prepare_runtime_profile(port, profile_id="profile-edit")
+
+        status, fetched = request(port, "GET", f"/api/execution-profiles/{profile_id}")
+        assert status == 200 and fetched["execution_profile"]["revision"] == 1
+
+        status, updated = request(port, "PUT", f"/api/execution-profiles/{profile_id}", {
+            "expected_revision": 1,
+            "name": "Hardened profile",
+            "version": "1.1.0",
+            "agent_runtime_id": "runtime-main",
+            "workspace_policy": {"retention_days": 7},
+            "resource_budget": {"max_tasks": 4},
+            "network_policy": {"egress": "deny"},
+            "secret_policy": {"allowed_refs": ["vault://run/*"]},
+            "skill_bundle_ids": ["sb-001"],
+            "mcp_grant_ids": ["grant-001"],
+        })
+        assert status == 200, updated
+        # 更新接口返回裸记录（与 POST 创建一致），GET 才是 {execution_profile} 包装
+        record = updated
+        assert record["revision"] == 2
+        assert record["name"] == "Hardened profile"
+        assert record["workspace_policy"] == {"retention_days": 7}
+        assert record["skill_bundle_ids"] == ["sb-001"]
+
+        status, stale = request(port, "PUT", f"/api/execution-profiles/{profile_id}", {
+            "expected_revision": 1,
+            "name": "Stale update",
+        })
+        assert status == 409 and stale["error"]["code"] == "REVISION_CONFLICT"
+    finally:
+        server.shutdown()
+        server.server_close()

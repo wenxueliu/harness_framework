@@ -173,10 +173,18 @@ export async function listJobFlowInstances(templateId?: string, groupId?: string
 
 export type ExecutionProfileSummary = {
   profile_id: string
+  group_id?: string
   name: string
   version: string
   agent_runtime_id: string
   status: string
+  revision?: number
+  workspace_policy?: Record<string, unknown>
+  resource_budget?: Record<string, unknown>
+  network_policy?: Record<string, unknown>
+  secret_policy?: Record<string, unknown>
+  skill_bundle_ids?: string[]
+  mcp_grant_ids?: string[]
 }
 
 export async function listJobFlowExecutionProfiles(groupId?: string): Promise<ExecutionProfileSummary[]> {
@@ -187,16 +195,59 @@ export async function listJobFlowExecutionProfiles(groupId?: string): Promise<Ex
   return result.execution_profiles
 }
 
+export async function getJobFlowExecutionProfile(profileId: string): Promise<ExecutionProfileSummary> {
+  const result = await apiRequest<{ execution_profile: ExecutionProfileSummary }>(
+    '/api/execution-profiles/' + encodeURIComponent(profileId),
+  )
+  return result.execution_profile
+}
+
 export async function createJobFlowExecutionProfile(input: {
   group_id: string
   name: string
   version?: string
   agent_runtime_id: string
 }): Promise<ExecutionProfileSummary> {
-  const result = await apiRequest<{ execution_profile: ExecutionProfileSummary }>(
+  // 后端 POST 创建返回裸记录，GET 返回 {execution_profile} 包装，两者都兼容。
+  const result = await apiRequest<ExecutionProfileSummary & { execution_profile?: ExecutionProfileSummary }>(
     '/api/execution-profiles', jsonRequest('POST', input),
   )
-  return result.execution_profile
+  return result.execution_profile ?? result
+}
+
+export async function updateJobFlowExecutionProfile(
+  profileId: string,
+  input: {
+    expected_revision: number
+    name?: string
+    version?: string
+    agent_runtime_id?: string
+    workspace_policy?: Record<string, unknown>
+    resource_budget?: Record<string, unknown>
+    network_policy?: Record<string, unknown>
+    secret_policy?: Record<string, unknown>
+    skill_bundle_ids?: string[]
+    mcp_grant_ids?: string[]
+  },
+): Promise<ExecutionProfileSummary> {
+  const result = await apiRequest<ExecutionProfileSummary & { execution_profile?: ExecutionProfileSummary }>(
+    '/api/execution-profiles/' + encodeURIComponent(profileId), jsonRequest('PUT', input),
+  )
+  return result.execution_profile ?? result
+}
+
+export async function listSkillBundles(): Promise<{ bundle_id: string; name: string; version: string }[]> {
+  const result = await apiRequest<{ skill_bundles: { bundle_id: string; name: string; version: string }[] }>(
+    '/api/skill-bundles',
+  )
+  return result.skill_bundles
+}
+
+export async function listMcpGrants(groupId: string): Promise<{ grant_id: string; server_id: string; status: string }[]> {
+  const result = await apiRequest<{ mcp_grants: { grant_id: string; server_id: string; status: string }[] }>(
+    '/api/mcp-grants/' + encodeURIComponent(groupId),
+  )
+  return result.mcp_grants
 }
 
 export async function listAgentRuntimes(): Promise<{ runtime_id: string; name: string; status: string }[]> {

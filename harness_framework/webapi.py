@@ -949,6 +949,12 @@ class APIHandler(BaseHTTPRequestHandler):
         try:
             body = self._read_json_body()
             parts = path.split("/")
+            if path.startswith("/api/execution-profiles/") and len(parts) == 4:
+                # 与 POST /api/execution-profiles/{id} 等价，供 PUT 语义的客户端更新 Profile。
+                return self._send_json(
+                    200,
+                    self.execution_profiles.update(parts[3], body, self._authentication_context().subject),
+                )
             if (len(parts) == 5 and parts[1:3] == ["api", "workspaces"]
                     and parts[4] == "file"):
                 context = self._authentication_context()

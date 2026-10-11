@@ -6,16 +6,19 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+from .api_errors import APIError
 from .auth import AuthenticationContext
 from .kv_store_protocol import KVStore
 
 
-class ProfileError(Exception):
+class ProfileError(APIError):
+    """Profile 操作失败；携带 HTTP status 供 WebAPI 直接映射。"""
+
     def __init__(self, code: str, message: str, status: int = 422):
-        self.code = code
-        self.message = message
-        self.status = status
-        super().__init__(f"{code}: {message}")
+        super().__init__(code, message, status)
+
+    def __str__(self) -> str:
+        return f"{self.code}: {self.message}"
 
 
 def _now_iso() -> str:
@@ -60,6 +63,12 @@ class ExecutionProfileService:
     def _write(self, key: str, value: Any) -> None:
         self.store.kv_put(key, json.dumps(value, ensure_ascii=False))
 
+    def _revision(self, profile_id: str) -> int:
+        return int(self._read(_revision_key(profile_id), 0))
+
+    def _with_revision(self, record: dict) -> dict:
+        return {**record, "revision": self._revision(record["profile_id"])}
+
     def create(self, body: dict, actor: str) -> dict:
         profile_id = body.get("profile_id") or f"prof-{int(time.time())}"
         group_id = body.get("group_id", "").strip()
@@ -89,13 +98,13 @@ class ExecutionProfileService:
         }
         self._write(f"{self.PREFIX}/{profile_id}", record)
         self._write(_revision_key(profile_id), 1)
-        return record
+        return self._with_revision(record)
 
     def get(self, profile_id: str) -> dict:
         record = self._read(f"{self.PREFIX}/{profile_id}")
         if not record:
             raise ProfileError("PROFILE_NOT_FOUND", f"Profile {profile_id} 不存在", 404)
-        return record
+        return self._with_revision(record)
 
     def list_for_group(self, group_id: str) -> list[dict]:
         results = []
@@ -118,6 +127,7 @@ class ExecutionProfileService:
 
     def update(self, profile_id: str, body: dict, actor: str) -> dict:
         record = self.get(profile_id)
+        record.pop("revision", None)
         expected = body.pop("expected_revision", None)
         if expected is None:
             raise ProfileError("EXPECTED_REVISION_REQUIRED", "expected_revision 不能为空")
@@ -132,11 +142,12 @@ class ExecutionProfileService:
         record["updated_at"] = _now_iso()
         self._write(f"{self.PREFIX}/{profile_id}", record)
         self._write(_revision_key(profile_id), current_rev + 1)
-        return record
+        return self._with_revision(record)
 
     def disable(self, profile_id: str, actor: str) -> dict:
         record = self.get(profile_id)
+        record.pop("revision", None)
         record["status"] = "DISABLED"
         record["updated_at"] = _now_iso()
         self._write(f"{self.PREFIX}/{profile_id}", record)
-        return record
+        return self._with_revision(record)
