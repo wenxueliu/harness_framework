@@ -7,7 +7,11 @@ import threading
 from urllib.parse import quote
 
 from harness_framework.auth import AuthConfig
+from harness_framework.artifacts import ArtifactCleanupWorker, ArtifactService
+from harness_framework.cleanup_notifications import CleanupNotificationService
+from harness_framework.event_journal import EventJournal
 from harness_framework.project_groups import ProjectGroupService
+from harness_framework.workspace_cleanup import WorkspaceCleanupWorker
 from harness_framework.webapi import serve
 from tests.conftest import MockConsulStore
 
@@ -63,7 +67,7 @@ def test_template_version_and_multiple_instance_lifecycle():
                 "test": {"type": "test", "depends_on": ["build"]},
             },
         })
-        assert status == 201
+        assert status == 201, created
         assert created["template"]["draft_revision"] == 1
         profile_id = prepare_runtime_profile(port)
 
@@ -638,6 +642,558 @@ def test_template_archive_blocks_new_instances():
         status, fetched = request(port, "GET", "/api/templates/archive-template")
         assert status == 200
         assert fetched["template"]["status"] == "ARCHIVED"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_secret_references_are_stored_separately_and_redacted_from_api_output():
+    store = MockConsulStore()
+    server = serve(
+        store,
+        host="127.0.0.1",
+        port=0,
+        auth_config=AuthConfig(mode="local", local_user="secret-test"),
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    port = server.server_address[1]
+    try:
+        status, _ = request(port, "POST", "/api/templates", {
+            "template_id": "secret-template",
+            "name": "Secret flow",
+            "parameter_schema": {
+                "type": "object",
+                "required": ["api_key"],
+                "properties": {"api_key": {"type": "string", "secret": True}},
+            },
+            "tasks": [{"id": "build", "type": "backend", "depends_on": []}],
+        })
+        assert status == 201
+        status, _ = request(
+            port, "POST", "/api/templates/secret-template/publish", {},
+            {"Idempotency-Key": "secret-publish"},
+        )
+        assert status == 200
+        profile_id = prepare_runtime_profile(port)
+
+        status, created = request(port, "POST", "/api/instances", {
+            "template_id": "secret-template",
+            "name": "Secret instance",
+            "parameters": {
+                "api_key": {
+                    "$ref": "secret:deploy-token",
+                    "value": "super-secret-value",
+                },
+            },
+            "execution_profile_id": profile_id,
+        }, {"Idempotency-Key": "secret-instance"})
+        assert status == 201, created
+        instance = created["instance"]
+        assert instance["context"]["parameters"]["api_key"] == "$ref:secret:deploy-token"
+
+        status, fetched = request(
+            port, "GET", f"/api/instances/{instance['instance_id']}"
+        )
+        assert status == 200
+        assert fetched["instance"]["context"]["parameters"]["api_key"] == (
+            "$ref:secret:deploy-token"
+        )
+
+        stored_value = store._store.get(
+            "secrets/jobflows/instances/"
+            f"{instance['instance_id']}/deploy-token"
+        )
+        assert stored_value == "super-secret-value"
+
+        status, started = request(
+            port, "POST", f"/api/instances/{instance['instance_id']}/start", {}
+        )
+        assert status == 200
+        status, manifest = request(
+            port,
+                "GET",
+                f"/api/attempts/{instance['current_attempt_id']}/manifest",
+        )
+        assert status == 200
+        assert manifest["secret_refs"] == ["$ref:secret:deploy-token"]
+
+        session_key = (
+            f"workflows/{instance['instance_id']}/sessions/build/"
+            "session-1/events/1"
+        )
+        store.kv_put(session_key, json.dumps({
+            "seq": "1", "message": "using super-secret-value",
+        }))
+        status, session = request(
+            port,
+            "GET",
+            f"/api/sessions/{instance['instance_id']}/build",
+        )
+        assert status == 200
+        assert session["events"][0]["message"] == "using $ref:secret:deploy-token"
+
+        event_key = f"jobflows/instances/{instance['instance_id']}/events/legacy"
+        store.kv_put(event_key, json.dumps({
+            "event_id": "legacy", "type": "TEST_EVENT", "actor": "system",
+            "created_at": "2026-01-01T00:00:00Z",
+            "data": {"log": "super-secret-value"},
+        }))
+        status, events = request(
+            port, "GET", f"/api/instances/{instance['instance_id']}/events"
+        )
+        assert status == 200
+        assert events["events"][0]["data"]["log"] == "$ref:secret:deploy-token"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_instance_changesets_and_events_are_queryable_and_scoped():
+    store = MockConsulStore()
+    groups = ProjectGroupService(store)
+    group = groups.create(name="Scoped", description="scoped", actor="alice")
+    groups.put_member(group["group_id"], "viewer", "VIEWER")
+    server = serve(
+        store,
+        host="127.0.0.1",
+        port=0,
+        auth_config=AuthConfig(mode="trusted-proxy"),
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    port = server.server_address[1]
+    alice = {"X-Harness-Subject": "alice"}
+    viewer = {"X-Harness-Subject": "viewer"}
+    try:
+        status, _ = request(port, "POST", "/api/templates", {
+            "template_id": "changeset-template",
+            "name": "Changeset flow",
+            "group_id": group["group_id"],
+            "tasks": {
+                "build": {"type": "backend", "depends_on": []},
+                "test": {"type": "test", "depends_on": ["build"]},
+            },
+        }, alice)
+        assert status == 201
+        status, published = request(
+            port, "POST", "/api/templates/changeset-template/publish", {},
+            {**alice, "Idempotency-Key": "changeset-publish"},
+        )
+        assert status == 200
+        status, created = request(port, "POST", "/api/instances", {
+            "template_id": "changeset-template",
+            "version_id": published["version"]["version_id"],
+            "name": "Scoped instance",
+            "parameters": {},
+        }, {**alice, "Idempotency-Key": "changeset-instance"})
+        assert status == 201
+        instance_id = created["instance"]["instance_id"]
+
+        status, changeset = request(
+            port, "POST", f"/api/instances/{instance_id}/changesets",
+            {"changed_tasks": ["build"], "changes": {"build": {"type": "frontend"}}},
+            alice,
+        )
+        assert status == 200
+        changeset_id = changeset["changeset"]["changeset_id"]
+        assert changeset["changeset"]["impacted_tasks"] == ["build", "test"]
+
+        status, readable = request(
+            port, "GET", f"/api/instances/{instance_id}/changesets",
+            headers=viewer,
+        )
+        assert status == 200
+        assert [item["changeset_id"] for item in readable["changesets"]] == [changeset_id]
+
+        status, applied = request(
+            port,
+            "POST",
+            f"/api/instances/{instance_id}/changesets/{changeset_id}/apply",
+            {"start": False, "instance_id": "successor-instance"},
+            {**alice, "Idempotency-Key": "changeset-apply"},
+        )
+        assert status == 200
+        assert applied["changeset"]["state"] == "APPLIED"
+        assert applied["successor_of"] == instance_id
+
+        status, events = request(
+            port, "GET", f"/api/instances/{instance_id}/events", headers=viewer
+        )
+        assert status == 200
+        event_types = [item["type"] for item in events["events"]]
+        assert "INSTANCE_CREATED" in event_types
+        assert "INSTANCE_STATUS_CHANGED" in event_types
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_cleanup_workers_record_admin_notifications_before_deletion():
+    store = MockConsulStore()
+
+    class FakeWorkspaceManager:
+        def __init__(self, store):
+            self.store = store
+
+        def trash_run_workspace(self, req_id, run_id):
+            return {"run_workspace_id": "rws-trash"}
+
+    worker = WorkspaceCleanupWorker(
+        FakeWorkspaceManager(store), interval=1, grace_hours=1,
+        event_journal=EventJournal(store),
+    )
+    store.kv_put("workflows/cleanup-req/project-group", "grp_admin")
+    store.kv_put(
+        "workflows/cleanup-req/runs/run-1/workspace/record",
+        json.dumps({"status": "CLEANUP_PENDING", "run_workspace_id": "rws-trash"}),
+    )
+    result = worker.run_once()
+    assert result["trashed"] == ["rws-trash"]
+    assert len(result["notified"]) == 1
+    notifications = CleanupNotificationService(store).list_for_group("grp_admin")
+    assert notifications[0]["action"] == "TRASH"
+    journal = EventJournal(store).replay(limit=10)[0]
+    assert journal[0].type == "CLEANUP_ADMIN_NOTIFIED"
+
+    artifacts = ArtifactService(store, CleanupNotificationService(store))
+    store.kv_put("artifacts/artifact-instance/art-1", json.dumps({
+        "artifact_id": "art-1",
+        "instance_id": "artifact-instance",
+        "path": "reports/out.txt",
+        "status": "ACTIVE",
+        "retention_until": "2020-01-01T00:00:00Z",
+    }))
+    cleanup = ArtifactCleanupWorker(artifacts, interval=1).run_once()
+    assert cleanup["expired"] == ["art-1"]
+    notifications = CleanupNotificationService(store).list_for_group("unassigned")
+    assert notifications[-1]["resource_type"] == "ARTIFACT"
+    assert notifications[-1]["action"] == "EXPIRE"
+
+
+def _start_running_instance(store, port: int, template_id: str, name: str):
+    """Publish a one-task template, create and start an instance; return ids."""
+    status, _ = request(port, "POST", "/api/templates", {
+        "template_id": template_id,
+        "name": name,
+        "tasks": [{"id": "build", "type": "backend", "depends_on": []}],
+    })
+    assert status == 201
+    profile_id = prepare_runtime_profile(port)
+    status, published = request(
+        port, "POST", f"/api/templates/{template_id}/publish", {},
+        {"Idempotency-Key": f"publish-{template_id}"},
+    )
+    assert status == 200
+    status, created = request(port, "POST", "/api/instances", {
+        "template_id": template_id,
+        "version_id": published["version"]["version_id"],
+        "name": name,
+        "parameters": {}, "git": {}, "workspace": {},
+        "execution_profile_id": profile_id,
+    }, {"Idempotency-Key": f"instance-{template_id}"})
+    assert status == 201, created
+    instance_id = created["instance"]["instance_id"]
+    status, started = request(port, "POST", f"/api/instances/{instance_id}/start", {})
+    assert status == 200
+    assert started["instance"]["status"]["state"] == "RUNNING"
+    return store._store[f"jobflows/instances/{instance_id}/current_run"], instance_id
+
+
+def test_instance_task_attempts_sessions_and_logs_are_queryable():
+    store = MockConsulStore()
+    server = serve(
+        store,
+        host="127.0.0.1",
+        port=0,
+        auth_config=AuthConfig(mode="local", local_user="attempt-test"),
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    port = server.server_address[1]
+    try:
+        run_id, instance_id = _start_running_instance(store, port, "attempt-template", "Attempts")
+
+        status, retried = request(
+            port, "POST", f"/api/instances/{instance_id}/tasks/build/retry", {},
+        )
+        assert status == 200, retried
+        new_attempt_id = retried["attempt_id"]
+
+        store.kv_put(
+            f"workflows/{instance_id}/runs/{run_id}/tasks/build/attempts/"
+            f"{new_attempt_id}/workspace-binding",
+            json.dumps({
+                "binding_id": "awb_1",
+                "workspace_id": "rws-attempt",
+                "binding_type": "RUN_SHARED",
+                "writable": True,
+                "bound_at": "2026-01-01T00:00:00Z",
+            }),
+        )
+        for seq, (attempt_id, message) in enumerate([
+            (new_attempt_id, "started build"),
+            ("attempt-other", "other attempt event"),
+            (new_attempt_id, "rebuild done"),
+        ], start=1):
+            store.kv_put(
+                f"workflows/{instance_id}/sessions/build/session-1/events/{seq}",
+                json.dumps({
+                    "seq": str(seq), "message": message, "attempt_id": attempt_id,
+                    "timestamp": f"2026-01-01T00:0{seq - 1}:00Z",
+                }),
+            )
+
+        status, attempts = request(
+            port, "GET", f"/api/instances/{instance_id}/tasks/build/attempts",
+        )
+        assert status == 200
+        assert [item["attempt_id"] for item in attempts["attempts"]] == [new_attempt_id]
+        attempt = attempts["attempts"][0]
+        assert attempt["state"] == "PENDING"
+        assert attempt["workspace_binding"]["workspace_id"] == "rws-attempt"
+        assert attempt["workspace_binding"]["binding_type"] == "RUN_SHARED"
+
+        status, logs = request(
+            port, "GET",
+            f"/api/instances/{instance_id}/tasks/build/attempts/{new_attempt_id}/logs",
+        )
+        assert status == 200
+        assert logs["attempt_id"] == new_attempt_id
+        assert [event["message"] for event in logs["events"]] == [
+            "started build", "rebuild done",
+        ]
+        assert logs["total"] == 2
+
+        status, sessions = request(
+            port, "GET", f"/api/instances/{instance_id}/sessions/build",
+        )
+        assert status == 200
+        assert sessions["instance_id"] == instance_id
+        assert sessions["total"] == 3
+
+        status, missing_task = request(
+            port, "GET", f"/api/instances/{instance_id}/tasks/missing/attempts",
+        )
+        assert status == 404
+        assert missing_task["error"]["code"] == "TASK_NOT_FOUND"
+
+        status, missing_attempt = request(
+            port, "GET",
+            f"/api/instances/{instance_id}/tasks/build/attempts/attempt-none/logs",
+        )
+        assert status == 404
+        assert missing_attempt["error"]["code"] == "TASK_ATTEMPT_NOT_FOUND"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_instance_preflight_can_be_retriggered_after_fix():
+    store = MockConsulStore()
+    server = serve(
+        store,
+        host="127.0.0.1",
+        port=0,
+        auth_config=AuthConfig(mode="local", local_user="preflight-test"),
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    port = server.server_address[1]
+    try:
+        status, _ = request(port, "POST", "/api/templates", {
+            "template_id": "preflight-template",
+            "name": "Preflight",
+            "tasks": [{"id": "build", "type": "backend", "depends_on": []}],
+        })
+        assert status == 201
+        status, published = request(
+            port, "POST", "/api/templates/preflight-template/publish", {},
+            {"Idempotency-Key": "preflight-publish"},
+        )
+        assert status == 200
+        status, created = request(port, "POST", "/api/instances", {
+            "template_id": "preflight-template",
+            "version_id": published["version"]["version_id"],
+            "name": "No profile yet",
+            "parameters": {}, "git": {}, "workspace": {},
+        }, {"Idempotency-Key": "preflight-instance"})
+        assert status == 201
+        instance_id = created["instance"]["instance_id"]
+
+        status, blocked = request(
+            port, "POST", f"/api/instances/{instance_id}/preflight", {},
+        )
+        assert status == 200
+        assert blocked["preflight"]["status"] == "BLOCKED"
+        runtime_check = next(
+            item for item in blocked["preflight"]["checks"]
+            if item["check_id"] == "agent-runtime"
+        )
+        assert runtime_check["status"] == "FAIL"
+
+        profile_id = prepare_runtime_profile(port)
+        status, updated = request(port, "PATCH", f"/api/instances/{instance_id}", {
+            "execution_profile_id": profile_id,
+        })
+        assert status == 200
+
+        status, passed = request(
+            port, "POST", f"/api/instances/{instance_id}/preflight", {},
+        )
+        assert status == 200
+        assert passed["preflight"]["status"] == "PASSED"
+        assert passed["preflight"]["manifest_id"]
+
+        status, latest = request(
+            port, "GET", f"/api/instances/{instance_id}/preflight/latest",
+        )
+        assert status == 200
+        assert latest["status"] == "PASSED"
+        assert latest["manifest_id"] == passed["preflight"]["manifest_id"]
+
+        status, missing = request(
+            port, "POST", "/api/instances/instance-missing/preflight", {},
+        )
+        assert status == 404
+        assert missing["error"]["code"] == "INSTANCE_NOT_FOUND"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_execution_manifest_alias_matches_canonical_manifest():
+    store = MockConsulStore()
+    server = serve(
+        store,
+        host="127.0.0.1",
+        port=0,
+        auth_config=AuthConfig(mode="local", local_user="manifest-test"),
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    port = server.server_address[1]
+    try:
+        run_id, instance_id = _start_running_instance(store, port, "alias-template", "Alias")
+        attempt_id = f"attempt-{instance_id}"
+
+        status, alias = request(
+            port, "GET", f"/api/attempts/{attempt_id}/execution-manifest",
+        )
+        assert status == 200
+        assert alias["attempt_id"] == attempt_id
+        assert alias["execution_profile"]["profile_id"] == "profile-main"
+
+        status, canonical = request(
+            port, "GET", f"/api/attempts/{attempt_id}/manifest",
+        )
+        assert status == 200
+        assert canonical["manifest_id"] == alias["manifest_id"]
+
+        status, missing = request(
+            port, "GET", f"/api/attempts/attempt-none/execution-manifest",
+        )
+        assert status == 404
+        assert missing["error"]["code"] == "MANIFEST_NOT_FOUND"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_audit_query_filters_journal_events():
+    store = MockConsulStore()
+    journal = EventJournal(store)
+    journal.append("TASK_STATUS_CHANGED", subject={
+        "group_id": "grp-a", "instance_id": "inst-1",
+    }, actor={"type": "human", "id": "alice"}, data={"state": "RUNNING"})
+    journal.append("RUN_STATUS_CHANGED", subject={
+        "group_id": "grp-a", "req_id": "inst-1",
+    }, actor={"type": "system", "id": "dispatcher"}, data={"state": "RUNNING"})
+    journal.append("WORKFLOW_CREATED", subject={
+        "group_id": "grp-b", "req_id": "inst-2",
+    }, actor={"type": "human", "id": "alice"}, data={"title": "other group"})
+    server = serve(
+        store,
+        host="127.0.0.1",
+        port=0,
+        auth_config=AuthConfig(mode="local", local_user="audit-test"),
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    port = server.server_address[1]
+    try:
+        status, all_events = request(port, "GET", "/api/audit")
+        assert status == 200
+        assert all_events["total"] == 3
+
+        status, scoped = request(port, "GET", "/api/audit?group_id=grp-a")
+        assert status == 200
+        assert scoped["total"] == 2
+
+        status, by_instance = request(port, "GET", "/api/audit?instance_id=inst-1")
+        assert status == 200
+        assert by_instance["total"] == 2
+        assert {event["type"] for event in by_instance["events"]} == {
+            "TASK_STATUS_CHANGED", "RUN_STATUS_CHANGED",
+        }
+
+        status, by_actor = request(port, "GET", "/api/audit?actor=alice")
+        assert status == 200
+        assert by_actor["total"] == 2
+
+        status, by_type = request(
+            port, "GET", "/api/audit?group_id=grp-a&type=RUN_STATUS_CHANGED",
+        )
+        assert status == 200
+        assert by_type["total"] == 1
+        assert by_type["events"][0]["actor"]["id"] == "dispatcher"
+
+        status, limited = request(port, "GET", "/api/audit?limit=1")
+        assert status == 200
+        assert limited["total"] == 3
+        assert len(limited["events"]) == 1
+
+        status, invalid = request(port, "GET", "/api/audit?limit=abc")
+        assert status == 400
+        assert invalid["error"]["code"] == "INVALID_LIMIT"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_audit_query_requires_group_scope_for_proxy_users():
+    store = MockConsulStore()
+    groups = ProjectGroupService(store)
+    group = groups.create(name="Audited", description="audit", actor="alice")
+    groups.put_member(group["group_id"], "viewer", "VIEWER")
+    server = serve(
+        store,
+        host="127.0.0.1",
+        port=0,
+        auth_config=AuthConfig(mode="trusted-proxy"),
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    port = server.server_address[1]
+    alice = {"X-Harness-Subject": "alice"}
+    viewer = {"X-Harness-Subject": "viewer"}
+    outsider = {"X-Harness-Subject": "mallory"}
+    try:
+        status, unscooped = request(port, "GET", "/api/audit", headers=alice)
+        assert status == 422
+        assert unscooped["error"]["code"] == "AUDIT_SCOPE_REQUIRED"
+
+        status, forbidden = request(
+            port, "GET", f"/api/audit?group_id={group['group_id']}", headers=outsider,
+        )
+        assert status == 403
+        assert forbidden["error"]["code"] == "FORBIDDEN"
+
+        status, events = request(
+            port, "GET", f"/api/audit?group_id={group['group_id']}", headers=viewer,
+        )
+        assert status == 200
+        assert events["events"] == []
     finally:
         server.shutdown()
         server.server_close()

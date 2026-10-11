@@ -33,6 +33,7 @@ ROLE_CAPABILITIES: dict[Role, frozenset[str]] = {
         "workflow:draft", "workflow:publish", "run:create", "run:control",
         "task:retry", "task:message:queue", "task:message:interrupt",
         "file:read", "file:write", "checkpoint:create", "workspace:merge",
+        "changeset:create", "instance:create",
         "profile:manage", "mcp:manage", "runtime:manage",
     }),
     Role.EDITOR: frozenset({

@@ -13,6 +13,7 @@ from typing import Any
 
 from .api_errors import APIError
 from .kv_store_protocol import KVStore
+from .secrets import SecretStore
 
 TEMPLATE_PREFIX = "jobflows/templates"
 INSTANCE_PREFIX = "jobflows/instances"
@@ -83,7 +84,8 @@ def _validate_parameter_schema(schema: Any, parameters: Any, *, enforce_required
     errors: list[dict] = []
     if enforce_required:
         for field in required:
-            if field not in values or values[field] in {"", None}:
+            value = values.get(field)
+            if field not in values or value == "" or value is None:
                 errors.append({"field": field, "message": f"参数 {field} 必填"})
     for field, definition in properties.items():
         if field not in values or not isinstance(definition, dict):
@@ -130,6 +132,7 @@ class JobFlowService:
         self.store = store
         self.preflight_service = preflight_service
         self.workspace_manager = workspace_manager
+        self.secrets = SecretStore(store)
 
     def _read(self, key: str, default: Any = None) -> Any:
         raw, _ = self.store.kv_get(key)
@@ -578,7 +581,9 @@ class JobFlowService:
             for task in version_manifest.get("tasks", [])
             if isinstance(task, dict) and "id" in task
         }
-        context = self._read(f"{INSTANCE_PREFIX}/{instance_id}/context", {})
+        context = self.secrets.redact(
+            instance_id, self._read(f"{INSTANCE_PREFIX}/{instance_id}/context", {})
+        )
         status = self._read(f"{INSTANCE_PREFIX}/{instance_id}/status", {})
         tasks_raw, _ = self.store.kv_get(f"{INSTANCE_PREFIX}/{instance_id}/tasks/", recurse=True)
         tasks: dict[str, dict] = {}
@@ -626,11 +631,14 @@ class JobFlowService:
         instance_id = _id(body.get("instance_id"), "inst")
         if self._read(f"{INSTANCE_PREFIX}/{instance_id}/meta") is not None:
             raise APIError("INSTANCE_ALREADY_EXISTS", "实例已存在", 409, {"instance_id": instance_id})
+        parameters = self.secrets.normalize_parameters(
+            instance_id, body.get("parameters", {}), manifest.get("parameter_schema")
+        )
         if manifest.get("parameter_schema"):
-            _validate_parameter_schema(manifest["parameter_schema"], body.get("parameters", {}))
+            _validate_parameter_schema(manifest["parameter_schema"], parameters)
         now = _now()
         context = {
-            "parameters": body.get("parameters", {}),
+            "parameters": parameters,
             "git": body.get("git", {"ref": body.get("git_ref")}),
             "workspace": body.get("workspace", {}),
             "execution_policy": body.get("execution_policy", {}),
@@ -962,6 +970,68 @@ class JobFlowService:
         })
         return {"instance": self.get_instance(instance_id), "attempt_id": attempt_id}
 
+    def list_task_attempts(self, instance_id: str, task_id: str) -> list[dict]:
+        """List attempts of an instance task, each with a workspace-binding summary."""
+        self._instance(instance_id)
+        status = self._read(f"{INSTANCE_PREFIX}/{instance_id}/tasks/{task_id}/status")
+        if not isinstance(status, dict):
+            raise APIError("TASK_NOT_FOUND", "实例任务不存在", 404)
+        items, _ = self.store.kv_get(
+            f"{INSTANCE_PREFIX}/{instance_id}/tasks/{task_id}/attempts/", recurse=True
+        )
+        attempts: dict[str, dict] = {}
+        for item in items or []:
+            key = item.get("Key", "")
+            # jobflows/instances/<id>/tasks/<task>/attempts/<attempt_id>
+            if len(key.split("/")) != 7:
+                continue
+            value = self._read(key)
+            if isinstance(value, dict) and value.get("attempt_id"):
+                attempts[value["attempt_id"]] = value
+        current_attempt = str(status.get("current_attempt", "") or "")
+        if current_attempt and current_attempt not in attempts:
+            attempts[current_attempt] = {
+                "attempt_id": current_attempt,
+                "state": status.get("state", ""),
+                "created_at": status.get("updated_at", ""),
+            }
+        run = self._read(f"{INSTANCE_PREFIX}/{instance_id}/run/current", {})
+        run_id = run.get("run_id") if isinstance(run, dict) else ""
+        result: list[dict] = []
+        for attempt in attempts.values():
+            record = {
+                "attempt_id": attempt["attempt_id"],
+                "state": attempt.get("state", ""),
+                "created_at": attempt.get("created_at", ""),
+                "created_by": attempt.get("created_by", ""),
+            }
+            failure_reason = attempt.get("failure_reason") or attempt.get("error_message")
+            if failure_reason:
+                record["failure_reason"] = failure_reason
+            binding = None
+            if run_id:
+                binding = self._read(
+                    f"workflows/{instance_id}/runs/{run_id}/tasks/{task_id}/"
+                    f"attempts/{attempt['attempt_id']}/workspace-binding"
+                )
+            record["workspace_binding"] = {
+                "workspace_id": binding.get("workspace_id", ""),
+                "binding_type": binding.get("binding_type", ""),
+                "writable": binding.get("writable"),
+                "bound_at": binding.get("bound_at", ""),
+            } if isinstance(binding, dict) else None
+            result.append(record)
+        return sorted(result, key=lambda item: (item["created_at"], item["attempt_id"]))
+
+    def get_task_attempt(self, instance_id: str, task_id: str, attempt_id: str) -> dict:
+        attempts = self.list_task_attempts(instance_id, task_id)
+        attempt = next(
+            (item for item in attempts if item["attempt_id"] == attempt_id), None,
+        )
+        if attempt is None:
+            raise APIError("TASK_ATTEMPT_NOT_FOUND", "任务尝试不存在", 404)
+        return attempt
+
     def create_changeset(self, instance_id: str, body: dict, actor: str) -> dict:
         instance = self.get_instance(instance_id)
         changeset_id = f"change-{uuid.uuid4().hex[:12]}"
@@ -987,7 +1057,7 @@ class JobFlowService:
             "changeset_id": changeset_id, "instance_id": instance_id,
             "state": "IMPACT_ANALYZED", "created_by": actor, "created_at": _now(),
             "changed_tasks": sorted(changed_ids), "impacted_tasks": sorted(impacted),
-            "changes": body.get("changes", {}),
+            "changes": self.secrets.redact(instance_id, body.get("changes", {})),
             "reuse": {task_id: False for task_id in sorted(impacted)},
         }
         self._write(f"{INSTANCE_PREFIX}/{instance_id}/changesets/{changeset_id}", change)
@@ -1005,10 +1075,33 @@ class JobFlowService:
         response["changeset"] = change
         return response
 
+    def list_changesets(self, instance_id: str) -> list[dict]:
+        self._instance(instance_id)
+        items, cursor = self.store.kv_list(
+            f"{INSTANCE_PREFIX}/{instance_id}/changesets/", limit=1000
+        )
+        changesets: list[dict] = []
+        while items:
+            for item in items:
+                value = self._read(item.get("key", item.get("Key", "")))
+                if isinstance(value, dict):
+                    changesets.append(self.secrets.redact(instance_id, value))
+            if cursor is None:
+                break
+            items, cursor = self.store.kv_list(
+                f"{INSTANCE_PREFIX}/{instance_id}/changesets/",
+                cursor=cursor, limit=1000,
+            )
+        return sorted(
+            changesets,
+            key=lambda item: (str(item.get("created_at", "")), str(item.get("changeset_id", ""))),
+        )
+
     def list_events(self, instance_id: str) -> list[dict]:
         self._instance(instance_id)
         items, _ = self.store.kv_get(f"{INSTANCE_PREFIX}/{instance_id}/events/", recurse=True)
         events = [self._read(item["Key"]) for item in items or []]
+        events = [self.secrets.redact(instance_id, item) for item in events]
         return sorted(
             (item for item in events if isinstance(item, dict)),
             key=lambda item: item.get("created_at", ""),

@@ -6,6 +6,7 @@ import time
 from typing import Any, Optional
 
 from .kv_store_protocol import KVStore
+from .secrets import SecretStore
 
 def _now_iso(): return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
@@ -145,6 +146,7 @@ class CapabilityPreflightService:
                     skill_bundles=[self.skill_service.get(sid) for sid in profile.get("skill_bundle_ids", [])],
                     mcp_grants=[self.mcp_service.get_grant(profile["group_id"], gid) for gid in profile.get("mcp_grant_ids", [])],
                     workspace_binding={"workspace_id": workspace_id} if workspace_id else {},
+                    secret_refs=SecretStore(self.store).references(instance_id),
                 )
                 result["manifest_id"] = manifest["manifest_id"]
             except Exception as exc:

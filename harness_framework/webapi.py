@@ -54,8 +54,10 @@ from .execution_profiles import ExecutionProfileService
 from .agent_runtimes import AgentRuntimeService
 from .skill_bundles import SkillBundleService
 from .mcp_grants import MCPService
+from .secrets import SecretStore
 from .artifacts import ArtifactService
-from .capability_preflight import CapabilityPreflightService
+from .cleanup_notifications import CleanupNotificationService
+from .capability_preflight import CapabilityPreflightService, PreflightError
 
 log = logging.getLogger("webapi")
 
@@ -84,6 +86,7 @@ class APIHandler(BaseHTTPRequestHandler):
     skill_bundles: SkillBundleService = None
     mcp_service: MCPService = None
     artifacts: ArtifactService = None
+    secrets: SecretStore = None
     sse_connection_seconds: float = 300.0
 
     def log_message(self, format, *args):
@@ -94,6 +97,8 @@ class APIHandler(BaseHTTPRequestHandler):
         self.request_id = request_id
         if isinstance(payload, dict) and "request_id" not in payload:
             payload = {**payload, "request_id": request_id}
+        if self.secrets is not None:
+            payload = self.secrets.redact_payload(payload)
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -245,7 +250,11 @@ class APIHandler(BaseHTTPRequestHandler):
                     if any(value and event.subject.get(key) != value
                            for key, value in filters.items()):
                         continue
-                    payload = json.dumps(event.to_dict(), ensure_ascii=False)
+                    payload = json.dumps(
+                        self.secrets.redact_payload(event.to_dict())
+                        if self.secrets else event.to_dict(),
+                        ensure_ascii=False,
+                    )
                     self.wfile.write(
                         f"id: {event.event_id}\nevent: {event.type}\ndata: {payload}\n\n".encode()
                     )
@@ -278,6 +287,9 @@ class APIHandler(BaseHTTPRequestHandler):
                 ))
             if path == "/api/events":
                 return self._send_event_stream(u)
+            if path == "/api/audit":
+                context = self._authentication_context()
+                return self._send_json(200, self._audit_payload(context, u))
             if path == "/api/capabilities":
                 context = self._authentication_context()
                 query = parse_qs(u.query)
@@ -321,6 +333,15 @@ class APIHandler(BaseHTTPRequestHandler):
                 from .execution_manifest import ExecutionManifestService
                 attempt_id = path.split("/")[3]
                 return self._send_json(200, ExecutionManifestService(self.consul).get(attempt_id))
+            if path.startswith("/api/attempts/") and path.endswith("/execution-manifest"):
+                # PRD §9 canonical alias of /api/attempts/:id/manifest
+                from .execution_manifest import ExecutionManifestService, ManifestError
+                attempt_id = path.split("/")[3]
+                try:
+                    manifest = ExecutionManifestService(self.consul).get(attempt_id)
+                except ManifestError as exc:
+                    raise APIError(exc.code, exc.message, exc.status)
+                return self._send_json(200, manifest)
             if path == "/api/skill-bundles":
                 return self._send_json(200, {"skill_bundles": self.skill_bundles.list_all()})
             if path.startswith("/api/skill-bundles/") and len(path.split("/")) == 5 and path.split("/")[4] == "content":
@@ -1125,8 +1146,36 @@ class APIHandler(BaseHTTPRequestHandler):
                 return {"tasks": instance["tasks"]}
             if len(parts) == 5 and parts[4] == "events":
                 return {"events": service.list_events(instance_id)}
+            if len(parts) == 5 and parts[4] == "changesets":
+                return {"changesets": service.list_changesets(instance_id)}
             if len(parts) == 5 and parts[4] == "artifacts":
                 return {"artifacts": self.artifacts.list_for_instance(instance_id)}
+            if len(parts) == 7 and parts[4] == "tasks" and parts[6] == "attempts":
+                return {"attempts": service.list_task_attempts(
+                    instance_id, unquote(parts[5])
+                )}
+            if (len(parts) == 9 and parts[4] == "tasks" and parts[6] == "attempts"
+                    and parts[8] == "logs"):
+                task_id = unquote(parts[5])
+                attempt_id = unquote(parts[7])
+                service.get_task_attempt(instance_id, task_id, attempt_id)
+                query = parse_qs(parsed_url.query)
+                query["attempt_id"] = [attempt_id]
+                timeline = self._session_timeline_payload(instance_id, task_id, query)
+                return {
+                    "instance_id": instance_id,
+                    "task": task_id,
+                    "attempt_id": attempt_id,
+                    "events": timeline["events"],
+                    "total": timeline["total"],
+                    "next_cursor": timeline["next_cursor"],
+                }
+            if len(parts) == 6 and parts[4] == "sessions":
+                task_id = unquote(parts[5])
+                timeline = self._session_timeline_payload(
+                    instance_id, task_id, parse_qs(parsed_url.query)
+                )
+                return {"instance_id": instance_id, **timeline}
         raise APIError("NOT_FOUND", "接口不存在", 404)
 
     def _jobflow_post(self, path: str, body: dict, context) -> dict:
@@ -1222,6 +1271,22 @@ class APIHandler(BaseHTTPRequestHandler):
                 self._require(context, "file:write", template["group_id"])
                 artifact = self.artifacts.create({**body, "instance_id": instance_id})
                 return {"artifact": artifact}
+            if len(parts) == 5 and parts[4] == "preflight":
+                # FR-CAP-08: re-run capability preflight after a fix.
+                self._require(context, "run:create", template["group_id"])
+                preflight_service = (
+                    getattr(self, "capability_preflight", None)
+                    or getattr(service, "preflight_service", None)
+                )
+                if preflight_service is None:
+                    raise APIError(
+                        "PREFLIGHT_UNAVAILABLE", "能力预检服务不可用", 503,
+                    )
+                try:
+                    result = preflight_service.run(instance_id)
+                except PreflightError as exc:
+                    raise APIError(exc.code, exc.message, exc.status)
+                return {"preflight": result}
             if len(parts) == 7 and parts[4] == "tasks" and parts[6] == "retry":
                 self._require(context, "task:retry", template["group_id"])
                 return service.retry_task(instance_id, unquote(parts[5]), actor)
@@ -1374,15 +1439,69 @@ class APIHandler(BaseHTTPRequestHandler):
         data = self.run_manager.export_run_sessions(req_id, run_id)
         self._send_json(200, data)
 
-    def _get_session_events(self, req_id: str, task_name: str, parsed_url=None):
+    def _audit_payload(self, context, parsed_url) -> dict:
+        """Query the global EventJournal with group/instance/actor/type filters."""
+        query = parse_qs(parsed_url.query)
+        group_id = query.get("group_id", [None])[0]
+        instance_id = query.get("instance_id", [None])[0]
+        actor = query.get("actor", [None])[0]
+        event_type = query.get("type", [None])[0]
+        try:
+            limit = max(1, min(int(query.get("limit", ["200"])[0]), 1000))
+        except (TypeError, ValueError) as exc:
+            raise APIError("INVALID_LIMIT", "limit 必须是整数", 400) from exc
+        if not group_id and instance_id:
+            service = self.job_flows or JobFlowService(self.consul)
+            try:
+                instance = service.get_instance(instance_id)
+            except APIError:
+                instance = None
+            if isinstance(instance, dict) and instance.get("group_id"):
+                group_id = instance["group_id"]
+            else:
+                legacy_group, _ = self.consul.kv_get(
+                    f"workflows/{instance_id}/project-group"
+                )
+                group_id = legacy_group or None
+        if not group_id and context.mode != "local":
+            raise APIError(
+                "AUDIT_SCOPE_REQUIRED",
+                "审计查询必须指定有权访问的项目组或实例",
+                422,
+            )
+        if group_id:
+            self._require(context, "group:read", group_id)
+        events, _ = self.event_journal.replay(limit=1000)
+        matched: list[dict] = []
+        for event in events:
+            subject = event.subject or {}
+            if group_id and subject.get("group_id") != group_id:
+                continue
+            if instance_id and instance_id not in {
+                subject.get("instance_id"), subject.get("req_id"),
+            }:
+                continue
+            if actor and event.actor.get("id") != actor:
+                continue
+            if event_type and event.type != event_type:
+                continue
+            matched.append(event.to_dict())
+        total = len(matched)
+        return {"events": matched[-limit:], "total": total, "limit": limit}
+
+    def _session_timeline_payload(
+        self, req_id: str, task_name: str, query: dict | None = None,
+    ) -> dict:
+        """Compute the normalized session timeline for a task (no response)."""
+        query = query or {}
         items, _ = self.consul.kv_get(
             f"workflows/{req_id}/sessions/{task_name}/", recurse=True
         )
         if not items:
-            return self._send_json(200, {
+            return {
                 "req_id": req_id, "task": task_name, "events": [],
                 "sessions": [], "total": 0, "next_cursor": None,
-            })
+            }
 
         prefix = f"workflows/{req_id}/sessions/{task_name}/"
         # 按 session_id 分组
@@ -1425,7 +1544,6 @@ class APIHandler(BaseHTTPRequestHandler):
         result.sort(key=lambda event: (str(event.get("ts", "")), str(event.get("seq", ""))))
         result = _coalesce_timeline_events(result)
 
-        query = parse_qs(parsed_url.query) if parsed_url is not None else {}
         requested_run = query.get("run_id", [None])[0]
         requested_attempt = query.get("attempt_id", [None])[0]
         if requested_run or requested_attempt:
@@ -1437,14 +1555,14 @@ class APIHandler(BaseHTTPRequestHandler):
             cursor_raw = query.get("cursor", [""])[0]
             start = int(cursor_raw) if cursor_raw else max(0, len(result) - limit)
         except (TypeError, ValueError):
-            return self._send_json(400, {"error": "cursor and limit must be integers"})
+            raise APIError("INVALID_CURSOR", "cursor 和 limit 必须是整数", 400)
         start = max(0, min(start, len(result)))
         page = result[start:start + limit]
         next_cursor = start + len(page)
         if next_cursor >= len(result):
             next_cursor = None
 
-        self._send_json(200, {
+        return {
             "req_id": req_id,
             "task": task_name,
             "events": page,
@@ -1452,7 +1570,14 @@ class APIHandler(BaseHTTPRequestHandler):
                          for s in sessions.values()],
             "total": len(result),
             "next_cursor": next_cursor,
-        })
+        }
+
+    def _get_session_events(self, req_id: str, task_name: str, parsed_url=None):
+        payload = self._session_timeline_payload(
+            req_id, task_name,
+            parse_qs(parsed_url.query) if parsed_url is not None else {},
+        )
+        self._send_json(200, payload)
 
     def _get_task_messages(self, req_id: str, task_name: str):
         self._send_json(200, {
@@ -2107,7 +2232,10 @@ def serve(consul: KVStore, host: str = "0.0.0.0", port: int = 8080,
     APIHandler.job_flows = JobFlowService(
         consul, APIHandler.capability_preflight, APIHandler.workspace_manager
     )
-    APIHandler.artifacts = ArtifactService(consul)
+    APIHandler.secrets = SecretStore(consul)
+    APIHandler.artifacts = ArtifactService(
+        consul, CleanupNotificationService(consul, APIHandler.event_journal)
+    )
     server = ThreadingHTTPServer((host, port), APIHandler)
     log.info("WebAPI serving on http://%s:%d/", host, port)
     return server

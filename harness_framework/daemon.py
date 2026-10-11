@@ -35,6 +35,8 @@ from .workspace_security import WorkspaceSecurity
 from .workspace_manager import WorkspaceManager
 from .project_groups import ProjectGroupService
 from .workspace_cleanup import WorkspaceCleanupWorker
+from .artifacts import ArtifactCleanupWorker
+from .artifacts import ArtifactService
 from .event_journal import EventJournal
 
 
@@ -101,6 +103,8 @@ def main() -> None:
     p.add_argument("--watchdog-interval", type=int, default=30)
     p.add_argument("--workspace-cleanup-interval", type=int, default=60,
                    help="Workspace Trash/清理后台任务轮询间隔（秒）")
+    p.add_argument("--artifact-cleanup-interval", type=int, default=3600,
+                   help="Artifact 过期后台任务轮询间隔（秒）")
     p.add_argument("--task-timeout", type=int, default=120,
                    help="单个任务最长执行时间（秒）")
     p.add_argument("--heartbeat-timeout", type=int, default=120,
@@ -236,6 +240,16 @@ def main() -> None:
     )
     cleanup_thread.start()
     threads.append(cleanup_thread)
+
+    artifact_cleanup_worker = ArtifactCleanupWorker(
+        ArtifactService(consul), interval=args.artifact_cleanup_interval
+    )
+    components.append(artifact_cleanup_worker)
+    artifact_cleanup_thread = threading.Thread(
+        target=artifact_cleanup_worker.run, name="artifact-cleanup", daemon=True
+    )
+    artifact_cleanup_thread.start()
+    threads.append(artifact_cleanup_thread)
 
     # Aggregator
     if not args.no_aggregator:
