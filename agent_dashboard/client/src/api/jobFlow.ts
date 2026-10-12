@@ -250,11 +250,31 @@ export async function listMcpGrants(groupId: string): Promise<{ grant_id: string
   return result.mcp_grants
 }
 
-export async function listAgentRuntimes(): Promise<{ runtime_id: string; name: string; status: string }[]> {
-  const result = await apiRequest<{ agent_runtimes: { runtime_id: string; name: string; status: string }[] }>(
+export async function listAgentRuntimes(): Promise<{ runtime_id: string; name: string; status: string; version?: string; adapter_id?: string }[]> {
+  const result = await apiRequest<{ agent_runtimes: { runtime_id: string; name: string; status: string; version?: string; adapter_id?: string }[] }>(
     '/api/agent-runtimes',
   )
   return result.agent_runtimes
+}
+
+export async function registerAgentRuntime(input: {
+  runtime_id?: string
+  name: string
+  version?: string
+  adapter_id?: string
+  acp_version?: string
+  health_endpoint?: string
+}): Promise<{ runtime_id: string; name: string; status: string }> {
+  const result = await apiRequest<{ agent_runtime?: { runtime_id: string; name: string; status: string } } & { runtime_id: string; name: string; status: string }>(
+    '/api/agent-runtimes', jsonRequest('POST', input),
+  )
+  return result.agent_runtime ?? result
+}
+
+export async function reportAgentRuntimeHealth(runtimeId: string, status: 'HEALTHY' | 'OFFLINE'): Promise<{ agent_runtime: { runtime_id: string; status: string } }> {
+  return apiRequest<{ agent_runtime: { runtime_id: string; status: string } }>(
+    '/api/agent-runtimes/' + encodeURIComponent(runtimeId) + '/health', jsonRequest('POST', { status }),
+  )
 }
 
 export async function updateInstanceProfile(instanceId: string, profileId: string): Promise<JobFlowInstance> {
