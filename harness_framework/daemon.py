@@ -24,6 +24,7 @@ import threading
 from typing import Any
 
 from .consul_client import ConsulClient
+from .agent_runtimes import ensure_daemon_runtime
 from .aggregator import Aggregator
 from .watchdog import Watchdog
 from .webapi import serve as webapi_serve
@@ -276,6 +277,13 @@ def main() -> None:
                 raise ValueError("--acp-routing must map task types to claude or codex")
         except (json.JSONDecodeError, ValueError) as exc:
             p.error(str(exc))
+        # 把实际 adapter 启动命令注册为 Agent Runtime 事实记录，
+        # 供 Preflight / Manifest / 设置页使用；dispatcher 认领任务时持续心跳。
+        for _key, _argv in commands.items():
+            try:
+                ensure_daemon_runtime(consul, _key, _argv)
+            except Exception:
+                log.warning("failed to register agent runtime acp-%s", _key, exc_info=True)
         acp_dispatcher = ACPDispatcher(
             consul, run_manager, commands=commands, routing=routing,
             workspace_root=args.acp_workspace_root,

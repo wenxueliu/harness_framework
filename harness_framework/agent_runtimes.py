@@ -72,3 +72,46 @@ class AgentRuntimeService:
         record["last_health_check"] = _now_iso()
         self._write(f"{self.PREFIX}/{runtime_id}", record)
         return record
+
+
+def derive_adapter_id(argv: list[str]) -> str:
+    """从 adapter 启动命令推导可读标识，如 npx 包名或模块名。"""
+    skip = {"npx", "node", "python", "python3", "uvx", "-y", "-m", "--"}
+    for token in reversed(argv):
+        name = token.rsplit("/", 1)[-1]
+        if name in skip or name.startswith("-"):
+            continue
+        return name
+    return ""
+
+
+def ensure_daemon_runtime(store: KVStore, key: str, argv: list[str]) -> dict:
+    """daemon 侧事实来源：按实际 adapter 启动命令注册/刷新 Runtime 记录。
+
+    dispatcher 每次成功认领任务都会调用，因此该记录始终反映真实执行链路；
+    人工标记的 OFFLINE 会被活跃的 dispatcher 覆盖回 HEALTHY。
+    """
+    service = AgentRuntimeService(store)
+    runtime_id = f"acp-{key}"
+    adapter_id = derive_adapter_id(argv)
+    now = _now_iso()
+    try:
+        record = service.get(runtime_id)
+        record["status"] = "HEALTHY"
+    except RuntimeError:
+        record = {
+            "runtime_id": runtime_id,
+            "name": f"ACP {key}",
+            "version": "1.0.0",
+            "acp_version": "1.2",
+            "supported_capabilities": [],
+            "health_endpoint": "",
+            "registered_by": "daemon",
+            "registered_at": now,
+            "status": "HEALTHY",
+        }
+    record["adapter_id"] = adapter_id
+    record["command"] = list(argv)
+    record["last_heartbeat_at"] = now
+    service._write(f"{AgentRuntimeService.PREFIX}/{runtime_id}", record)
+    return record

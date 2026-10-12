@@ -11,6 +11,7 @@ import uuid
 from typing import Any, Callable
 
 from .acp_client import ACPClient, ACPError, ACPResult
+from .agent_runtimes import ensure_daemon_runtime
 from .human_interaction import (
     claim_next_human_message,
     finish_human_message,
@@ -351,6 +352,11 @@ class ACPDispatcher:
             req_id, run_id, task_name, "PENDING", "IN_PROGRESS", agent_id,
             "dispatched through ACP", {"provider": provider, "attempt_id": attempt_id},
         )
+        try:
+            # 认领成功 = 该 adapter 链路真实可用，回写 Runtime 事实状态
+            ensure_daemon_runtime(self.store, provider, self.commands.get(provider, []))
+        except Exception:
+            log.exception("runtime heartbeat failed for %s", provider)
         return {
             "provider": provider, "attempt_id": attempt_id,
             "lease_epoch": lease_epoch, "agent_id": agent_id, "run_id": run_id,
