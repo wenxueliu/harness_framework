@@ -45,6 +45,17 @@ def prepare_runtime_profile(port: int, group_id: str = "unassigned", profile_id:
         "agent_runtime_id": "runtime-main",
     })
     assert status == 201
+    # 模拟 daemon 启动时按实际 adapter 注册的 acp-<provider> Runtime
+    # （Preflight 按 DAG 节点 agent 字段逐一检查这些 Runtime）
+    for provider in ("claude", "codex"):
+        status, _ = request(port, "POST", "/api/agent-runtimes", {
+            "runtime_id": f"acp-{provider}", "name": f"ACP {provider}",
+        })
+        assert status == 201
+        status, _ = request(port, "POST", f"/api/agent-runtimes/acp-{provider}/health", {
+            "status": "HEALTHY",
+        })
+        assert status == 200
     return profile["profile_id"]
 
 

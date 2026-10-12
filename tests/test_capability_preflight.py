@@ -50,6 +50,37 @@ def test_preflight_runtime_unhealthy(env):
     runtime_svc.update_health("rt-1", "UNHEALTHY")
     result = preflight.run("inst-1")
     assert result["status"] == "BLOCKED"
-    runtime_check = next(c for c in result["checks"] if c["check_id"] == "agent-runtime")
+    runtime_check = next(c for c in result["checks"] if c["check_id"].startswith("agent-runtime"))
     assert runtime_check["status"] == "FAIL"
     assert "remediation" in runtime_check
+
+
+def test_preflight_checks_each_node_provider(env):
+    """DAG 节点绑定不同 provider 时，Preflight 应逐一检查对应 Runtime。"""
+    import json as _json
+    preflight, runtime_svc, _, _, store = env
+    runtime_svc.register({"runtime_id": "acp-claude", "name": "ACP claude"}, "daemon")
+    runtime_svc.register({"runtime_id": "acp-codex", "name": "ACP codex"}, "daemon")
+    runtime_svc.update_health("acp-claude", "HEALTHY")
+
+    # 实例指向模板版本，节点分别使用 claude 和 codex
+    store.kv_put("instances/inst-1", _json.dumps({
+        "instance_id": "inst-1", "execution_profile_id": "prof-1",
+        "run_workspace_id": "ws-1", "current_attempt_id": "attempt-1",
+        "template_id": "tpl-1", "version_id": "v1",
+    }))
+    store.kv_put("jobflows/templates/tpl-1/versions/v1/manifest", _json.dumps({
+        "tasks": [
+            {"id": "design", "agent": "claude", "depends_on": []},
+            {"id": "build", "agent": "codex", "depends_on": ["design"]},
+        ],
+    }))
+
+    # codex Runtime 不健康 → 应 BLOCKED，且 claude 节点的 Runtime 检查仍 PASS
+    runtime_svc.update_health("acp-codex", "UNHEALTHY")
+    result = preflight.run("inst-1")
+    assert result["status"] == "BLOCKED"
+    by_id = {c["check_id"]: c for c in result["checks"]}
+    assert by_id["agent-runtime:acp-claude"]["status"] == "PASS"
+    assert by_id["agent-runtime:acp-codex"]["status"] == "FAIL"
+    assert "codex" in by_id["agent-runtime:acp-codex"]["detail"]

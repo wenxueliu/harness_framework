@@ -36,6 +36,30 @@ class CapabilityPreflightService:
     def _write(self, key: str, value):
         self.store.kv_put(key, json.dumps(value, ensure_ascii=False))
 
+    def _required_runtimes(self, instance: dict, profile: dict) -> list[tuple[str, str]]:
+        """解析实例 DAG 节点实际引用的 provider 及其 Runtime ID（去重保序）。
+
+        节点的 agent 字段是 provider 名（claude/codex），对应 daemon 自动注册的
+        acp-<provider> Runtime；旧模板没有 agent 字段时回退到 Profile 绑定的 Runtime。
+        """
+        template_id = str(instance.get("template_id", ""))
+        version_id = str(instance.get("version_id", ""))
+        manifest: dict = {}
+        if template_id and version_id:
+            manifest = self._read(
+                f"jobflows/templates/{template_id}/versions/{version_id}/manifest", {}
+            ) or {}
+        providers: list[str] = []
+        for task in (manifest.get("tasks") or []):
+            if isinstance(task, dict):
+                agent = str(task.get("agent", "")).strip().lower()
+                if agent and agent not in providers:
+                    providers.append(agent)
+        if providers:
+            return [(provider, f"acp-{provider}") for provider in providers]
+        runtime_id = str(profile.get("agent_runtime_id", "")).strip()
+        return [(runtime_id, runtime_id)] if runtime_id else []
+
     def run(self, instance_id: str) -> dict:
         instance = self._read(f"{JOBFLOW_INSTANCE_PREFIX}/{instance_id}/meta")
         storage_prefix = JOBFLOW_INSTANCE_PREFIX
@@ -52,16 +76,23 @@ class CapabilityPreflightService:
         profile_id = instance.get("execution_profile_id", "")
         profile = None
 
-        # Agent Runtime check
+        # Agent Runtime check — 实例 DAG 每个节点可绑定不同 provider（claude/codex），
+        # 因此按节点实际引用的 provider 逐一检查对应 Runtime，而不是只看 Profile 绑定的那一个。
         try:
             if not profile_id:
                 raise PreflightError("PROFILE_REQUIRED", "实例未绑定 Execution Profile")
             profile = self.profile_service.get(profile_id)
-            runtime = self.runtime_service.get(profile["agent_runtime_id"])
-            status = "PASS" if runtime["status"] == "HEALTHY" else "FAIL"
-            checks.append({"check_id": "agent-runtime", "status": status,
-                           "detail": f"{runtime['name']} v{runtime['version']} {runtime['status']}",
-                           **({"reason": f"Runtime {runtime['status']}", "remediation": "检查 Agent Runtime 或联系 Admin"} if status == "FAIL" else {})})
+            for provider, runtime_id in self._required_runtimes(instance, profile):
+                try:
+                    runtime = self.runtime_service.get(runtime_id)
+                    status = "PASS" if runtime["status"] == "HEALTHY" else "FAIL"
+                    checks.append({"check_id": f"agent-runtime:{runtime_id}", "status": status,
+                                   "detail": f"节点 provider={provider} → {runtime['name']} v{runtime['version']} {runtime['status']}",
+                                   **({"reason": f"Runtime {runtime['status']}", "remediation": "检查 Agent Runtime 或联系 Admin"} if status == "FAIL" else {})})
+                except Exception as exc:
+                    checks.append({"check_id": f"agent-runtime:{runtime_id}", "status": "FAIL",
+                                   "detail": f"节点 provider={provider}: {exc}", "reason": str(exc),
+                                   "remediation": "检查 Runtime 配置或 daemon 是否已注册该 adapter"})
         except (PreflightError, Exception) as exc:
             checks.append({"check_id": "agent-runtime", "status": "FAIL",
                            "detail": str(exc), "reason": str(exc), "remediation": "检查 Runtime 配置"})
