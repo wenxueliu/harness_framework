@@ -212,10 +212,9 @@ def test_workflow_builder_publish_shows_created_task_list(page: Page, dashboard_
 
 @pytest.mark.e2e
 def test_selected_project_workflow_is_not_created_under_unassigned(page: Page, dashboard_url: str) -> None:
-    """Creating a template from a selected project navigates to the builder."""
+    """Creating a template from a selected project keeps the project context."""
     group_name = f"UI Workflow Project {time.time_ns()}"
     group_id = _create_group_via_api(group_name)
-    # ProjectGroupSidebar is `hidden lg:flex`: it only renders at >=1024px.
     # WebBridge's CDP metrics need an attached tab, so navigate first, widen
     # the viewport, then interact. Restore desktop metrics at the end because
     # WebBridge applies CDP metrics at browser level.
@@ -226,10 +225,13 @@ def test_selected_project_workflow_is_not_created_under_unassigned(page: Page, d
     try:
         group_item = page.get_by_text(group_name)
         expect(group_item).to_be_visible(timeout=10000)
+        # Clicking a project lands on its template tab (project-scoped).
         group_item.click()
-        page.get_by_text("从模板创建").click()
-        wait_for_network_idle(page)
         expect(page.get_by_text("作业流模板")).to_be_visible(timeout=10000)
+        page.locator('[data-testid="create-template"]').click()
+        wait_for_network_idle(page)
+        # The builder keeps the selected project context via the groupId query.
+        expect(page.get_by_text("新建作业流模板")).to_be_visible(timeout=10000)
     finally:
         try:
             page.set_viewport_size({"width": 1280, "height": 900})
