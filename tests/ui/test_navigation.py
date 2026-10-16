@@ -163,6 +163,28 @@ class TestTemplateDetailBack:
             _cleanup_group(group_id)
 
 
+class TestTemplateBuilderBack:
+    """模板编辑器：编辑态返回模板详情，新建态返回首页。"""
+
+    def test_edit_back_goes_to_template_detail(self, page: Page):
+        template_id = _create_template("unassigned", "nav-builder")
+        try:
+            page.goto(f"{BASE_URL}/#/templates/{template_id}/edit")
+            page.wait_for_selector('[data-testid="builder-back"]', timeout=10000)
+            page.click('[data-testid="builder-back"]')
+            page.wait_for_timeout(800)
+            assert page.evaluate("() => location.hash") == f"#/templates/{template_id}"
+        finally:
+            _cleanup_template(template_id)
+
+    def test_new_back_goes_home(self, page: Page):
+        page.goto(f"{BASE_URL}/#/templates/new")
+        page.wait_for_selector('[data-testid="builder-back"]', timeout=10000)
+        page.click('[data-testid="builder-back"]')
+        page.wait_for_timeout(800)
+        assert page.evaluate("() => location.hash") == "#/"
+
+
 class TestInstanceWizardWorkspace:
     """创建实例向导：非 DEMO_TEMP 策略必须选择项目工作区。"""
 

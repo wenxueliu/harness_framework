@@ -2,6 +2,7 @@
 import { computed, defineAsyncComponent, nextTick, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import AppShell from '@/layouts/AppShell.vue'
+import { ArrowLeft } from 'lucide-vue-next'
 import DagGraph from '@/components/DagGraph.vue'
 import ConflictDialog from '@/components/ConflictDialog.vue'
 import PublishDialog from '@/components/PublishDialog.vue'
@@ -449,6 +450,11 @@ function scrollToTaskLine(task: Task) {
 
 <template>
   <AppShell :title="template ? '编辑作业流模板' : '新建作业流模板'" eyebrow="Manual DAG Builder">
+    <!-- 编辑态返回模板详情；新建态返回首页 -->
+    <button type="button" data-testid="builder-back" class="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
+      @click="router.push(template ? `/templates/${encodeURIComponent(String(route.params.templateId))}` : '/')">
+      <ArrowLeft :size="13" />返回
+    </button>
     <template #actions>
       <button data-testid="undo-editor" class="rounded border border-border px-3 py-2 text-xs" :disabled="historyIndex <= 0" @click="undo">撤销</button>
       <button data-testid="redo-editor" class="rounded border border-border px-3 py-2 text-xs" :disabled="historyIndex >= history.length - 1" @click="redo">重做</button>
