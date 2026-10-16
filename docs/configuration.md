@@ -101,6 +101,10 @@
 默认 `design/review → claude`，其他可执行类型 → `codex`。任务用
 `"acp":{"agent":"claude"}` 覆盖；完整说明见 [ACP Agent 执行](acp-execution.md)。
 
+> 注意：Execution Profile 的 `agent_runtime_id` 只参与 Preflight 检查和 Manifest
+> 快照，**不参与**实际 dispatch 路由；节点未配置 `acp.agent` 时按上述类型路由表
+> 执行，不会回退到 Profile 绑定。详见 [ACP Agent 执行](acp-execution.md) 第 5 节。
+
 ### 历史 Worker 名称匹配（不再用于新模型）
 
 `agent_name` 是调度键，`service_name` 不是。Agent 注册时同时提供：

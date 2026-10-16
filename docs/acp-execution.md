@@ -105,6 +105,36 @@ ACP 不提供统一的 Skill 参数。Skill 必须通过以下一种由 Adapter 
 
 没有支持的注入方式时，预检失败，不静默丢弃 Skill。
 
+### 实现现状：记录结构与事实来源
+
+Agent Runtime 记录存储在 KV（`agent-runtimes/{runtime_id}`），字段分两类：
+
+- **静态注册字段**：`name`、`version`、`supported_capabilities`、`health_endpoint`、`registered_by/registered_at`，由人工注册时写入（`POST /api/agent-runtimes`）；
+- **动态事实字段**：`status`、`last_heartbeat_at`、`adapter_id`、`command`，由 daemon 侧自动覆写。
+
+事实来源机制（`ensure_daemon_runtime`）：
+
+1. daemon 启动时按实际 adapter 启动命令注册每个 provider 的 Runtime 记录，
+   `runtime_id` 固定为 `acp-{provider}`（如 `acp-codex`），`registered_by=daemon`；
+2. dispatcher 每次成功认领任务都会回写记录并刷新心跳；记录不存在时自动重建。
+   人工标记的 OFFLINE 会被活跃 dispatcher 覆盖回 HEALTHY——下线一个后端的正确
+   位置是 Execution Profile 换绑，而不是手工改状态。
+
+Preflight 的 Runtime 检查顺序（`_required_runtimes`）：先收集实例 DAG 节点实际
+绑定的 provider（映射为 `acp-{provider}`），节点均未绑定时才退回 Profile 的
+`agent_runtime_id`；逐条检查记录存在且 `HEALTHY`。
+
+**已知裂缝：声明不参与 dispatch 路由。** 实际执行时 `_resolve_agent` 只认任务
+自带配置（`acp.agent`）或任务类型路由表（兜底 `codex`），Profile 的
+`agent_runtime_id` 只被 Preflight 和 Manifest 快照消费，从不参与运行时路由。
+因此可能出现 Preflight 检查的是 `acp-claude` 并通过，而 dispatcher 按路由表
+实际启动 codex。当前实践建议：
+
+- 想让 Agent 选择真正生效，在任务/节点级显式写 `"acp":{"agent":"..."}`；
+- Profile 绑定建议直接选 `acp-claude` / `acp-codex` 等事实记录，保持声明与
+  实际一致；
+- 修复方向：让 `_resolve_agent` 的最终兜底消费 Profile 绑定，使声明闭环。
+
 ## 6. MCP 注入与权限
 
 MCP 需要区分两件事：
