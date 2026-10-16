@@ -29,13 +29,17 @@ const MonacoEditor = defineAsyncComponent(async () => {
 })
 
 // 测试钩子：暴露 Monaco editor 实例，供 UI 自动化通过模型 API 写入内容
-type MonacoEditorLike = { setValue: (value: string) => void }
+type MonacoEditorLike = { setValue: (value: string) => void; layout?: () => void }
 type HarnessMonacoWindow = Window & { __harnessMonacoEditors?: Record<string, MonacoEditorLike> }
 function trackEditor(key: string) {
   return (editor: MonacoEditorLike) => {
     const store = (window as HarnessMonacoWindow).__harnessMonacoEditors ?? {}
     store[key] = editor
     ;(window as HarnessMonacoWindow).__harnessMonacoEditors = store
+    // Monaco 在异步组件挂载时可能以 5x5 兜底尺寸初始化且 automaticLayout 不恢复，
+    // 等容器完成布局后显式重排版
+    requestAnimationFrame(() => editor.layout?.())
+    setTimeout(() => editor.layout?.(), 200)
   }
 }
 const onTasksEditorMounted = trackEditor('tasks')
@@ -461,14 +465,14 @@ function scrollToTaskLine(task: Task) {
         </div>
         <div class="rounded-lg border border-border bg-card p-4">
           <div class="mb-2 flex items-center justify-between"><h2 class="text-sm font-semibold">节点定义 JSON</h2><button class="text-xs text-blue-300" @click="validate">校验 DAG</button></div>
-          <div data-testid="tasks-editor" class="min-h-80 overflow-hidden rounded border border-input">
+          <div data-testid="tasks-editor" class="h-80 overflow-hidden rounded border border-input">
             <MonacoEditor v-model:value="tasksText" language="json" theme="vs-dark" :options="{ automaticLayout: true, minimap: { enabled: false }, fontSize: 12 }" @mount="onTasksEditorMounted" />
           </div>
           <p class="mt-2 text-[11px] text-muted-foreground">支持节点数组或“节点 ID → 配置”对象；节点可使用 id、depends_on、type、service_name 及 ACP、资源预算等扩展字段。</p>
         </div>
         <div class="rounded-lg border border-border bg-card p-4">
           <div class="mb-2 flex items-center justify-between"><h2 class="text-sm font-semibold">参数 Schema</h2><button class="text-xs text-blue-300" data-testid="schema-editor-toggle" @click="parameterSchemaText = JSON.stringify(parseSchema(), null, 2)">格式化</button></div>
-          <div data-testid="schema-editor" class="min-h-48 overflow-hidden rounded border border-input">
+          <div data-testid="schema-editor" class="h-48 overflow-hidden rounded border border-input">
             <MonacoEditor v-model:value="parameterSchemaText" language="json" theme="vs-dark" :options="{ automaticLayout: true, minimap: { enabled: false }, fontSize: 12 }" @mount="onSchemaEditorMounted" />
           </div>
           <div v-if="schemaProperties.length" class="mt-3 space-y-3">

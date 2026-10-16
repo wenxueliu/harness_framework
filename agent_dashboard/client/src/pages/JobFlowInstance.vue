@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
+import { ArrowLeft } from 'lucide-vue-next'
 import AppShell from '@/layouts/AppShell.vue'
 import DagGraph from '@/components/DagGraph.vue'
 import PreflightPanel, { type PreflightResult } from '@/components/PreflightPanel.vue'
@@ -305,6 +306,15 @@ function enterTask(task: Task) {
   void router.push('/instances/' + encodeURIComponent(instanceId) + '/tasks/' + encodeURIComponent(task.id))
 }
 
+// 返回到实例所属模板的详情页；无模板信息时回落到实例列表
+function goBack() {
+  if (instance.value?.template_id) {
+    void router.push(`/templates/${encodeURIComponent(instance.value.template_id)}`)
+  } else {
+    void router.push('/instances')
+  }
+}
+
 function applyTabFromQuery() {
   const tab = route.query.tab
   if (typeof tab === 'string' && TAB_KEYS.includes(tab) && tab !== activeTab.value) loadTab(tab)
@@ -334,6 +344,9 @@ watch(() => instance.value?.group_id, (groupId) => {
     </template>
     <div v-if="error" role="alert" class="m-6 rounded bg-red-400/10 p-4 text-sm text-red-300">{{ error }}</div>
     <div v-else-if="instance" class="mx-auto max-w-6xl space-y-4 p-4 sm:p-6">
+      <button type="button" class="inline-flex items-center gap-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground" @click="goBack">
+        <ArrowLeft :size="13" />返回
+      </button>
       <nav data-testid="instance-breadcrumb" class="flex items-center gap-1.5 text-xs text-muted-foreground">
         <RouterLink to="/templates" class="hover:text-foreground">{{ instance.group_id || 'unassigned' }}</RouterLink>
         <span>›</span>

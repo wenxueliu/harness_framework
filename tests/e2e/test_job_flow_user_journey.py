@@ -133,14 +133,13 @@ def test_home_shows_instances_and_template_create_button(
             "parameters": {}, "git": {}, "workspace": {},
         })
 
-        page.goto(dashboard_url + "/#/")
+        page.goto(dashboard_url + "/#/dashboard")
         wait_for_network_idle(page)
 
         expect(page.get_by_text(instance_name)).to_be_visible(timeout=15000)
 
-        page.locator("text=从模板创建").first.wait_for(timeout=10000)
-
-        page.locator("text=从模板创建").first.click()
+        # 看板顶栏的「从模板创建」入口已移除，直接访问模板列表验证页面可用
+        page.goto(dashboard_url + "/#/templates")
         wait_for_network_idle(page)
         expect(page.get_by_text("作业流模板")).to_be_visible(timeout=10000)
     finally:

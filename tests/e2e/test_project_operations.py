@@ -73,12 +73,23 @@ def test_project_group_member_workspace_lifecycle(page: Page, dashboard_url: str
     try:
         expect(page.get_by_text("新建项目")).to_be_visible(timeout=10000)
         page.get_by_text("新建项目").click()
-        expect(page.get_by_text("创建项目组")).to_be_visible(timeout=10000)
+        expect(page.get_by_text("创建项目")).to_be_visible(timeout=10000)
 
-        page.locator('input[placeholder="新项目组名称"]').fill(group_name)
-        page.locator('input[placeholder="说明"]').fill("UI automation group")
-        page.get_by_text("创建项目组").click()
+        page.locator('input[placeholder="项目名称"]').fill(group_name)
+        page.locator('input[placeholder="项目说明"]').fill("UI automation group")
+        page.get_by_text("创建项目").click()
+        # 创建成功后返回首页，项目列表中出现新项目
         expect(page.get_by_text(group_name)).to_be_visible(timeout=10000)
+
+        # 成员/Workspace 管理仍在配置页完成，通过 ?group= 预选新项目组
+        group_response = requests.get(f"{WEBAPI_URL}/api/project-groups", timeout=10)
+        preselect_group_id = next(
+            item["group_id"] for item in group_response.json()["project_groups"]
+            if item["name"] == group_name
+        )
+        page.goto(f"{dashboard_url}/#/settings?group={preselect_group_id}")
+        wait_for_network_idle(page)
+        expect(page.get_by_text("成员与角色")).to_be_visible(timeout=10000)
 
         page.locator('input[placeholder="subject ID"]').fill(member)
         page.get_by_text("添加").click()

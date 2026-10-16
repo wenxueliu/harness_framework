@@ -33,6 +33,7 @@ export interface WorkspaceFile {
 export interface ProjectGroup {
   group_id: string; name: string; description: string; status: 'ACTIVE' | 'ARCHIVED'
   default_workspace_id: string | null; virtual?: boolean; revision: number
+  created_by?: string; created_at?: string; updated_at?: string
 }
 export interface ProjectWorkspace {
   workspace_id: string; group_id: string; name: string; source_type: 'LOCAL_PATH' | 'GIT_CLONE'

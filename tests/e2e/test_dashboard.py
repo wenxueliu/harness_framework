@@ -28,7 +28,7 @@ class TestDashboardLoad:
     @pytest.mark.smoke
     def test_dashboard_loads(self, page: Page, dashboard_url: str) -> None:
         """页面正常加载，标题可见，无白屏。"""
-        page.goto(dashboard_url)
+        page.goto(dashboard_url + "/#/dashboard")
         wait_for_network_idle(page)
 
         # 标题可见
@@ -48,7 +48,7 @@ class TestDashboardLoad:
                 errors.append(msg.text)
 
         page.on("console", _on_console)
-        page.goto(dashboard_url)
+        page.goto(dashboard_url + "/#/dashboard")
         wait_for_network_idle(page)
 
         # 过滤掉可能的非关键 error（如 favicon 404）
@@ -59,7 +59,7 @@ class TestDashboardLoad:
 
     def test_data_source_indicator(self, page: Page, dashboard_url: str) -> None:
         """数据源指示器显示 Mock 或 Consul 状态。"""
-        page.goto(dashboard_url)
+        page.goto(dashboard_url + "/#/dashboard")
         wait_for_network_idle(page)
 
         indicator = page.locator(".pulse-dot")
@@ -77,7 +77,7 @@ class TestWorkflowList:
 
     def test_workflow_list_displays(self, page: Page, dashboard_url: str, job_flow_instances) -> None:
         """侧边栏显示实例列表。"""
-        page.goto(dashboard_url)
+        page.goto(dashboard_url + "/#/dashboard")
         wait_for_network_idle(page)
 
         # 桌面端侧边栏有 "需求列表" 标题
@@ -87,7 +87,7 @@ class TestWorkflowList:
 
     def test_multiple_workflows_visible(self, page: Page, dashboard_url: str, job_flow_instances) -> None:
         """侧边栏显示多个实例。"""
-        page.goto(dashboard_url)
+        page.goto(dashboard_url + "/#/dashboard")
         wait_for_network_idle(page)
 
         expect(page.get_by_text("用户订单中心 v2.0")).to_be_visible(timeout=15000)
@@ -96,7 +96,7 @@ class TestWorkflowList:
 
     def test_workflow_selection(self, page: Page, dashboard_url: str, job_flow_instances) -> None:
         """点击实例切换详情。"""
-        page.goto(dashboard_url)
+        page.goto(dashboard_url + "/#/dashboard")
         wait_for_network_idle(page)
 
         page.get_by_text("支付网关集成").first.click()
@@ -107,7 +107,7 @@ class TestWorkflowList:
 
     def test_first_workflow_auto_selected(self, page: Page, dashboard_url: str, job_flow_instances) -> None:
         """第一个实例自动选中。"""
-        page.goto(dashboard_url)
+        page.goto(dashboard_url + "/#/dashboard")
         wait_for_network_idle(page)
 
         expect(page.get_by_text("用户订单中心 v2.0")).to_be_visible(timeout=15000)
@@ -118,7 +118,7 @@ class TestDagGraph:
 
     def test_dag_graph_renders(self, page: Page, dashboard_url: str) -> None:
         """DAG 图正确渲染 SVG 元素。"""
-        page.goto(dashboard_url)
+        page.goto(dashboard_url + "/#/dashboard")
         wait_for_network_idle(page)
 
         # DAG 区域标题
@@ -135,7 +135,7 @@ class TestDagGraph:
 
     def test_dag_task_click_opens_drawer(self, page: Page, dashboard_url: str) -> None:
         """点击 DAG 图中的任务节点打开详情抽屉。"""
-        page.goto(dashboard_url)
+        page.goto(dashboard_url + "/#/dashboard")
         wait_for_network_idle(page)
 
         # 点击 SVG 中的文本节点（任务名）
@@ -157,7 +157,7 @@ class TestTaskList:
 
     def test_task_list_displays(self, page: Page, dashboard_url: str) -> None:
         """桌面端表格显示任务列表。"""
-        page.goto(dashboard_url)
+        page.goto(dashboard_url + "/#/dashboard")
         wait_for_network_idle(page)
 
         # 任务列表标题
@@ -172,14 +172,14 @@ class TestTaskList:
 
     def test_task_list_contains_status_badges(self, page: Page, dashboard_url: str, job_flow_instances) -> None:
         """任务区域包含状态信息。"""
-        page.goto(dashboard_url)
+        page.goto(dashboard_url + "/#/dashboard")
         wait_for_network_idle(page)
 
         expect(page.get_by_text("任务完成")).to_be_visible(timeout=10000)
 
     def test_progress_bar(self, page: Page, dashboard_url: str) -> None:
         """进度条显示正确的任务完成数。"""
-        page.goto(dashboard_url)
+        page.goto(dashboard_url + "/#/dashboard")
         wait_for_network_idle(page)
 
         # 进度条显示 "N/M 任务完成"
@@ -196,7 +196,7 @@ class TestControlSignals:
 
     def test_control_pause_button_visible(self, page: Page, dashboard_url: str) -> None:
         """第一个 workflow (DEVELOPMENT 阶段) 显示暂停按钮。"""
-        page.goto(dashboard_url)
+        page.goto(dashboard_url + "/#/dashboard")
         wait_for_network_idle(page)
 
         # 第一个 workflow 自动选中，处于 DEVELOPMENT 阶段
@@ -206,7 +206,7 @@ class TestControlSignals:
 
     def test_control_abort_button_visible(self, page: Page, dashboard_url: str) -> None:
         """中止按钮在非 DONE 阶段可见。"""
-        page.goto(dashboard_url)
+        page.goto(dashboard_url + "/#/dashboard")
         wait_for_network_idle(page)
 
         abort_btn = page.get_by_text("中止")
@@ -214,7 +214,7 @@ class TestControlSignals:
 
     def test_control_pause_opens_dialog(self, page: Page, dashboard_url: str) -> None:
         """点击暂停打开确认对话框。"""
-        page.goto(dashboard_url)
+        page.goto(dashboard_url + "/#/dashboard")
         wait_for_network_idle(page)
 
         # 点击暂停
@@ -234,7 +234,7 @@ class TestControlSignals:
 
     def test_control_blocked_workflow_shows_retry(self, page: Page, dashboard_url: str, job_flow_instances) -> None:
         """QUEUED 状态的实例显示暂停和中止按钮。"""
-        page.goto(dashboard_url)
+        page.goto(dashboard_url + "/#/dashboard")
         wait_for_network_idle(page)
 
         page.get_by_text("消息通知中心").first.click()
@@ -246,7 +246,7 @@ class TestControlSignals:
     @pytest.mark.smoke
     def test_control_dialog_confirm(self, page: Page, dashboard_url: str) -> None:
         """确认暂停操作。"""
-        page.goto(dashboard_url)
+        page.goto(dashboard_url + "/#/dashboard")
         wait_for_network_idle(page)
 
         # 点击暂停
@@ -270,7 +270,7 @@ class TestEmptyState:
         # 直接访问 dashboard（mock 数据会自动加载并选中第一个）
         # 空状态在 mock 数据不可用的情况下出现
         # 这里我们验证默认情况下的正常渲染
-        page.goto(dashboard_url)
+        page.goto(dashboard_url + "/#/dashboard")
         wait_for_network_idle(page)
 
         # 正常情况下有数据，不应看到空状态
@@ -283,13 +283,12 @@ class TestRefresh:
     """刷新功能测试。"""
 
     def test_refresh_button_exists(self, page: Page, dashboard_url: str) -> None:
-        """刷新按钮可点击。"""
-        page.goto(dashboard_url)
+        """看板顶栏已移除手动刷新按钮（数据自动轮询）。"""
+        page.goto(dashboard_url + "/#/dashboard")
         wait_for_network_idle(page)
 
-        # 刷新按钮包含文字 "刷新"
-        refresh_btn = page.get_byText("刷新")
-        expect(refresh_btn).to_be_visible(timeout=10000)
+        # 顶栏不再提供「刷新」入口
+        assert page.get_by_text("刷新").count() == 0
 
 
 class TestPhaseBadges:
@@ -297,14 +296,14 @@ class TestPhaseBadges:
 
     def test_phase_badge_displays(self, page: Page, dashboard_url: str, job_flow_instances) -> None:
         """各实例显示正确的阶段徽章。"""
-        page.goto(dashboard_url)
+        page.goto(dashboard_url + "/#/dashboard")
         wait_for_network_idle(page)
 
         expect(page.get_by_text("PENDING").first).to_be_visible(timeout=10000)
 
     def test_done_phase_badge(self, page: Page, dashboard_url: str, job_flow_instances) -> None:
         """DONE 阶段的实例显示正确徽章。"""
-        page.goto(dashboard_url)
+        page.goto(dashboard_url + "/#/dashboard")
         wait_for_network_idle(page)
 
         done_badge = page.get_by_text("PENDING").first
@@ -318,7 +317,7 @@ class TestResponsiveLayout:
         """375px 视口下页面正常加载。"""
         # WebBridge's CDP command needs an attached tab; navigate once before
         # applying the mobile metrics, then reload under the new viewport.
-        page.goto(dashboard_url)
+        page.goto(dashboard_url + "/#/dashboard")
         page.set_viewport_size({"width": 375, "height": 812})
         page.reload()
         wait_for_network_idle(page)

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import { Archive, FolderPlus, ShieldCheck, Trash2, UserPlus } from 'lucide-vue-next'
 import AppShell from '@/layouts/AppShell.vue'
 import { useCapabilityStore } from '@/stores/capabilities'
@@ -9,6 +10,7 @@ import type { ProjectGroup, ProjectGroupMember, ProjectWorkspace, WorkspacePrefl
 import type { ExecutionProfileSummary } from '@/api/jobFlow'
 
 const capabilities = useCapabilityStore()
+const route = useRoute()
 const groups = ref<ProjectGroup[]>([])
 const selectedId = ref('')
 const members = ref<ProjectGroupMember[]>([])
@@ -75,6 +77,11 @@ async function load() {
   error.value = ''
   await capabilities.load(selectedId.value || undefined)
   groups.value = (await listProjectGroups()).filter((group) => !group.virtual)
+  // 支持 ?group=<groupId> 预选（项目页徽标跳转入口），组不存在时维持默认行为
+  const preselect = typeof route.query.group === 'string' ? route.query.group : ''
+  if (!selectedId.value && preselect && groups.value.some((group) => group.group_id === preselect)) {
+    selectedId.value = preselect
+  }
   if (!selectedId.value && groups.value.length) {
     // 优先选中 ACTIVE 组，避免落在归档组上导致各配置表单不可见
     selectedId.value = (groups.value.find((group) => group.status === 'ACTIVE') ?? groups.value[0]).group_id

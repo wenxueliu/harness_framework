@@ -42,7 +42,7 @@ class TestDashboardPerformance:
 
     def test_dashboard_fcp(self, page: Page, dashboard_url: str) -> None:
         """首次内容绘制 < 1.5s。"""
-        page.goto(dashboard_url)
+        page.goto(dashboard_url + "/#/dashboard")
         wait_for_network_idle(page)
 
         metrics = collect_perf_metrics(page)
@@ -55,7 +55,7 @@ class TestDashboardPerformance:
 
     def test_dashboard_lcp(self, page: Page, dashboard_url: str) -> None:
         """最大内容绘制 < 2.5s。"""
-        page.goto(dashboard_url)
+        page.goto(dashboard_url + "/#/dashboard")
         wait_for_network_idle(page)
 
         metrics = collect_perf_metrics(page)
@@ -67,7 +67,7 @@ class TestDashboardPerformance:
 
     def test_dashboard_ttfb(self, page: Page, dashboard_url: str) -> None:
         """首字节时间 < 800ms。"""
-        page.goto(dashboard_url)
+        page.goto(dashboard_url + "/#/dashboard")
         wait_for_network_idle(page)
 
         metrics = collect_perf_metrics(page)
@@ -82,7 +82,7 @@ class TestDashboardPerformance:
 
         参考 gstack /benchmark 的性能预算。
         """
-        page.goto(dashboard_url)
+        page.goto(dashboard_url + "/#/dashboard")
         wait_for_network_idle(page)
 
         metrics = collect_perf_metrics(page)
@@ -101,7 +101,7 @@ class TestDashboardPerformance:
 
     def test_total_requests(self, page: Page, dashboard_url: str) -> None:
         """首屏请求数保持在 60 以内。"""
-        page.goto(dashboard_url)
+        page.goto(dashboard_url + "/#/dashboard")
         wait_for_network_idle(page)
 
         metrics = collect_perf_metrics(page)
@@ -113,7 +113,7 @@ class TestDashboardPerformance:
 
     def test_full_load_time(self, page: Page, dashboard_url: str) -> None:
         """完整加载时间 < 3s。"""
-        page.goto(dashboard_url)
+        page.goto(dashboard_url + "/#/dashboard")
         wait_for_network_idle(page)
 
         metrics = collect_perf_metrics(page)
@@ -130,7 +130,7 @@ class TestWorkflowSwitchLatency:
 
     def test_workflow_switch_latency(self, page: Page, dashboard_url: str) -> None:
         """页面数据加载 < 1000ms。"""
-        page.goto(dashboard_url)
+        page.goto(dashboard_url + "/#/dashboard")
         wait_for_network_idle(page)
 
         import time
@@ -150,7 +150,7 @@ class TestPerformanceBaseline:
 
     def test_save_and_compare_baseline(self, page: Page, dashboard_url: str) -> None:
         """保存性能基线并与历史对比。"""
-        page.goto(dashboard_url)
+        page.goto(dashboard_url + "/#/dashboard")
         wait_for_network_idle(page)
 
         current = collect_perf_metrics(page)

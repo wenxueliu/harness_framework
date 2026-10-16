@@ -1,10 +1,11 @@
 import { createRouter, createWebHashHistory } from 'vue-router'
-import Home from '@/pages/Home.vue'
 
 const router = createRouter({
   history: createWebHashHistory(),
   routes: [
-    { path: '/', name: 'dashboard', component: Home },
+    { path: '/', name: 'project-groups', component: () => import('@/pages/ProjectGroupsHome.vue') },
+    { path: '/projects/new', name: 'project-create', component: () => import('@/pages/CreateProject.vue') },
+    { path: '/dashboard', name: 'board-dashboard', component: () => import('@/pages/ProjectDetail.vue') },
     { path: '/templates', name: 'job-flow-templates', component: () => import('@/pages/JobFlowTemplates.vue') },
     { path: '/templates/new', name: 'job-flow-builder-new', component: () => import('@/pages/JobFlowBuilder.vue') },
     { path: '/templates/:templateId/edit', name: 'job-flow-builder', component: () => import('@/pages/JobFlowBuilder.vue') },
@@ -16,12 +17,12 @@ const router = createRouter({
     {
       path: '/groups/:groupId',
       name: 'group-dashboard',
-      component: Home,
+      component: () => import('@/pages/ProjectDetail.vue'),
     },
     {
       path: '/groups/:groupId/workflows/:workflowId',
       name: 'workflow-dashboard',
-      component: Home,
+      component: () => import('@/pages/ProjectDetail.vue'),
     },
     {
       path: '/groups/:groupId/workflows/:workflowId/tasks/:taskId',

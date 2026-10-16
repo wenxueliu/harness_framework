@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { ArrowLeft } from 'lucide-vue-next'
 import AppShell from '@/layouts/AppShell.vue'
 import DagGraph from '@/components/DagGraph.vue'
 import PublishDialog from '@/components/PublishDialog.vue'
@@ -144,6 +145,15 @@ function versionLabel(v: JobFlowVersion): string {
   return `V${v.version} · ${v.status}`
 }
 
+// 返回到模板所属项目的详情页（模板 tab）；未分配项目组时回落到全局模板列表
+function goBack() {
+  if (template.value?.group_id) {
+    void router.push(`/groups/${encodeURIComponent(template.value.group_id)}?tab=templates`)
+  } else {
+    void router.push('/templates')
+  }
+}
+
 watch(selectedVersionId, () => {
   if (diffBaseVersionId.value && diffBaseVersionId.value === selectedVersionId.value) {
     diffBaseVersionId.value = ''
@@ -220,9 +230,12 @@ async function confirmPublish(createInstance: boolean) {
         <div v-if="actionError" role="alert" class="rounded bg-red-400/10 p-3 text-sm text-red-300">{{ actionError }}</div>
         <div v-if="actionMessage" data-testid="template-action-message" class="rounded bg-emerald-400/10 p-3 text-sm text-emerald-300">{{ actionMessage }}</div>
 
+        <button type="button" class="inline-flex items-center gap-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground" @click="goBack">
+          <ArrowLeft :size="13" />返回
+        </button>
+
         <div class="flex items-start justify-between gap-3">
           <div>
-            <h2 class="text-lg font-semibold">{{ template.name }}</h2>
             <p class="text-xs text-muted-foreground">{{ template.description ?? '暂无描述' }}</p>
             <div class="mt-1 flex items-center gap-2">
               <span class="text-xs font-mono text-muted-foreground">{{ template.group_id || 'unassigned' }}</span>

@@ -2,6 +2,8 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import AppShell from '@/layouts/AppShell.vue'
+import { listProjectWorkspaces } from '@/api/dashboard'
+import type { ProjectWorkspace } from '@/api/types'
 import {
   createJobFlowInstance,
   getJobFlowTemplate,
@@ -24,12 +26,19 @@ const selectedVersionId = ref('')
 const gitRef = ref('')
 const instanceName = ref('')
 const workspaceStrategy = ref('ORIGINAL')
+const projectWorkspaces = ref<ProjectWorkspace[]>([])
+const selectedWorkspaceId = ref('')
 const executionProfileId = ref('')
 const startMode = ref<'later' | 'now'>('later')
 const parametersText = ref('{}')
 const loading = ref(true)
 const submitting = ref(false)
 const error = ref('')
+
+const needsProjectWorkspace = computed(() => workspaceStrategy.value !== 'DEMO_TEMP')
+const workspaceMissing = computed(() => needsProjectWorkspace.value && !selectedWorkspaceId.value)
+const selectedWorkspace = computed(() =>
+  projectWorkspaces.value.find((item) => item.workspace_id === selectedWorkspaceId.value))
 
 const parsedParameters = computed<Record<string, unknown>>(() => {
   try { return JSON.parse(parametersText.value) } catch { return {} }
@@ -56,7 +65,9 @@ async function submit() {
       name: instanceName.value.trim() || '未命名实例',
       parameters: parsedParameters.value,
       git: { ref: gitRef.value },
-      workspace: { strategy: workspaceStrategy.value },
+      workspace: needsProjectWorkspace.value
+        ? { strategy: workspaceStrategy.value, project_workspace_id: selectedWorkspaceId.value }
+        : { strategy: workspaceStrategy.value },
       execution_profile_id: executionProfileId.value || undefined,
     }
     const created = await createJobFlowInstance(body)
@@ -74,6 +85,10 @@ onMounted(async () => {
     template.value = await getJobFlowTemplate(templateId.value)
     versions.value = await listJobFlowTemplateVersions(templateId.value)
     profiles.value = await listJobFlowExecutionProfiles(template.value.group_id || undefined)
+    if (template.value.group_id) {
+      projectWorkspaces.value = await listProjectWorkspaces(template.value.group_id)
+      if (projectWorkspaces.value.length) selectedWorkspaceId.value = projectWorkspaces.value[0].workspace_id
+    }
     if (availableVersions.value.length) selectedVersionId.value = availableVersions.value[0].version_id
     if (profiles.value.length) executionProfileId.value = profiles.value[0].profile_id
   } catch (cause) {
@@ -153,6 +168,24 @@ function prevStep() { if (step.value > 1) step.value-- }
                 {{ strategy.label }}
               </label>
             </div>
+            <template v-if="needsProjectWorkspace">
+              <h4 class="mt-3 text-sm font-medium">项目工作区</h4>
+              <select v-if="projectWorkspaces.length" v-model="selectedWorkspaceId" data-testid="wizard-workspace-select"
+                class="mt-2 w-full rounded border border-border bg-transparent p-2 text-xs">
+                <option value="">选择项目工作区</option>
+                <option v-for="workspace in projectWorkspaces" :key="workspace.workspace_id" :value="workspace.workspace_id">
+                  {{ workspace.name }} · {{ workspace.source_type }}
+                </option>
+              </select>
+              <p v-else class="mt-2 text-xs text-amber-300">
+                当前项目组还没有项目工作区，请先到
+                <RouterLink :to="`/settings?group=${encodeURIComponent(template?.group_id || '')}`" class="underline">
+                  配置页
+                </RouterLink>
+                注册，或改用「临时演示工作区」。
+              </p>
+              <p v-if="workspaceMissing" class="mt-1 text-xs text-red-300">启动时需要指定项目工作区</p>
+            </template>
           </div>
         </div>
 
@@ -163,7 +196,7 @@ function prevStep() { if (step.value > 1) step.value-- }
             <div class="flex justify-between"><dt class="text-muted-foreground">版本</dt><dd>{{ selectedVersion?.version_id }}</dd></div>
             <div class="flex justify-between"><dt class="text-muted-foreground">Profile</dt><dd>{{ profiles.find(p => p.profile_id === executionProfileId)?.name || '未选择' }}</dd></div>
             <div class="flex justify-between"><dt class="text-muted-foreground">Git</dt><dd>{{ gitRef || '未指定' }}</dd></div>
-            <div class="flex justify-between"><dt class="text-muted-foreground">Workspace</dt><dd>{{ workspaceStrategy }}</dd></div>
+            <div class="flex justify-between"><dt class="text-muted-foreground">Workspace</dt><dd>{{ workspaceStrategy }}{{ selectedWorkspace ? ` · ${selectedWorkspace.name}` : '' }}</dd></div>
           </dl>
           <div class="mt-4 flex items-center gap-3">
             <label class="flex items-center gap-1.5 text-xs">
@@ -182,7 +215,7 @@ function prevStep() { if (step.value > 1) step.value-- }
             class="rounded bg-blue-500 px-3 py-1.5 text-xs text-white" @click="nextStep">下一步</button>
           <button v-else data-testid="wizard-submit"
             class="rounded bg-green-600 px-3 py-1.5 text-xs text-white disabled:cursor-not-allowed disabled:opacity-50"
-            :disabled="submitting || !selectedVersionId" @click="submit">创建实例</button>
+            :disabled="submitting || !selectedVersionId || workspaceMissing" @click="submit">创建实例</button>
         </div>
       </template>
     </div>

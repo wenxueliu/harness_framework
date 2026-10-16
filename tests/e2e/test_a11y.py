@@ -74,7 +74,7 @@ class TestAccessibilityBasics:
 
     def test_page_has_title(self, page: Page, dashboard_url: str) -> None:
         """页面有标题（<title> 标签或 aria-label）。"""
-        page.goto(dashboard_url)
+        page.goto(dashboard_url + "/#/dashboard")
         wait_for_network_idle(page)
 
         title = page.title()
@@ -85,7 +85,7 @@ class TestAccessibilityBasics:
 
         按钮、链接、输入框等应有 role + name。
         """
-        page.goto(dashboard_url)
+        page.goto(dashboard_url + "/#/dashboard")
         wait_for_network_idle(page)
 
         tree = _get_a11y_tree(page)
@@ -107,7 +107,7 @@ class TestAccessibilityBasics:
 
     def test_heading_hierarchy_no_skip(self, page: Page, dashboard_url: str) -> None:
         """标题层级不跳跃。"""
-        page.goto(dashboard_url)
+        page.goto(dashboard_url + "/#/dashboard")
         wait_for_network_idle(page)
 
         tree = _get_a11y_tree(page)
@@ -121,7 +121,7 @@ class TestAccessibilityBasics:
 
     def test_focus_order_is_reasonable(self, page: Page, dashboard_url: str) -> None:
         """Tab 键导航有焦点指示器（focus-visible ring）。"""
-        page.goto(dashboard_url)
+        page.goto(dashboard_url + "/#/dashboard")
         wait_for_network_idle(page)
 
         # 按几次 Tab 检查焦点是否移动
@@ -146,7 +146,7 @@ class TestAccessibilityBasics:
 
     def test_lang_attribute(self, page: Page, dashboard_url: str) -> None:
         """页面有正确的 lang 属性。"""
-        page.goto(dashboard_url)
+        page.goto(dashboard_url + "/#/dashboard")
         wait_for_network_idle(page)
 
         lang = page.evaluate("() => document.documentElement.lang")
@@ -155,7 +155,7 @@ class TestAccessibilityBasics:
 
     def test_viewport_meta(self, page: Page, dashboard_url: str) -> None:
         """页面有 viewport meta 标签（响应式基础）。"""
-        page.goto(dashboard_url)
+        page.goto(dashboard_url + "/#/dashboard")
         wait_for_network_idle(page)
 
         has_viewport = page.evaluate("""() => {
@@ -175,7 +175,7 @@ class TestKeyboardNavigation:
 
     def test_escape_closes_dialog(self, page: Page, dashboard_url: str) -> None:
         """Escape 键关闭控制对话框。"""
-        page.goto(dashboard_url)
+        page.goto(dashboard_url + "/#/dashboard")
         wait_for_network_idle(page)
 
         # 打开暂停对话框
@@ -199,7 +199,7 @@ class TestKeyboardNavigation:
 
         参考 gstack /design-review 的 a11y checklist。
         """
-        page.goto(dashboard_url)
+        page.goto(dashboard_url + "/#/dashboard")
         wait_for_network_idle(page)
 
         positive_tabindex = page.evaluate("""() => {

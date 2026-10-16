@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { RouterLink, useRoute, useRouter } from 'vue-router'
+import { ArrowLeft } from 'lucide-vue-next'
 import AppShell from '@/layouts/AppShell.vue'
 import GroupDashboard from '@/components/GroupDashboard.vue'
 import ProjectInfoBadge from '@/components/ProjectInfoBadge.vue'
@@ -57,6 +58,14 @@ watch(() => route.params.groupId, refreshContext)
   >
     <template #actions><ProjectInfoBadge :group-id="currentGroupId" /></template>
     <div class="mx-auto max-w-6xl p-4 sm:p-6">
+      <!-- 从项目列表点击进入（group-dashboard）时提供返回首页入口；全局看板不受影响 -->
+      <RouterLink
+        v-if="route.name === 'group-dashboard'"
+        to="/"
+        class="mb-4 inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+      >
+        <ArrowLeft :size="13" />返回首页
+      </RouterLink>
       <div class="mb-4 flex items-center gap-1" data-testid="project-tabs">
         <button
           v-for="tab in TABS"

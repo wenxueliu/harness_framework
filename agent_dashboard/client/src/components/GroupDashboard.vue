@@ -17,7 +17,6 @@ import {
   Play,
   XCircle,
   RotateCcw,
-  RefreshCw,
   ExternalLink,
   Activity,
   CheckCircle2,
@@ -29,11 +28,11 @@ import {
   LayoutList,
   GitBranch,
   BarChart3,
-  FolderPlus,
   Settings,
   Sun,
   Moon,
   Monitor,
+  ArrowLeft,
 } from 'lucide-vue-next'
 import { cn } from '@/lib/utils'
 import { useCapabilityStore } from '@/stores/capabilities'
@@ -257,16 +256,12 @@ function selectWorkflow(id: string) {
   }
 }
 
-function openWorkflowBuilder() {
-  const groupId = projectGroupStore.selectedId !== 'unassigned'
-    ? projectGroupStore.selectedId
-    : currentGroupId.value !== 'unassigned' ? currentGroupId.value : undefined
-  router.push({ name: 'job-flow-templates', query: groupId ? { groupId } : undefined })
-}
-
-// 项目页 Tab 切换：看板 → 模板/实例 通过 query 传递（由 ProjectDetail 解析）
-function switchProjectTab(tab: 'board' | 'templates' | 'instances') {
-  void router.replace({ query: { ...route.query, tab: tab === 'board' ? undefined : tab } })
+// 项目上下文中的看板返回项目详情（默认展示模板 tab）；全局看板无项目参数不显示按钮
+function goProjectDetail() {
+  const groupId = typeof route.params.groupId === 'string' ? route.params.groupId : currentGroupId.value
+  if (groupId && groupId !== 'unassigned') {
+    void router.push(`/groups/${encodeURIComponent(groupId)}`)
+  }
 }
 
 function closeTaskDetail() {
@@ -301,12 +296,17 @@ function closeTaskDetail() {
         <Menu :size="16" />
       </button>
 
-      <div class="flex items-center gap-2">
+      <button
+        type="button"
+        aria-label="返回项目首页"
+        class="flex items-center gap-2 rounded px-1 py-0.5 transition-colors hover:bg-accent"
+        @click="router.push('/')"
+      >
         <div class="w-5 h-5 rounded bg-blue-500/20 border border-blue-500/40 flex items-center justify-center">
           <Activity :size="11" class="text-blue-400" />
         </div>
         <span class="font-display font-semibold text-sm text-foreground">Agent Dashboard</span>
-      </div>
+      </button>
 
       <div class="hidden sm:flex items-center gap-1.5 ml-1">
         <span
@@ -320,13 +320,17 @@ function closeTaskDetail() {
         </span>
       </div>
 
+      <button
+        v-if="typeof route.params.groupId === 'string'"
+        type="button"
+        class="inline-flex items-center gap-1 rounded border border-border px-2 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+        @click="goProjectDetail"
+      >
+        <ArrowLeft :size="12" />返回项目
+      </button>
+
       <div class="ml-auto flex items-center gap-2">
         <ProjectInfoBadge :group-id="currentGroupId" />
-        <div v-if="showProjectTabs" class="hidden sm:flex items-center gap-0.5 rounded border border-border p-0.5" data-testid="project-tabs">
-          <button type="button" class="rounded px-2 py-0.5 text-[11px] bg-blue-500/10 text-blue-300">看板</button>
-          <button type="button" class="rounded px-2 py-0.5 text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground" @click="switchProjectTab('templates')">模板</button>
-          <button type="button" class="rounded px-2 py-0.5 text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground" @click="switchProjectTab('instances')">实例</button>
-        </div>
         <label class="flex items-center gap-1.5 text-muted-foreground" title="界面主题">
           <Sun v-if="themeMode === 'light'" :size="13" />
           <Moon v-else-if="themeMode === 'dark'" :size="13" />
@@ -349,29 +353,6 @@ function closeTaskDetail() {
           @click="router.push('/settings')"
         >
           <Settings :size="12" /><span class="hidden lg:inline">配置</span>
-        </button>
-        <button
-          v-if="capabilityStore.permitted('group:manage')"
-          aria-label="新建项目"
-          class="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors px-2 py-1.5 rounded hover:bg-accent"
-          @click="router.push('/settings')"
-        >
-          <FolderPlus :size="12" /><span class="hidden sm:inline">新建项目</span>
-        </button>
-        <button
-          class="flex items-center gap-1.5 text-xs bg-blue-500 hover:bg-blue-400 text-white transition-colors px-3 py-1.5 rounded-md"
-          @click="openWorkflowBuilder"
-        >
-          <span class="text-sm leading-none">+</span>
-          <span class="hidden sm:inline">从模板创建</span>
-        </button>
-        <button
-          class="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors px-2 py-1 rounded hover:bg-accent"
-          :disabled="refreshing"
-          @click="load(true)"
-        >
-          <RefreshCw :size="11" :class="refreshing ? 'animate-spin' : ''" />
-          <span class="hidden sm:inline">刷新</span>
         </button>
         <span class="text-xs text-muted-foreground font-mono hidden sm:inline ms-2">
           {{ new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) }}

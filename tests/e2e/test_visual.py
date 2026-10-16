@@ -31,7 +31,7 @@ class TestDashboardScreenshots:
     @pytest.mark.visual
     def test_dashboard_full_page(self, page: Page, dashboard_url: str) -> None:
         """整个看板页面的全页截图对比。"""
-        page.goto(dashboard_url)
+        page.goto(dashboard_url + "/#/dashboard")
         wait_for_network_idle(page)
         # 确保加载完成
         page.wait_for_timeout(1000)
@@ -45,7 +45,7 @@ class TestDashboardScreenshots:
     @pytest.mark.visual
     def test_dashboard_header(self, page: Page, dashboard_url: str) -> None:
         """顶部导航栏截图对比。"""
-        page.goto(dashboard_url)
+        page.goto(dashboard_url + "/#/dashboard")
         wait_for_network_idle(page)
 
         header = page.locator("header")
@@ -62,7 +62,7 @@ class TestWorkflowListView:
     @pytest.mark.visual
     def test_sidebar_workflow_list(self, page: Page, dashboard_url: str) -> None:
         """侧边栏工作流列表截图对比。"""
-        page.goto(dashboard_url)
+        page.goto(dashboard_url + "/#/dashboard")
         wait_for_network_idle(page)
 
         sidebar = page.locator("aside.hidden.md\\:flex").first
@@ -81,7 +81,7 @@ class TestDagGraphVisual:
     @pytest.mark.visual
     def test_dag_graph(self, page: Page, dashboard_url: str) -> None:
         """DAG 拓扑图 SVG 渲染截图对比。"""
-        page.goto(dashboard_url)
+        page.goto(dashboard_url + "/#/dashboard")
         wait_for_network_idle(page)
 
         # 滚动到 DAG 区域
@@ -104,7 +104,7 @@ class TestTaskListVisual:
     def test_task_table(self, page: Page, dashboard_url: str) -> None:
         """任务表格截图对比。"""
         try:
-            page.goto(dashboard_url)
+            page.goto(dashboard_url + "/#/dashboard")
             wait_for_network_idle(page)
             task_section = page.get_by_text("任务列表")
             task_section.scroll_into_view_if_needed()
@@ -129,7 +129,7 @@ class TestTaskListVisual:
     @pytest.mark.visual
     def test_progress_bar(self, page: Page, dashboard_url: str) -> None:
         """进度条卡片截图对比。"""
-        page.goto(dashboard_url)
+        page.goto(dashboard_url + "/#/dashboard")
         wait_for_network_idle(page)
 
         progress_card = page.get_by_text("任务完成").locator("..").locator("..")
@@ -145,7 +145,7 @@ class TestTaskDetailVisual:
     @pytest.mark.visual
     def test_task_drawer(self, page: Page, dashboard_url: str) -> None:
         """桌面端任务详情面板截图对比。"""
-        page.goto(dashboard_url)
+        page.goto(dashboard_url + "/#/dashboard")
         wait_for_network_idle(page)
 
         # 点击表格中的任务行打开详情
@@ -168,7 +168,7 @@ class TestControlDialogVisual:
     @pytest.mark.visual
     def test_pause_dialog(self, page: Page, dashboard_url: str) -> None:
         """暂停确认对话框截图对比。"""
-        page.goto(dashboard_url)
+        page.goto(dashboard_url + "/#/dashboard")
         wait_for_network_idle(page)
 
         # 打开暂停对话框
@@ -193,7 +193,7 @@ class TestStatsVisual:
     @pytest.mark.visual
     def test_stats_panel(self, page: Page, dashboard_url: str) -> None:
         """桌面端全局概览面板截图对比。"""
-        page.goto(dashboard_url)
+        page.goto(dashboard_url + "/#/dashboard")
         wait_for_network_idle(page)
 
         stats_panel = page.locator("aside.xl\\:flex").first

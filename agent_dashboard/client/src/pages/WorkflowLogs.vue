@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
-import { Radio, RefreshCw, ScrollText } from 'lucide-vue-next'
+import { useRoute, RouterLink } from 'vue-router'
+import { ArrowLeft, Radio, RefreshCw, ScrollText } from 'lucide-vue-next'
 import AppShell from '@/layouts/AppShell.vue'
 import { useCapabilityStore } from '@/stores/capabilities'
 import { useEventStreamStore } from '@/stores/eventStream'
@@ -34,6 +34,11 @@ watch([groupId, workflowId], () => start().catch(() => undefined))
 
 <template>
   <AppShell :group-id="groupId" :workflow-id="workflowId" title="执行日志" eyebrow="Run / Attempt / Session Events">
+    <!-- 返回到所属项目组的看板 -->
+    <RouterLink v-if="groupId" :to="`/groups/${encodeURIComponent(groupId)}`"
+      class="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors">
+      <ArrowLeft :size="13" />返回看板
+    </RouterLink>
     <section class="p-4 sm:p-6">
       <div class="mb-4 flex flex-wrap items-center gap-2 rounded-lg border border-border bg-card p-3">
         <div class="inline-flex items-center gap-2 text-xs font-mono"

@@ -19,7 +19,7 @@ scenarios:
     tags: [smoke, load]
     steps:
       - action: goto
-        value: "/"
+        value: "/#/dashboard"
       - action: wait
         value: "networkidle"
       - action: assert_visible
@@ -32,7 +32,7 @@ scenarios:
     tags: [smoke, workflow]
     steps:
       - action: goto
-        value: "/"
+        value: "/#/dashboard"
       - action: wait
         value: "networkidle"
       - action: assert_visible
@@ -53,7 +53,7 @@ scenarios:
     tags: [workflow, interaction]
     steps:
       - action: goto
-        value: "/"
+        value: "/#/dashboard"
       - action: wait
         value: "networkidle"
       - action: assert_visible
@@ -68,7 +68,7 @@ scenarios:
     tags: [dag, visual]
     steps:
       - action: goto
-        value: "/"
+        value: "/#/dashboard"
       - action: wait
         value: "networkidle"
       - action: assert_visible
@@ -84,7 +84,7 @@ scenarios:
     tags: [control, interaction]
     steps:
       - action: goto
-        value: "/"
+        value: "/#/dashboard"
       - action: wait
         value: "networkidle"
       - action: click
@@ -113,7 +113,7 @@ scenarios:
     tags: [edge-case]
     steps:
       - action: goto
-        value: "/"
+        value: "/#/dashboard"
       - action: wait
         value: "networkidle"
       - action: assert_not_visible
@@ -129,7 +129,7 @@ scenarios:
       height: 812
     steps:
       - action: goto
-        value: "/"
+        value: "/#/dashboard"
       - action: wait
         value: "networkidle"
       - action: assert_visible
