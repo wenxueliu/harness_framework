@@ -267,6 +267,7 @@ async function checkpoint() {
 async function send() {
   if (!message.value.trim()) return
   sending.value = true
+  error.value = ''
   try {
     await sendTaskMessage(instanceId, taskId, { message: message.value.trim(), mode: messageMode.value })
     message.value = ''
@@ -321,6 +322,10 @@ onMounted(async () => {
       {{ error }}
     </div>
     <div v-else class="flex min-h-[calc(100vh-9rem)] flex-col">
+      <!-- 任务已加载时也要能看到操作失败的原因（例如消息发送被拒绝） -->
+      <p v-if="error" role="alert" data-testid="task-action-error" class="border-b border-red-400/30 bg-red-400/10 px-4 py-2 text-xs text-red-300">
+        {{ error }}
+      </p>
       <div data-testid="task-workbench-status" class="flex flex-wrap items-center gap-2 border-b border-border px-4 py-2 text-xs">
         <RouterLink :to="'/instances/' + encodeURIComponent(instanceId)" class="text-blue-300 hover:underline">{{ instance?.name }}</RouterLink>
         <span class="text-muted-foreground">›</span><span class="font-mono">{{ taskId }}</span>
@@ -343,6 +348,14 @@ onMounted(async () => {
               <button data-testid="send-human-message" class="rounded bg-blue-500 px-3 py-1.5 text-xs text-white disabled:opacity-50" :disabled="sending" @click="send">发送</button>
             </div>
             <p class="text-[11px] text-muted-foreground">已记录 {{ messages.length }} 条人工消息</p>
+            <!-- 最近的人工消息：发送后立刻可见，避免「点了没反应」 -->
+            <ul v-if="messages.length" data-testid="human-message-list" class="max-h-32 space-y-1 overflow-auto">
+              <li v-for="entry in messages.slice(-5).reverse()" :key="entry.message_id"
+                class="rounded border border-border bg-background px-2 py-1 text-[11px]">
+                <span class="mr-1 font-mono text-muted-foreground">{{ entry.status }}</span>
+                <span>{{ entry.message }}</span>
+              </li>
+            </ul>
           </div>
         </section>
 

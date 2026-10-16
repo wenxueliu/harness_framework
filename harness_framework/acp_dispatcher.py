@@ -82,7 +82,9 @@ class ACPDispatcher:
         self.workspace_manager = workspace_manager
         self.event_journal = event_journal or EventJournal(store)
         self.scope = scope
-        self.human_messages_supported = scope == WORKFLOW_SCOPE
+        # workflow 与 jobflow 两种布局都支持人工消息；具体前缀由
+        # human_interaction 依据实例 meta 自行判定。
+        self.human_messages_supported = True
         if max_concurrency < 1:
             raise ValueError("ACP max_concurrency must be positive")
         if task_timeout < 1 or lease_duration < 1:

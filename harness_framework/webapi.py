@@ -68,6 +68,29 @@ def _now_iso() -> str:
     )
 
 
+def _as_dict(raw) -> dict:
+    """KV 原始值可能是 JSON 字符串或已解码的 dict。"""
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str) and raw:
+        try:
+            value = json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+        return value if isinstance(value, dict) else {}
+    return {}
+
+
+# 实例任务的终态：与 RunManager/aggregator 的语义保持一致。
+JOBFLOW_TERMINAL_TASK_STATES = frozenset({
+    "DONE", "SUCCEEDED", "FAILED", "ABORTED", "SKIPPED_UPSTREAM_FAILED",
+})
+# 旧 workflow 任务中需要 rewind 才能重新消费消息的状态。
+WORKFLOW_REWIND_TASK_STATES = frozenset({
+    "DONE", "FAILED", "AWAITING_REVIEW", "WAITING_FOR_HUMAN",
+})
+
+
 class APIHandler(BaseHTTPRequestHandler):
     consul: KVStore = None
     message_bus: MessageBus = None
@@ -830,9 +853,7 @@ class APIHandler(BaseHTTPRequestHandler):
             if (len(parts) == 7 and parts[1:3] == ["api", "workflow"]
                     and parts[4] == "task" and parts[6] == "messages"):
                 context = self._authentication_context()
-                group_id, _ = self.consul.kv_get(
-                    f"workflows/{parts[3]}/project-group"
-                )
+                group_id = self._task_group_id(parts[3])
                 capability = (
                     "task:message:interrupt"
                     if body.get("mode") == "interrupt" else "task:message:queue"
@@ -1592,11 +1613,34 @@ class APIHandler(BaseHTTPRequestHandler):
             "messages": list_human_messages(self.consul, req_id, task_name),
         })
 
+    def _task_group_id(self, req_id: str) -> str | None:
+        """作业流实例的项目组取自其模板；旧 workflow 直接读 project-group。"""
+        group_id, _ = self.consul.kv_get(f"workflows/{req_id}/project-group")
+        if group_id:
+            return group_id
+        instance = _as_dict(
+            self.consul.kv_get(f"jobflows/instances/{req_id}/meta")[0]
+        )
+        template_id = instance.get("template_id")
+        if not template_id:
+            return None
+        template = _as_dict(
+            self.consul.kv_get(f"jobflows/templates/{template_id}/meta")[0]
+        )
+        return template.get("group_id")
+
     def _send_task_message(
         self, req_id: str, task_name: str, body: dict, *, actor: str
     ):
-        base = f"workflows/{req_id}/tasks/{task_name}"
-        status, _ = self.consul.kv_get(f"{base}/status")
+        instance = _as_dict(
+            self.consul.kv_get(f"jobflows/instances/{req_id}/meta")[0]
+        )
+        if instance:
+            base = f"jobflows/instances/{req_id}/tasks/{task_name}"
+            status = _as_dict(self.consul.kv_get(f"{base}/status")[0]).get("state")
+        else:
+            base = f"workflows/{req_id}/tasks/{task_name}"
+            status, _ = self.consul.kv_get(f"{base}/status")
         if status is None:
             return self._send_json(404, {"error": "task not found"})
         item = None
@@ -1608,7 +1652,14 @@ class APIHandler(BaseHTTPRequestHandler):
                 mode=body.get("mode", "queue"),
             )
             reopened = False
-            if status in {"DONE", "FAILED", "AWAITING_REVIEW", "WAITING_FOR_HUMAN"}:
+            if instance:
+                # 实例任务没有 rewind 语义：终态任务重新入队，新 attempt 的
+                # Agent 启动时会先消费这条待处理消息。
+                if status in JOBFLOW_TERMINAL_TASK_STATES:
+                    service = self.job_flows or JobFlowService(self.consul)
+                    service.retry_task(req_id, task_name, actor)
+                    reopened = True
+            elif status in WORKFLOW_REWIND_TASK_STATES:
                 rewind_to_task(
                     self.consul, req_id, task_name, task_name,
                     {
@@ -1628,7 +1679,14 @@ class APIHandler(BaseHTTPRequestHandler):
                     status="FAILED", error=str(exc),
                 )
             return self._send_json(400, {"error": str(exc)})
-        group_id, _ = self.consul.kv_get(f"workflows/{req_id}/project-group")
+        except APIError as exc:
+            if item is not None:
+                finish_human_message(
+                    self.consul, req_id, task_name, item,
+                    status="FAILED", error=exc.message,
+                )
+            return self._send_json(exc.status, {"error": exc.message})
+        group_id = self._task_group_id(req_id)
         event = self._append_event(
             "HUMAN_MESSAGE_CREATED",
             subject={"group_id": group_id or UNASSIGNED_GROUP_ID,

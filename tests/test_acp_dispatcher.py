@@ -413,6 +413,41 @@ def test_job_flow_retry_requeues_task_for_acp_dispatch():
     assert pending[0][2]["current_attempt"] == response["attempt_id"]
 
 
+def test_job_flow_human_message_resumes_session_and_is_applied():
+    """作业流实例的人工消息也要被 ACP 消费（此前只支持旧 workflow 布局）。"""
+    FakeACPClient.instances.clear()
+    store = MockConsulStore()
+    _job_flow_service(store)
+    base = "jobflows/instances/inst-acp/tasks/build"
+    store._store[f"{base}/acp/session_id"] = "inst-session"
+    create_human_message(
+        store, "inst-acp", "build", message="请补充单元测试", actor="alice",
+    )
+
+    dispatcher = JobFlowACPDispatcher(
+        store,
+        commands={"claude": ["claude-acp"], "codex": ["codex-acp"]},
+        client_factory=FakeACPClient,
+    )
+    instance_id, task_name, meta = dispatcher._pending_tasks()[0]
+    assert instance_id == "inst-acp"
+    claim = dispatcher._claim(instance_id, task_name, meta)
+    dispatcher._active[(f"jobflow:{instance_id}", task_name)] = {
+        **claim, "scope_id": instance_id, "client": None,
+    }
+
+    dispatcher._execute(instance_id, task_name, meta, claim)
+
+    client = FakeACPClient.instances[0]
+    assert client.session_id == "inst-session"
+    assert "请补充单元测试" in client.prompts[0]
+    message = list_human_messages(store, "inst-acp", "build")[0]
+    assert message["status"] == "APPLIED"
+    assert message["response"] == "done"
+    assert json.loads(store._store[f"{base}/status"])["state"] == "DONE"
+    assert not any(key.startswith("workflows/") for key in store._store)
+
+
 def test_job_flow_expired_lease_is_recovered_to_pending():
     store = MockConsulStore()
     service = _job_flow_service(store)

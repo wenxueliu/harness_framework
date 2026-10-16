@@ -17,8 +17,16 @@ def _now_iso() -> str:
     return datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def _message_prefix(req_id: str, task_name: str) -> str:
-    return f"workflows/{req_id}/tasks/{task_name}/human/messages/"
+def _task_base(store: KVStore, req_id: str, task_name: str) -> str:
+    """作业流实例的任务挂在 jobflows/instances/ 下；旧 workflow 挂在 workflows/ 下。"""
+    meta, _ = store.kv_get(f"jobflows/instances/{req_id}/meta")
+    if meta is not None:
+        return f"jobflows/instances/{req_id}/tasks/{task_name}"
+    return f"workflows/{req_id}/tasks/{task_name}"
+
+
+def _message_prefix(store: KVStore, req_id: str, task_name: str) -> str:
+    return _task_base(store, req_id, task_name) + "/human/messages/"
 
 
 def create_human_message(
@@ -49,7 +57,7 @@ def create_human_message(
         "created_at": _now_iso(),
     }
     store.kv_put(
-        _message_prefix(req_id, task_name) + item["message_id"],
+        _message_prefix(store, req_id, task_name) + item["message_id"],
         json.dumps(item, ensure_ascii=False),
     )
     return item
@@ -62,7 +70,7 @@ def list_human_messages(
     *,
     pending_only: bool = False,
 ) -> list[dict[str, Any]]:
-    items, _ = store.kv_get(_message_prefix(req_id, task_name), recurse=True)
+    items, _ = store.kv_get(_message_prefix(store, req_id, task_name), recurse=True)
     result: list[dict[str, Any]] = []
     for raw in items or []:
         try:
@@ -97,7 +105,7 @@ def claim_next_human_message(
         item["message_id"],
     ))
     for item in pending:
-        key = _message_prefix(req_id, task_name) + item["message_id"]
+        key = _message_prefix(store, req_id, task_name) + item["message_id"]
         raw, index = store.kv_get(key)
         if not raw:
             continue
@@ -125,7 +133,7 @@ def finish_human_message(
 ) -> dict[str, Any]:
     if status not in TERMINAL_MESSAGE_STATES:
         raise ValueError("invalid terminal human message status")
-    key = _message_prefix(req_id, task_name) + str(item["message_id"])
+    key = _message_prefix(store, req_id, task_name) + str(item["message_id"])
     raw, index = store.kv_get(key)
     current = json.loads(raw) if raw else dict(item)
     current.update({"status": status, "finished_at": _now_iso()})
