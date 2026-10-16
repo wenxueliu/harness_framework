@@ -185,6 +185,17 @@ class TestTemplateBuilderBack:
         assert page.evaluate("() => location.hash") == "#/"
 
 
+class TestSettingsBack:
+    """项目与工作区配置页返回首页。"""
+
+    def test_back_goes_home(self, page: Page):
+        page.goto(f"{BASE_URL}/#/settings")
+        page.wait_for_selector('[data-testid="settings-back"]', timeout=10000)
+        page.click('[data-testid="settings-back"]')
+        page.wait_for_timeout(800)
+        assert page.evaluate("() => location.hash") == "#/"
+
+
 class TestInstanceWizardWorkspace:
     """创建实例向导：非 DEMO_TEMP 策略必须选择项目工作区。"""
 

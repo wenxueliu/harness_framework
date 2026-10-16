@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { useRoute } from 'vue-router'
-import { Archive, FolderPlus, ShieldCheck, Trash2, UserPlus } from 'lucide-vue-next'
+import { useRoute, useRouter } from 'vue-router'
+import { Archive, ArrowLeft, FolderPlus, ShieldCheck, Trash2, UserPlus } from 'lucide-vue-next'
 import AppShell from '@/layouts/AppShell.vue'
 import { useCapabilityStore } from '@/stores/capabilities'
 import { archiveProjectGroup, createProjectGroup, deleteProjectGroupMember, deleteProjectWorkspace, listProjectGroupMembers, listProjectGroups, listProjectWorkspaces, preflightProjectWorkspace, putProjectGroupMember, registerProjectWorkspace } from '@/api/dashboard'
@@ -11,6 +11,7 @@ import type { ExecutionProfileSummary } from '@/api/jobFlow'
 
 const capabilities = useCapabilityStore()
 const route = useRoute()
+const router = useRouter()
 const groups = ref<ProjectGroup[]>([])
 const selectedId = ref('')
 const members = ref<ProjectGroupMember[]>([])
@@ -284,6 +285,11 @@ onMounted(() => load().catch((cause) => { error.value = cause instanceof Error ?
 
 <template>
   <AppShell title="项目与工作区配置" eyebrow="Project Group Administration">
+    <!-- 配置页返回项目首页 -->
+    <button type="button" data-testid="settings-back" class="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
+      @click="router.push('/')">
+      <ArrowLeft :size="13" />返回首页
+    </button>
     <section class="grid gap-4 p-4 sm:p-6 lg:grid-cols-[16rem_minmax(0,1fr)]">
       <aside class="rounded-lg border border-border bg-card p-3">
         <h2 class="mb-2 text-xs font-semibold uppercase text-muted-foreground">项目组</h2>
