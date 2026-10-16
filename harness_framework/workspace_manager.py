@@ -847,9 +847,7 @@ class WorkspaceManager:
                 continue
             if binding.get("workspace_id") != run_workspace["run_workspace_id"]:
                 continue
-            status, _ = self.store.kv_get(
-                f"workflows/{req_id}/tasks/{binding.get('task_id', '')}/status"
-            )
+            status = self._task_state(req_id, str(binding.get("task_id", "")))
             if status in {"DONE", "FAILED", "ABORTED", "SKIPPED_UPSTREAM_FAILED",
                           "SUPERSEDED"}:
                 continue
@@ -858,6 +856,30 @@ class WorkspaceManager:
             ):
                 return True
         return False
+
+    def _task_state(self, req_id: str, task_id: str) -> str | None:
+        """兄弟任务状态：作业流实例在 jobflows/ 下，旧 workflow 在 workflows/ 下。
+
+        读错布局会让已完成的任务一直被当成「运行中」，同 scope 的下游任务
+        被永久 defer。
+        """
+        raw, _ = self.store.kv_get(
+            f"workflows/{req_id}/tasks/{task_id}/status"
+        )
+        if raw is None:
+            raw, _ = self.store.kv_get(
+                f"jobflows/instances/{req_id}/tasks/{task_id}/status"
+            )
+            if raw is None:
+                return None
+            try:
+                parsed = json.loads(raw)
+            except (TypeError, json.JSONDecodeError):
+                return None
+            if not isinstance(parsed, dict):
+                return None
+            return str(parsed.get("state") or "") or None
+        return str(raw)
 
     def provision_isolated_workspace(
         self, *, req_id: str, run_id: str, task_id: str, attempt_id: str,
