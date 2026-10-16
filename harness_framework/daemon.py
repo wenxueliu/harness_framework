@@ -311,6 +311,7 @@ def main() -> None:
             max_concurrency=args.jobflow_acp_max_concurrency,
             permission_policy=args.acp_permission_policy,
             event_journal=EventJournal(consul),
+            workspace_manager=workspace_manager,
         )
         components.append(jobflow_acp_dispatcher)
         jobflow_thread = threading.Thread(

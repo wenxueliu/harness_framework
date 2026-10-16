@@ -950,6 +950,7 @@ class JobFlowACPDispatcher(ACPDispatcher):
         permission_policy: str = "allow_once",
         client_factory: Callable[..., ACPClient] = ACPClient,
         event_journal: EventJournal | None = None,
+        workspace_manager: WorkspaceManager | None = None,
     ):
         super().__init__(
             store,
@@ -966,6 +967,7 @@ class JobFlowACPDispatcher(ACPDispatcher):
             client_factory=client_factory,
             event_journal=event_journal,
             scope=JOBFLOW_SCOPE,
+            workspace_manager=workspace_manager,
         )
 
     def _tick(self) -> None:

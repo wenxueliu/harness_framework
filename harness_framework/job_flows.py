@@ -757,7 +757,12 @@ class JobFlowService:
         else:
             run_id = f"run-{uuid.uuid4().hex[:12]}"
             current_run_key = f"{INSTANCE_PREFIX}/{instance_id}/current_run"
-            if not self.store.kv_put(current_run_key, run_id, cas=current_run_index):
+            # 键不存在时 kv_get 返回全局索引而非 0，不能直接作为 CAS 基准；
+            # 仅在键存在（如空串占位）时做 CAS 抢占，缺失时无条件写入
+            if not self.store.kv_put(
+                current_run_key, run_id,
+                cas=current_run_index if current_run_raw is not None else None,
+            ):
                 winner, _ = self.store.kv_get(current_run_key)
                 if not winner:
                     raise APIError("RUN_REGISTRATION_CONFLICT", "运行注册冲突", 409)
