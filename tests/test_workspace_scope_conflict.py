@@ -66,6 +66,31 @@ def test_running_job_flow_task_still_blocks_sibling(tmp_path):
     assert manager.has_write_scope_conflict(req_id, run_id, "test", ()) is True
 
 
+def test_pending_siblings_do_not_block_each_other(tmp_path):
+    """两个同时就绪的 PENDING 任务不能互相 defer，否则实例会死锁。"""
+    store = MockConsulStore()
+    manager = _manager(store, tmp_path)
+    req_id, run_id = "inst-3", "run-3"
+    _seed_run_workspace(store, req_id, run_id)
+    _seed_binding(store, req_id, run_id, "dev")
+    store._store[f"jobflows/instances/{req_id}/tasks/dev/status"] = json.dumps({
+        "task_id": "dev", "state": "PENDING", "attempt_count": 1,
+    })
+
+    assert manager.has_write_scope_conflict(req_id, run_id, "test", ()) is False
+
+
+def test_missing_sibling_status_does_not_block(tmp_path):
+    """读不到兄弟任务状态时按「未运行」处理，不能永久阻塞。"""
+    store = MockConsulStore()
+    manager = _manager(store, tmp_path)
+    req_id, run_id = "inst-4", "run-4"
+    _seed_run_workspace(store, req_id, run_id)
+    _seed_binding(store, req_id, run_id, "ghost")
+
+    assert manager.has_write_scope_conflict(req_id, run_id, "test", ()) is False
+
+
 def test_finished_legacy_workflow_task_does_not_block_sibling(tmp_path):
     store = MockConsulStore()
     manager = _manager(store, tmp_path)

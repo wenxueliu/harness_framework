@@ -81,6 +81,14 @@ def _as_dict(raw) -> dict:
     return {}
 
 
+def _session_events_base(store, req_id: str, task_name: str) -> str:
+    """Agent 会话事件前缀：作业流实例在 jobflows/ 下，旧 workflow 在 workflows/ 下。"""
+    meta, _ = store.kv_get(f"jobflows/instances/{req_id}/meta")
+    if meta is not None:
+        return f"jobflows/instances/{req_id}/sessions/{task_name}/"
+    return f"workflows/{req_id}/sessions/{task_name}/"
+
+
 # 实例任务的终态：与 RunManager/aggregator 的语义保持一致。
 JOBFLOW_TERMINAL_TASK_STATES = frozenset({
     "DONE", "SUCCEEDED", "FAILED", "ABORTED", "SKIPPED_UPSTREAM_FAILED",
@@ -1521,16 +1529,14 @@ class APIHandler(BaseHTTPRequestHandler):
     ) -> dict:
         """Compute the normalized session timeline for a task (no response)."""
         query = query or {}
-        items, _ = self.consul.kv_get(
-            f"workflows/{req_id}/sessions/{task_name}/", recurse=True
-        )
+        prefix = _session_events_base(self.consul, req_id, task_name)
+        items, _ = self.consul.kv_get(prefix, recurse=True)
         if not items:
             return {
                 "req_id": req_id, "task": task_name, "events": [],
                 "sessions": [], "total": 0, "next_cursor": None,
             }
 
-        prefix = f"workflows/{req_id}/sessions/{task_name}/"
         # 按 session_id 分组
         sessions: dict[str, dict] = {}
         for it in items:
@@ -1652,13 +1658,17 @@ class APIHandler(BaseHTTPRequestHandler):
                 mode=body.get("mode", "queue"),
             )
             reopened = False
+            resumed = False
             if instance:
                 # 实例任务没有 rewind 语义：终态任务重新入队，新 attempt 的
                 # Agent 启动时会先消费这条待处理消息。
                 if status in JOBFLOW_TERMINAL_TASK_STATES:
                     service = self.job_flows or JobFlowService(self.consul)
-                    service.retry_task(req_id, task_name, actor)
+                    result = service.retry_task(req_id, task_name, actor)
                     reopened = True
+                    # retry_task 会把已结束的实例拉回 RUNNING，否则调度器
+                    # 永远不会认领这个 PENDING 任务。
+                    resumed = bool(result.get("resumed"))
             elif status in WORKFLOW_REWIND_TASK_STATES:
                 rewind_to_task(
                     self.consul, req_id, task_name, task_name,
@@ -1696,7 +1706,7 @@ class APIHandler(BaseHTTPRequestHandler):
                   "reopened": reopened},
         )
         self._send_json(202, {"ok": True, "message": item, "reopened": reopened,
-                              "event_id": event.event_id})
+                              "resumed": resumed, "event_id": event.event_id})
 
     def _create_workflow(self, body: dict, context) -> dict:
         """Create a workflow and project its task graph into the legacy KV view."""

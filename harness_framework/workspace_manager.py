@@ -848,8 +848,9 @@ class WorkspaceManager:
             if binding.get("workspace_id") != run_workspace["run_workspace_id"]:
                 continue
             status = self._task_state(req_id, str(binding.get("task_id", "")))
-            if status in {"DONE", "FAILED", "ABORTED", "SKIPPED_UPSTREAM_FAILED",
-                          "SUPERSEDED"}:
+            # 只有真正在跑的兄弟任务才占用写权限。PENDING/BLOCKED 的任务
+            # 如果也参与判冲突，两个同时就绪的任务会互相 defer，永远无法启动。
+            if status not in {"IN_PROGRESS", "WAITING_FOR_HUMAN", "AWAITING_REVIEW"}:
                 continue
             if self._scope_overlap(
                 tuple(write_scope), tuple(binding.get("write_scope") or ())

@@ -730,7 +730,7 @@ def test_secret_references_are_stored_separately_and_redacted_from_api_output():
         assert manifest["secret_refs"] == ["$ref:secret:deploy-token"]
 
         session_key = (
-            f"workflows/{instance['instance_id']}/sessions/build/"
+            f"jobflows/instances/{instance['instance_id']}/sessions/build/"
             "session-1/events/1"
         )
         store.kv_put(session_key, json.dumps({
@@ -948,7 +948,7 @@ def test_instance_task_attempts_sessions_and_logs_are_queryable():
             (new_attempt_id, "rebuild done"),
         ], start=1):
             store.kv_put(
-                f"workflows/{instance_id}/sessions/build/session-1/events/{seq}",
+                f"jobflows/instances/{instance_id}/sessions/build/session-1/events/{seq}",
                 json.dumps({
                     "seq": str(seq), "message": message, "attempt_id": attempt_id,
                     "timestamp": f"2026-01-01T00:0{seq - 1}:00Z",

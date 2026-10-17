@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, onMounted, ref } from 'vue'
+import { computed, defineAsyncComponent, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ArrowLeft, File, Folder, GitBranch, GitCommit, LoaderCircle, Play, RefreshCw, Save, Search } from 'lucide-vue-next'
 import AppShell from '@/layouts/AppShell.vue'
@@ -81,6 +81,10 @@ const message = ref('')
 const messageMode = ref<'queue' | 'interrupt'>('queue')
 const checkpointMessage = ref('')
 const preflightStatus = ref('')
+const instanceState = computed(() => instance.value?.status?.state || '')
+const followCurrentAttempt = ref(true)
+let pollTimer: number | undefined
+let pollCount = 0
 
 const capabilityText = computed(() => {
   if (!preflightStatus.value) return 'Preflight 未知'
@@ -162,8 +166,45 @@ async function loadCollaboration() {
 
 async function selectAttempt(event: Event) {
   const attemptId = (event.target as HTMLSelectElement).value
+  followCurrentAttempt.value = false
   selectedAttemptId.value = attemptId
   await Promise.all([loadWorkspace(attemptId), loadCollaboration()])
+}
+
+function hasPendingMessage() {
+  return messages.value.some(
+    (entry) => entry.status === 'PENDING' || entry.status === 'PROCESSING',
+  )
+}
+
+function stopPolling() {
+  if (pollTimer !== undefined) window.clearTimeout(pollTimer)
+  pollTimer = undefined
+}
+
+/** 消息还在排队/执行时轮询刷新，AI 的回复返回后自动出现在对话区和消息列表里。 */
+async function pollCollaboration() {
+  pollTimer = undefined
+  if (!hasPendingMessage() || pollCount >= 150) {
+    pollCount = 0
+    return
+  }
+  pollCount += 1
+  try {
+    if (followCurrentAttempt.value) await loadTask()
+    await loadCollaboration()
+  } catch {
+    // 轮询失败不打扰用户，下一轮再试
+  }
+  if (hasPendingMessage() && pollCount < 150) {
+    pollTimer = window.setTimeout(pollCollaboration, 3000)
+  }
+}
+
+function startPolling() {
+  stopPolling()
+  pollCount = 0
+  pollTimer = window.setTimeout(pollCollaboration, 1500)
 }
 
 async function openEntry(entry: WorkspaceTreeEntry) {
@@ -271,7 +312,11 @@ async function send() {
   try {
     await sendTaskMessage(instanceId, taskId, { message: message.value.trim(), mode: messageMode.value })
     message.value = ''
-    messages.value = await fetchTaskMessages(instanceId, taskId)
+    followCurrentAttempt.value = true
+    // 任务被重新入队后 current_attempt 会变化，先刷新任务再取新 attempt 的会话事件。
+    await loadTask()
+    await loadCollaboration()
+    startPolling()
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : '消息发送失败'
   } finally {
@@ -299,12 +344,15 @@ onMounted(async () => {
       preflightStatus.value = preflight.status
     } catch { preflightStatus.value = '' }
     await Promise.all([loadWorkspace(), loadCollaboration()])
+    if (hasPendingMessage()) startPolling()
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : '任务加载失败'
   } finally {
     loading.value = false
   }
 })
+
+onUnmounted(stopPolling)
 </script>
 
 <template>
@@ -330,6 +378,7 @@ onMounted(async () => {
         <RouterLink :to="'/instances/' + encodeURIComponent(instanceId)" class="text-blue-300 hover:underline">{{ instance?.name }}</RouterLink>
         <span class="text-muted-foreground">›</span><span class="font-mono">{{ taskId }}</span>
         <span class="rounded bg-background px-2 py-0.5">{{ taskState }}</span>
+        <span data-testid="instance-state" class="rounded bg-background px-2 py-0.5">实例 {{ instanceState }}</span>
         <span class="rounded bg-background px-2 py-0.5">Attempt {{ selectedAttemptId || attemptCount }}</span>
         <span class="rounded bg-background px-2 py-0.5">{{ capabilityText }}</span>
         <button class="ml-auto rounded border border-border px-2 py-1 disabled:opacity-50" :disabled="retrying" @click="retry">重试任务</button>
@@ -347,13 +396,23 @@ onMounted(async () => {
               </select>
               <button data-testid="send-human-message" class="rounded bg-blue-500 px-3 py-1.5 text-xs text-white disabled:opacity-50" :disabled="sending" @click="send">发送</button>
             </div>
-            <p class="text-[11px] text-muted-foreground">已记录 {{ messages.length }} 条人工消息</p>
-            <!-- 最近的人工消息：发送后立刻可见，避免「点了没反应」 -->
-            <ul v-if="messages.length" data-testid="human-message-list" class="max-h-32 space-y-1 overflow-auto">
+            <p class="text-[11px] text-muted-foreground">
+              已记录 {{ messages.length }} 条人工消息
+              <span v-if="hasPendingMessage()" class="ml-1 text-amber-300">· 等待 AI 回复…</span>
+            </p>
+            <!-- 最近的人工消息：发送后立刻可见，并展示 Agent 的回复/失败原因 -->
+            <ul v-if="messages.length" data-testid="human-message-list" class="max-h-56 space-y-1 overflow-auto">
               <li v-for="entry in messages.slice(-5).reverse()" :key="entry.message_id"
                 class="rounded border border-border bg-background px-2 py-1 text-[11px]">
-                <span class="mr-1 font-mono text-muted-foreground">{{ entry.status }}</span>
-                <span>{{ entry.message }}</span>
+                <div class="flex items-center gap-1">
+                  <span class="font-mono text-muted-foreground">{{ entry.status }}</span>
+                  <span v-if="entry.response" class="text-[10px] text-blue-300">AI 回复</span>
+                </div>
+                <p class="mt-0.5 whitespace-pre-wrap break-words">{{ entry.message }}</p>
+                <p v-if="entry.response" data-testid="human-message-response"
+                  class="mt-1 whitespace-pre-wrap break-words border-l-2 border-blue-400/40 pl-2 text-blue-200">{{ entry.response }}</p>
+                <p v-else-if="entry.error" data-testid="human-message-error"
+                  class="mt-1 whitespace-pre-wrap break-words text-red-300">{{ entry.error }}</p>
               </li>
             </ul>
           </div>

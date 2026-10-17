@@ -6,13 +6,14 @@
 """
 from __future__ import annotations
 
+import json
 import os
 import time
 import uuid
 
 import requests
 
-from tests.e2e.conftest import WEBAPI_URL, consul_delete
+from tests.e2e.conftest import WEBAPI_URL, consul_delete, consul_put
 from tests.e2e.webbridge import Page
 
 BASE_URL = os.environ.get("E2E_BASE_URL", "http://127.0.0.1:3000")
@@ -84,6 +85,32 @@ class TestJobFlowTaskHumanMessage:
 
             listed = _api("GET", f"/api/workflow/{instance_id}/task/{TASK_ID}/messages")
             assert [item["message"] for item in listed["messages"]] == ["hi"]
+        finally:
+            _cleanup(instance_id, template_id, group_id)
+
+    def test_agent_response_is_visible(self, page: Page):
+        """Agent 的回复必须渲染在消息列表里（此前只显示消息状态和用户输入）。"""
+        instance_id, template_id, group_id = _create_instance()
+        try:
+            sent = _api(
+                "POST",
+                f"/api/workflow/{instance_id}/task/{TASK_ID}/messages",
+                {"message": "hi"},
+            )
+            item = {**sent["message"], "status": "APPLIED", "response": "这是 AI 的回复"}
+            consul_put(
+                f"jobflows/instances/{instance_id}/tasks/{TASK_ID}/human/messages/"
+                f"{item['message_id']}",
+                json.dumps(item, ensure_ascii=False),
+            )
+
+            _open_task(page, instance_id)
+            page.wait_for_selector(
+                '[data-testid="human-message-response"]', timeout=10000,
+            )
+            assert "这是 AI 的回复" in page.inner_text(
+                '[data-testid="human-message-response"]',
+            )
         finally:
             _cleanup(instance_id, template_id, group_id)
 

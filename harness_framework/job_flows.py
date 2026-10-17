@@ -701,7 +701,9 @@ class JobFlowService:
         current = self._read(status_key, {})
         current_state = current.get("state", "QUEUED")
         allowed = {
-            "RUNNING": {"QUEUED", "PAUSED", "WAITING_FOR_CAPABILITY"},
+            # 终态实例可以被人工消息重新激活（见 resume_for_message）。
+            "RUNNING": {"QUEUED", "PAUSED", "WAITING_FOR_CAPABILITY",
+                        "SUCCEEDED", "FAILED", "ABORTED"},
             "PAUSED": {"RUNNING"},
             "DRAINING": {"QUEUED", "RUNNING", "PAUSED"},
             "ABORTED": {"QUEUED", "RUNNING", "PAUSED", "DRAINING"},
@@ -973,7 +975,49 @@ class JobFlowService:
         self._write(f"{INSTANCE_PREFIX}/{instance_id}/tasks/{task_id}/attempts/{attempt_id}", {
             "attempt_id": attempt_id, "state": "PENDING", "created_at": _now(), "created_by": actor,
         })
-        return {"instance": self.get_instance(instance_id), "attempt_id": attempt_id}
+        # 已结束的实例必须回到 RUNNING，否则调度器不会认领这个 PENDING 任务。
+        resumed = self.resume_for_message(instance_id, actor).get("resumed", False)
+        return {"instance": self.get_instance(instance_id), "attempt_id": attempt_id,
+                "resumed": resumed}
+
+    def resume_for_message(self, instance_id: str, actor: str) -> dict:
+        """把已结束的实例拉回 RUNNING，让重新入队的任务能被调度器认领。
+
+        人工消息会把终态任务改回 PENDING，但 ACP 调度器只处理 RUNNING 实例；
+        不同步复活实例的话消息会永远停在 PENDING（表现为「发出去没有 AI 回复」）。
+        复用当前 run 与工作区绑定，不重新 provision。
+        """
+        meta = self._instance(instance_id)
+        status = self._read(f"{INSTANCE_PREFIX}/{instance_id}/status", {})
+        state = status.get("state", "") if isinstance(status, dict) else ""
+        if state not in {"RUNNING", "SUCCEEDED", "FAILED", "ABORTED"}:
+            return {"instance": self._instance_view(meta), "resumed": False}
+        resumed = state != "RUNNING"
+        run_id, _ = self.store.kv_get(f"{INSTANCE_PREFIX}/{instance_id}/current_run")
+        if not run_id:
+            # run 结束时 run_manager 会清掉 current_run，指针仍留在 run/current。
+            current = self._read(f"{INSTANCE_PREFIX}/{instance_id}/run/current", {})
+            run_id = current.get("run_id") if isinstance(current, dict) else ""
+            if run_id:
+                self.store.kv_put(
+                    f"{INSTANCE_PREFIX}/{instance_id}/current_run", str(run_id)
+                )
+        if run_id:
+            self.store.kv_put(
+                f"{INSTANCE_PREFIX}/{instance_id}/runs/{run_id}/status", "RUNNING"
+            )
+            self.store.kv_delete(
+                f"{INSTANCE_PREFIX}/{instance_id}/runs/{run_id}/finished_at"
+            )
+            self._write(f"{INSTANCE_PREFIX}/{instance_id}/run/current", {
+                "run_id": str(run_id), "status": "RUNNING", "started_at": _now(),
+            })
+        if resumed:
+            return {
+                "instance": self._transition(instance_id, "RUNNING", actor),
+                "resumed": True,
+            }
+        return {"instance": self._instance_view(meta), "resumed": False}
 
     def list_task_attempts(self, instance_id: str, task_id: str) -> list[dict]:
         """List attempts of an instance task, each with a workspace-binding summary."""

@@ -48,6 +48,78 @@ def test_start_instance_existing_finished_run_reuses_run_id(mock_consul) -> None
     assert result["run"]["run_id"] == "run-old"
 
 
+def test_retry_task_resumes_finished_instance(mock_consul) -> None:
+    """已结束实例上的重试必须把实例拉回 RUNNING，否则任务永远停在 PENDING。"""
+    service = JobFlowService(mock_consul)
+    _seed_instance(service, "inst-retry")
+    mock_consul.kv_put(
+        f"{INSTANCE_PREFIX}/inst-retry/status",
+        '{"state": "SUCCEEDED", "revision": 3}',
+    )
+    # run 正常结束时 run_manager 会清掉 current_run，只留下 run/current 指针。
+    mock_consul.kv_put(
+        f"{INSTANCE_PREFIX}/inst-retry/run/current",
+        '{"run_id": "run-old", "status": "RUNNING"}',
+    )
+    mock_consul.kv_put(
+        f"{INSTANCE_PREFIX}/inst-retry/runs/run-old/status", "COMPLETED",
+    )
+    mock_consul.kv_put(
+        f"{INSTANCE_PREFIX}/inst-retry/runs/run-old/finished_at",
+        "2026-01-01T00:00:00Z",
+    )
+    service._write(f"{INSTANCE_PREFIX}/inst-retry/tasks/build/status", {
+        "task_id": "build", "state": "DONE", "attempt_count": 1,
+    })
+
+    result = service.retry_task("inst-retry", "build", "tester")
+
+    assert result["resumed"] is True
+    assert result["instance"]["status"]["state"] == "RUNNING"
+    task = service._read(f"{INSTANCE_PREFIX}/inst-retry/tasks/build/status")
+    assert task["state"] == "PENDING"
+    run_status, _ = mock_consul.kv_get(
+        f"{INSTANCE_PREFIX}/inst-retry/runs/run-old/status"
+    )
+    assert run_status == "RUNNING"
+    finished, _ = mock_consul.kv_get(
+        f"{INSTANCE_PREFIX}/inst-retry/runs/run-old/finished_at"
+    )
+    assert finished is None
+
+
+def test_retry_task_repairs_missing_active_run_pointer(mock_consul) -> None:
+    """实例已是 RUNNING 但 current_run 缺失时也要修复，否则调度器找不到 run。"""
+    service = JobFlowService(mock_consul)
+    _seed_instance(service, "inst-dangling")
+    mock_consul.kv_put(
+        f"{INSTANCE_PREFIX}/inst-dangling/status",
+        '{"state": "RUNNING", "revision": 2}',
+    )
+    mock_consul.kv_put(
+        f"{INSTANCE_PREFIX}/inst-dangling/run/current",
+        '{"run_id": "run-old", "status": "COMPLETED"}',
+    )
+    mock_consul.kv_put(
+        f"{INSTANCE_PREFIX}/inst-dangling/runs/run-old/status", "COMPLETED",
+    )
+    service._write(f"{INSTANCE_PREFIX}/inst-dangling/tasks/build/status", {
+        "task_id": "build", "state": "DONE", "attempt_count": 1,
+    })
+
+    result = service.retry_task("inst-dangling", "build", "tester")
+
+    assert result["resumed"] is False
+    current_run, _ = mock_consul.kv_get(
+        f"{INSTANCE_PREFIX}/inst-dangling/current_run"
+    )
+    assert current_run == "run-old"
+    run_status, _ = mock_consul.kv_get(
+        f"{INSTANCE_PREFIX}/inst-dangling/runs/run-old/status"
+    )
+    assert run_status == "RUNNING"
+
+
 def test_start_instance_first_run_with_real_local_store() -> None:
     """用真实 LocalStore（非 mock）验证：首次启动在全局索引 > 0 时仍能注册。
 
