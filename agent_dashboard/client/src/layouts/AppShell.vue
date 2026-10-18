@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
-import { Activity, GitBranch, ListTree, Settings, Sun, Moon, Monitor, Layers, PlayCircle } from 'lucide-vue-next'
+import { Activity, GitBranch, ListTree, Settings, Sun, Moon, Monitor, Layers, PlayCircle, MessagesSquare } from 'lucide-vue-next'
 import { applyTheme, readThemeMode, type ThemeMode } from '@/lib/theme'
 
 const props = defineProps<{
@@ -32,6 +32,7 @@ const navItems = computed(() => [
   ] : []),
   { label: '模板', to: '/templates', icon: Layers, active: route.path.startsWith('/templates') },
   { label: '实例', to: '/instances', icon: PlayCircle, active: route.path.startsWith('/instances') },
+  { label: 'ACP 对话', to: '/acp', icon: MessagesSquare, active: route.path === '/acp' },
   { label: '全局配置', to: '/settings', icon: Settings, active: route.path === '/settings' },
 ])
 </script>

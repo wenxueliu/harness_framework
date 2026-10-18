@@ -34,6 +34,7 @@ const router = createRouter({
       name: 'workflow-logs',
       component: () => import('@/pages/WorkflowLogs.vue'),
     },
+    { path: '/acp', name: 'acp-chat', component: () => import('@/pages/AcpChat.vue') },
     { path: '/settings', name: 'settings', component: () => import('@/pages/Settings.vue') },
     { path: '/:pathMatch(.*)*', component: () => import('@/pages/NotFound.vue') },
   ],
