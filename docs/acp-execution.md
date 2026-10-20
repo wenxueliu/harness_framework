@@ -103,6 +103,33 @@ ACP 不提供统一的 Skill 参数。Skill 必须通过以下一种由 Adapter 
 2. Provider-specific 配置文件或启动参数；
 3. 适配器支持的会话级指令。
 
+### 支持的 provider
+
+| provider | 默认 adapter 命令 | 说明 |
+|----------|-------------------|------|
+| `claude` | `npx -y @agentclientprotocol/claude-agent-acp` | 需要已安装 `claude` CLI |
+| `codex` | `npx -y @agentclientprotocol/codex-acp` | 需要已安装 `codex` CLI |
+| `opencode` | `opencode acp` | OpenCode 自带 ACP server，无需下载 adapter |
+
+provider 列表的唯一定义在 `harness_framework/agent_providers.py`
+（`SUPPORTED_AGENT_PROVIDERS`）。模板校验、dispatcher 路由、daemon 参数校验
+和 skill 脚本都从这里或对应的镜像常量取值。
+
+配置了不支持的 provider 时，错误信息同时给出实际值和可选值，例如：
+
+```text
+节点 build 的 Agent 不受支持: gemini（可选: claude, codex, opencode）
+```
+
+daemon 日志同一格式：
+
+```text
+cannot dispatch req-1/build: unsupported ACP agent 'gemini' for task type 'backend' (supported: claude, codex, opencode)
+```
+
+provider 合法但 daemon 未配置对应命令时，日志与 `tasks/<id>/dispatch_error`
+记录 `ACP command not configured for agent 'opencode' (task build, configured agents: claude, codex)`。
+
 没有支持的注入方式时，预检失败，不静默丢弃 Skill。
 
 ### 实现现状：记录结构与事实来源
@@ -221,6 +248,7 @@ python -m harness_framework.daemon --local \
 |---|---|
 | `ACP_CLAUDE_COMMAND` | Claude ACP Adapter 的固定 argv 配置 |
 | `ACP_CODEX_COMMAND` | Codex ACP Adapter 的固定 argv 配置 |
+| `ACP_OPENCODE_COMMAND` | OpenCode ACP Adapter 的固定 argv 配置（默认 `opencode acp`） |
 | `ACP_MAX_CONCURRENCY` | Gateway 最大 Attempt 并发 |
 | `ACP_TASK_TIMEOUT` | Attempt 的硬超时 |
 | `ACP_PERMISSION_POLICY` | Agent 权限默认策略 |

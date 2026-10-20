@@ -361,12 +361,13 @@ watch(() => instance.value?.group_id, (groupId) => {
         <RouterLink v-if="instance.template_id" :to="`/templates/${instance.template_id}`"
           class="ml-3 rounded border border-border px-2 py-1 text-[11px] text-blue-300 hover:bg-accent">查看模板</RouterLink>
       </nav>
-      <section class="grid gap-3 md:grid-cols-5">
+      <section class="grid gap-3 md:grid-cols-3">
         <div class="rounded border border-border bg-card p-3"><p class="text-[11px] text-muted-foreground">状态</p><p class="mt-1 font-semibold">{{ instance.status.state }}</p></div>
         <div class="rounded border border-border bg-card p-3"><p class="text-[11px] text-muted-foreground">模板版本</p><p class="mt-1 font-mono text-xs">{{ instance.version_id }}</p></div>
         <div class="rounded border border-border bg-card p-3"><p class="text-[11px] text-muted-foreground">所属项目组</p><p class="mt-1 font-mono text-xs">{{ instance.group_id || 'unassigned' }}</p></div>
         <div class="rounded border border-border bg-card p-3"><p class="text-[11px] text-muted-foreground">Git</p><p class="mt-1 font-mono text-xs">{{ instance.context.git?.ref || '未指定' }}</p></div>
         <div class="rounded border border-border bg-card p-3"><p class="text-[11px] text-muted-foreground">Workspace</p><p class="mt-1 font-mono text-xs">{{ instance.context.workspace?.workspace_id || '未指定' }}</p></div>
+        <div class="rounded border border-border bg-card p-3"><p class="text-[11px] text-muted-foreground">运行目录</p><p class="mt-1 font-mono text-xs">{{ instance.context.directory || '按 Run Workspace / 全局默认解析' }}</p></div>
       </section>
       <section v-if="['QUEUED', 'WAITING_FOR_CAPABILITY'].includes(instance.status.state)" class="rounded-lg border border-border bg-card p-4">
         <div class="flex items-center justify-between">

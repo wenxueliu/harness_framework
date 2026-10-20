@@ -39,7 +39,7 @@ class CapabilityPreflightService:
     def _required_runtimes(self, instance: dict, profile: dict) -> list[tuple[str, str]]:
         """解析实例 DAG 节点实际引用的 provider 及其 Runtime ID（去重保序）。
 
-        节点的 agent 字段是 provider 名（claude/codex），对应 daemon 自动注册的
+        节点的 agent 字段是 provider 名（claude/codex/opencode），对应 daemon 自动注册的
         acp-<provider> Runtime；旧模板没有 agent 字段时回退到 Profile 绑定的 Runtime。
         """
         template_id = str(instance.get("template_id", ""))
@@ -76,7 +76,7 @@ class CapabilityPreflightService:
         profile_id = instance.get("execution_profile_id", "")
         profile = None
 
-        # Agent Runtime check — 实例 DAG 每个节点可绑定不同 provider（claude/codex），
+        # Agent Runtime check — 实例 DAG 每个节点可绑定不同 provider（claude/codex/opencode），
         # 因此按节点实际引用的 provider 逐一检查对应 Runtime，而不是只看 Profile 绑定的那一个。
         try:
             if not profile_id:

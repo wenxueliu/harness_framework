@@ -19,6 +19,9 @@ from pathlib import Path
 
 
 # ── 类型映射 ──────────────────────────────────────────────────────────────
+# 与 harness_framework/agent_providers.py 保持一致（skill 独立安装，不能 import）
+SUPPORTED_AGENTS = ("claude", "codex", "opencode")
+
 TYPE_MAP = {
     "backend": {"type": "backend", "capability": "dev"},
     "design": {"type": "design", "capability": "design"},
@@ -130,9 +133,14 @@ def validate_deps(deps: dict) -> list[str]:
                     errors.append(f"{name}: child '{child}' 不在 deps 中")
 
         acp = info.get("acp", {})
-        if acp and (not isinstance(acp, dict)
-                    or acp.get("agent") not in {"claude", "codex"}):
-            errors.append(f"{name}: acp.agent 必须是 claude 或 codex")
+        if acp:
+            if not isinstance(acp, dict):
+                errors.append(f"{name}: acp 必须是 object")
+            elif acp.get("agent") not in SUPPORTED_AGENTS:
+                errors.append(
+                    f"{name}: acp.agent '{acp.get('agent')}' 不受支持"
+                    f"（可选: {', '.join(SUPPORTED_AGENTS)}）"
+                )
 
         for dep in info.get("depends_on", []):
             if isinstance(dep, str) and dep not in all_names:

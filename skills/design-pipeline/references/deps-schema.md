@@ -91,5 +91,5 @@ Harness Framework Aggregator 消费的任务依赖图格式。
 - `depends_on` 中引用的任务名必须存在于 deps 的 key 中
 - `children` 中引用的任务名必须存在于 deps 的 key 中
 - `parallel` 节点必须有 `children` 数组
-- `acp.agent` 如提供，只能为 `claude` 或 `codex`
+- `acp.agent` 如提供，只能为 `claude`、`codex` 或 `opencode`
 - 不能有指向自身的依赖

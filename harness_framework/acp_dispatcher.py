@@ -11,6 +11,12 @@ import uuid
 from typing import Any, Callable
 
 from .acp_client import ACPClient, ACPError, ACPResult
+from .agent_providers import (
+    DEFAULT_AGENT_PROVIDER,
+    is_supported_agent,
+    normalize_agent,
+    supported_agents_text,
+)
 from .agent_runtimes import ensure_daemon_runtime
 from .human_interaction import (
     claim_next_human_message,
@@ -89,8 +95,11 @@ class ACPDispatcher:
             raise ValueError("ACP max_concurrency must be positive")
         if task_timeout < 1 or lease_duration < 1:
             raise ValueError("ACP timeouts must be positive")
-        if any(value not in {"claude", "codex"} for value in self.routing.values()):
-            raise ValueError("ACP routing values must be claude or codex")
+        if any(not is_supported_agent(value) for value in self.routing.values()):
+            raise ValueError(
+                "ACP routing values must be one of: " + supported_agents_text()
+                + f"; got {sorted(set(self.routing.values()))}"
+            )
         if scope not in {WORKFLOW_SCOPE, JOBFLOW_SCOPE}:
             raise ValueError("ACP scope must be workflow or jobflow")
         self._stop = threading.Event()
@@ -106,6 +115,24 @@ class ACPDispatcher:
         if self.scope == JOBFLOW_SCOPE:
             return f"{INSTANCE_PREFIX}/{scope_id}"
         return f"workflows/{scope_id}"
+
+    def _instance_directory(self, req_id: str) -> str:
+        """Return the execution directory configured on a job-flow instance.
+
+        Set via `create_instance({"directory": ...})` and stored in the instance
+        context. Node-level `acp.cwd` / `repo_path` take precedence over this.
+        """
+        if self.scope != JOBFLOW_SCOPE:
+            return ""
+        raw, _ = self.store.kv_get(f"{self._scope_base(req_id)}/context")
+        try:
+            context = json.loads(raw) if raw else {}
+        except (TypeError, json.JSONDecodeError):
+            return ""
+        if not isinstance(context, dict):
+            return ""
+        directory = context.get("directory")
+        return directory.strip() if isinstance(directory, str) else ""
 
     def _task_state(self, value: Any) -> str:
         if isinstance(value, dict):
@@ -172,10 +199,7 @@ class ACPDispatcher:
                 log.info("defer %s/%s: %s", req_id, task_name, exc)
                 continue
             except (ValueError, ACPError) as exc:
-                self.store.kv_put(
-                    f"{self._task_base(req_id, task_name)}/dispatch_error", str(exc)
-                )
-                log.error("cannot dispatch %s/%s: %s", req_id, task_name, exc)
+                self._record_dispatch_error(req_id, task_name, str(exc))
                 continue
             if not claim:
                 continue
@@ -422,7 +446,9 @@ class ACPDispatcher:
         try:
             provider, config = self._resolve_agent(meta)
             execution_mode, _ = self.store.kv_get(f"{self._scope_base(req_id)}/execution_mode")
-            if execution_mode == "managed-workspace":
+            # 执行目录优先级：节点显式目录(acp.cwd / repo_path) > managed workspace > 实例目录 > 全局 workspace_root。
+            node_directory = str(config.get("cwd") or meta.get("repo_path") or "").strip()
+            if execution_mode == "managed-workspace" and not node_directory:
                 try:
                     if self.workspace_manager is None:
                         raise RuntimeError("managed workspace service is not configured")
@@ -432,11 +458,15 @@ class ACPDispatcher:
                 except Exception as exc:
                     raise WorkspaceUnavailable(str(exc)) from exc
             else:
-                if self.scope == JOBFLOW_SCOPE and (config.get("cwd") or meta.get("repo_path")):
-                    raise ValueError("jobflow tasks require an approved workspace binding")
-                cwd = os.path.abspath(
-                    config.get("cwd") or meta.get("repo_path") or self.workspace_root
-                )
+                explicit_directory = node_directory or self._instance_directory(req_id)
+                if explicit_directory:
+                    cwd = os.path.abspath(explicit_directory)
+                    if not os.path.isdir(cwd):
+                        raise WorkspaceUnavailable(
+                            f"execution directory not found: {cwd}"
+                        )
+                else:
+                    cwd = os.path.abspath(self.workspace_root)
             client = self.client_factory(
                 self.commands[provider], cwd=cwd,
                 env={
@@ -588,13 +618,23 @@ class ACPDispatcher:
         try:
             config = json.loads(raw) if raw else {}
         except json.JSONDecodeError as exc:
-            raise ValueError("task acp configuration is invalid JSON") from exc
+            raise ValueError(
+                f"task acp configuration is invalid JSON: {raw!r}"
+            ) from exc
         if not isinstance(config, dict):
-            raise ValueError("task acp configuration must be an object")
+            raise ValueError(
+                f"task acp configuration must be an object, got {type(config).__name__}"
+            )
         task_type = meta.get("type", "task")
-        provider = config.get("agent") or self.routing.get(task_type, "codex")
-        if provider not in {"claude", "codex"}:
-            raise ValueError(f"unsupported ACP agent: {provider}")
+        requested = config.get("agent") or self.routing.get(
+            task_type, DEFAULT_AGENT_PROVIDER
+        )
+        provider = normalize_agent(requested)
+        if not is_supported_agent(provider):
+            raise ValueError(
+                f"unsupported ACP agent {requested!r} for task type {task_type!r}"
+                f" (supported: {supported_agents_text()})"
+            )
         return provider, config
 
     def _session_to_resume(
@@ -855,9 +895,23 @@ class ACPDispatcher:
             # the KV transition remains the execution source of truth.
             log.exception("failed to journal task event req=%s task=%s", req_id, task_id)
 
+    def _record_dispatch_error(
+        self, req_id: str, task_name: str, message: str
+    ) -> None:
+        """Persist a dispatch failure and log it once per distinct reason."""
+        key = f"{self._task_base(req_id, task_name)}/dispatch_error"
+        previous, _ = self.store.kv_get(key)
+        self.store.kv_put(key, message)
+        if previous != message:
+            log.error("cannot dispatch %s/%s: %s", req_id, task_name, message)
+
     def _mark_unroutable(self, req_id: str, task_name: str, provider: str) -> None:
-        base = self._task_base(req_id, task_name)
-        self.store.kv_put(f"{base}/dispatch_error", f"ACP command not configured: {provider}")
+        configured = ", ".join(sorted(self.commands)) or "<none>"
+        self._record_dispatch_error(
+            req_id, task_name,
+            f"ACP command not configured for agent {provider!r} "
+            f"(task {task_name}, configured agents: {configured})",
+        )
 
     def _attempt_is_current(self, base: str, claim: dict[str, Any]) -> bool:
         attempt, _ = self.store.kv_get(f"{base}/attempt_id")

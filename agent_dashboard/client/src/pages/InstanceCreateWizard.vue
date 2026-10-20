@@ -26,6 +26,8 @@ const selectedVersionId = ref('')
 const gitRef = ref('')
 const instanceName = ref('')
 const workspaceStrategy = ref('ORIGINAL')
+const executionDirectoryMode = ref<'workspace' | 'directory'>('workspace')
+const instanceDirectory = ref('')
 const projectWorkspaces = ref<ProjectWorkspace[]>([])
 const selectedWorkspaceId = ref('')
 const executionProfileId = ref('')
@@ -35,8 +37,14 @@ const loading = ref(true)
 const submitting = ref(false)
 const error = ref('')
 
-const needsProjectWorkspace = computed(() => workspaceStrategy.value !== 'DEMO_TEMP')
+const usesExecutionDirectory = computed(() => executionDirectoryMode.value === 'directory')
+const needsProjectWorkspace = computed(() => !usesExecutionDirectory.value && workspaceStrategy.value !== 'DEMO_TEMP')
 const workspaceMissing = computed(() => needsProjectWorkspace.value && !selectedWorkspaceId.value)
+const directoryMissing = computed(() => usesExecutionDirectory.value && !instanceDirectory.value.trim())
+const directoryRelative = computed(() => {
+  const value = instanceDirectory.value.trim()
+  return usesExecutionDirectory.value && Boolean(value) && !/^([a-zA-Z]:[\\/]|[\\/])/.test(value)
+})
 const selectedWorkspace = computed(() =>
   projectWorkspaces.value.find((item) => item.workspace_id === selectedWorkspaceId.value))
 
@@ -65,10 +73,13 @@ async function submit() {
       name: instanceName.value.trim() || '未命名实例',
       parameters: parsedParameters.value,
       git: { ref: gitRef.value },
-      workspace: needsProjectWorkspace.value
-        ? { strategy: workspaceStrategy.value, project_workspace_id: selectedWorkspaceId.value }
-        : { strategy: workspaceStrategy.value },
+      workspace: usesExecutionDirectory.value
+        ? {}
+        : needsProjectWorkspace.value
+          ? { strategy: workspaceStrategy.value, project_workspace_id: selectedWorkspaceId.value }
+          : { strategy: workspaceStrategy.value },
       execution_profile_id: executionProfileId.value || undefined,
+      directory: usesExecutionDirectory.value ? instanceDirectory.value.trim() : undefined,
     }
     const created = await createJobFlowInstance(body)
     if (startMode.value === 'now') {
@@ -137,6 +148,29 @@ function prevStep() { if (step.value > 1) step.value-- }
               class="mt-2 w-full rounded border border-border bg-transparent p-2 text-xs" />
           </div>
           <div class="rounded-lg border border-border bg-card p-4">
+            <h4 class="text-sm font-medium">执行目录</h4>
+            <div class="mt-2 space-y-1">
+              <label class="flex items-center gap-2 text-xs">
+                <input v-model="executionDirectoryMode" type="radio" value="workspace" data-testid="wizard-directory-mode-workspace" />
+                使用 Run Workspace（按下方策略自动创建/隔离目录）
+              </label>
+              <label class="flex items-center gap-2 text-xs">
+                <input v-model="executionDirectoryMode" type="radio" value="directory" data-testid="wizard-directory-mode-directory" />
+                指定已有目录（不创建 Run Workspace）
+              </label>
+            </div>
+            <template v-if="usesExecutionDirectory">
+              <input v-model="instanceDirectory" data-testid="wizard-directory" placeholder="/code/my-service"
+                class="mt-3 w-full rounded border border-border bg-transparent p-2 font-mono text-xs" />
+              <p v-if="directoryRelative" class="mt-1 text-xs text-amber-300">
+                建议使用绝对路径；相对路径会按 daemon 进程的工作目录解析。
+              </p>
+              <p class="mt-1 text-xs text-muted-foreground">
+                节点级 acp.cwd / repo_path 可覆盖该目录；目录不存在时任务会停在 WAITING_FOR_HUMAN。
+              </p>
+            </template>
+          </div>
+          <div class="rounded-lg border border-border bg-card p-4">
             <h4 class="text-sm font-medium">输入参数</h4>
             <textarea v-model="parametersText" data-testid="wizard-parameters" rows="4"
               class="mt-2 w-full rounded border border-border bg-transparent p-2 font-mono text-xs"
@@ -160,7 +194,7 @@ function prevStep() { if (step.value > 1) step.value-- }
             <input v-model="gitRef" data-testid="wizard-git-ref" placeholder="main / commit SHA"
               class="mt-2 w-full rounded border border-border bg-transparent p-2 text-xs" />
           </div>
-          <div class="rounded-lg border border-border bg-card p-4">
+          <div v-if="!usesExecutionDirectory" class="rounded-lg border border-border bg-card p-4">
             <h4 class="text-sm font-medium">Run Workspace 隔离等级</h4>
             <div class="mt-2 space-y-1">
               <label v-for="strategy in workspaceStrategies" :key="strategy.value" class="flex items-center gap-2 text-xs">
@@ -196,7 +230,8 @@ function prevStep() { if (step.value > 1) step.value-- }
             <div class="flex justify-between"><dt class="text-muted-foreground">版本</dt><dd>{{ selectedVersion?.version_id }}</dd></div>
             <div class="flex justify-between"><dt class="text-muted-foreground">Profile</dt><dd>{{ profiles.find(p => p.profile_id === executionProfileId)?.name || '未选择' }}</dd></div>
             <div class="flex justify-between"><dt class="text-muted-foreground">Git</dt><dd>{{ gitRef || '未指定' }}</dd></div>
-            <div class="flex justify-between"><dt class="text-muted-foreground">Workspace</dt><dd>{{ workspaceStrategy }}{{ selectedWorkspace ? ` · ${selectedWorkspace.name}` : '' }}</dd></div>
+            <div class="flex justify-between"><dt class="text-muted-foreground">运行目录</dt><dd class="font-mono">{{ usesExecutionDirectory ? (instanceDirectory.trim() || '未填写') : '由 Run Workspace 决定' }}</dd></div>
+            <div class="flex justify-between"><dt class="text-muted-foreground">Workspace</dt><dd>{{ usesExecutionDirectory ? '未创建（使用指定目录）' : workspaceStrategy }}{{ !usesExecutionDirectory && selectedWorkspace ? ` · ${selectedWorkspace.name}` : '' }}</dd></div>
           </dl>
           <div class="mt-4 flex items-center gap-3">
             <label class="flex items-center gap-1.5 text-xs">
@@ -215,7 +250,7 @@ function prevStep() { if (step.value > 1) step.value-- }
             class="rounded bg-blue-500 px-3 py-1.5 text-xs text-white" @click="nextStep">下一步</button>
           <button v-else data-testid="wizard-submit"
             class="rounded bg-green-600 px-3 py-1.5 text-xs text-white disabled:cursor-not-allowed disabled:opacity-50"
-            :disabled="submitting || !selectedVersionId || workspaceMissing" @click="submit">创建实例</button>
+            :disabled="submitting || !selectedVersionId || workspaceMissing || directoryMissing" @click="submit">创建实例</button>
         </div>
       </template>
     </div>

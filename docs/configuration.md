@@ -52,7 +52,13 @@
 | `--acp-permission-policy` | `allow_once` | 权限请求策略：`allow_once` / `deny` |
 | `--acp-claude-command` | Claude adapter 的 npx argv | JSON argv 数组 |
 | `--acp-codex-command` | Codex adapter 的 npx argv | JSON argv 数组 |
-| `--acp-routing` | 内置类型映射 | task type → `claude`/`codex` JSON 对象 |
+| `--acp-opencode-command` | `["opencode", "acp"]`（原生 ACP，无需 npx） | JSON argv 数组 |
+| `--acp-routing` | 内置类型映射 | task type → `claude`/`codex`/`opencode` JSON 对象 |
+
+支持的 provider 固定为 `claude`、`codex`、`opencode`。配置了其他值时，
+模板校验会返回 `INVALID_AGENT`，错误信息里带上实际值与可选值列表
+（例如 `节点 build 的 Agent 不受支持: opencode2（可选: claude, codex, opencode）`），
+daemon 日志同样记录该具体名称。
 
 ## 环境变量
 
@@ -60,7 +66,7 @@
 |------|------|
 | `CONSUL_ADDR` | Consul 地址（被 `--consul` 覆盖） |
 | `CONSUL_TOKEN` | Consul ACL Token（被 `--token` 覆盖） |
-| `ACP_CLAUDE_COMMAND` / `ACP_CODEX_COMMAND` | adapter JSON argv |
+| `ACP_CLAUDE_COMMAND` / `ACP_CODEX_COMMAND` / `ACP_OPENCODE_COMMAND` | adapter JSON argv |
 | `ACP_TASK_ROUTING` | task type 到 provider 的 JSON 映射 |
 | `ACP_WORKSPACE_ROOT` | 默认 Agent 工作目录 |
 | `ACP_MAX_CONCURRENCY` / `ACP_TASK_TIMEOUT` | 并发数与执行超时 |
@@ -75,7 +81,7 @@
 
 | 字段 | 用途 | 关键约束 |
 |------|------|----------|
-| `acp` | 指定 `claude`/`codex`、cwd、权限和 session 策略 | 可选；缺省按任务类型路由 |
+| `acp` | 指定 `claude`/`codex`/`opencode`、cwd、权限和 session 策略 | 可选；缺省按任务类型路由 |
 | `agent_name` | 历史逻辑 Agent 名称 | 新模型不作为调度键；使用 capability requirements + Agent Runtime |
 | `service_name` | 标记业务或代码仓库归属 | 可选；不参与 Agent 匹配 |
 | `agent_contract` | 输入、输出、职责、排除项、权限、上下文预算 | 列表字段必须为非空字符串列表 |
@@ -99,11 +105,44 @@
 ### ACP Agent 路由
 
 默认 `design/review → claude`，其他可执行类型 → `codex`。任务用
-`"acp":{"agent":"claude"}` 覆盖；完整说明见 [ACP Agent 执行](acp-execution.md)。
+`"acp":{"agent":"claude"}` 覆盖；可用 provider 为 `claude`、`codex`、
+`opencode`（`opencode` 走原生 `opencode acp`，无需 npx 下载 adapter）。
+完整说明见 [ACP Agent 执行](acp-execution.md)。
 
 > 注意：Execution Profile 的 `agent_runtime_id` 只参与 Preflight 检查和 Manifest
 > 快照，**不参与**实际 dispatch 路由；节点未配置 `acp.agent` 时按上述类型路由表
 > 执行，不会回退到 Profile 绑定。详见 [ACP Agent 执行](acp-execution.md) 第 5 节。
+
+### 执行目录
+
+同一个模板可以被多个实例复用，而每个实例通常运行在不同的代码目录。Agent 进程的
+`cwd` 按以下优先级解析（高 → 低）：
+
+1. **节点级**：任务的 `acp.cwd` 或顶层 `repo_path`（`acp.cwd` 优先）。节点级目录
+   优先于 managed workspace，即显式目录会覆盖 Run 的 attempt 绑定目录。
+2. **managed workspace**：实例以 `workspace` 策略启动时，使用该 Run 的 attempt 绑定目录。
+3. **实例级**：`create_instance` 请求体的 `directory` 字段（存入实例 context，`rerun` 会继承）。
+4. **全局**：`--acp-workspace-root`（`ACP_WORKSPACE_ROOT`）。
+
+显式目录（节点/实例）建议使用绝对路径；相对路径按 daemon 进程 cwd 解析。显式目录
+不存在时任务进入 `WAITING_FOR_HUMAN`（原因 `WORKSPACE_UNAVAILABLE`），不会静默回退。
+
+> 前端「创建实例」向导在「执行目录」提供两种模式：使用 Run Workspace（默认，
+> managed workspace 生效）或指定已有目录（发送 `workspace: {}` + `directory`，
+> 不创建 managed workspace）。实例详情页展示最终配置的实例级目录。
+
+```bash
+# 实例级：整个实例默认在 /code/user-service 下执行
+curl -X POST http://localhost:8080/api/instances \
+  -H 'Idempotency-Key: create-1' \
+  -d '{"template_id":"tpl","directory":"/code/user-service"}'
+```
+
+```json
+// 节点级：仅该节点切到另一个目录
+{ "id": "docs", "type": "backend", "depends_on": ["build"],
+  "repo_path": "/code/docs-site" }
+```
 
 ### 历史 Worker 名称匹配（不再用于新模型）
 

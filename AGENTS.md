@@ -45,7 +45,7 @@ This file provides guidance to AI coding agents when working with code in this r
 harness_framework/
 ├── daemon.py          # 主进程入口，启动 ACPDispatcher + Aggregator + Watchdog + WebAPI
 ├── acp_client.py      # ACP v1 stdio JSON-RPC 客户端
-├── acp_dispatcher.py  # DAG 就绪后创建 Claude/Codex Agent 并执行任务
+├── acp_dispatcher.py  # DAG 就绪后创建 Claude/Codex/OpenCode Agent 并执行任务
 ├── aggregator.py      # 监听 DAG 状态变更，依赖满足时激活下游任务
 ├── watchdog.py        # 检测 IN_PROGRESS 任务的 Agent 存活和超时，自动恢复
 ├── webapi.py          # HTTP API 为业务看板提供聚合查询与控制信号写入
@@ -60,7 +60,7 @@ harness_framework/
 ```
 
 **五个核心组件：**
-- **ACPDispatcher**：默认执行入口；CAS 认领 `PENDING` 任务，按任务类型或 `acp.agent` 创建 Claude/Codex ACP 进程，驱动会话并回写结果。
+- **ACPDispatcher**：默认执行入口；CAS 认领 `PENDING` 任务，按任务类型或 `acp.agent` 创建 Claude/Codex/OpenCode ACP 进程，驱动会话并回写结果。
 - **Aggregator**：仅处理 `published=true` 的 workflow，轮询任务状态，当依赖全部 DONE 时将下游任务设为 PENDING。**重测逻辑由 Test Agent 通过 Message Bus 自行管理**。
 - **Watchdog**：仅处理 `published=true` 的 workflow；ACP 任务依据租约和硬截止时间恢复，旧 Worker 兼容模式仍检查注册健康状态。
 - **WebAPI**：基于标准库 `http.server` 的 ThreadingHTTPServer，提供 `/api/workflows`、`/api/workflow/<req_id>`、`/api/agents` 等端点。
@@ -110,7 +110,7 @@ python scripts/file_kv.py --data-file ~/.harness/file_store.json get workflows/ 
 框架内部自动执行的核心逻辑：
 
 1. **任务激活**：Aggregator 检测所有依赖 DONE → 激活下游任务为 PENDING
-2. **任务执行**：ACPDispatcher CAS 认领 PENDING 任务 → 创建 Claude/Codex ACP Agent → 执行完成写入 DONE
+2. **任务执行**：ACPDispatcher CAS 认领 PENDING 任务 → 创建 Claude/Codex/OpenCode ACP Agent → 执行完成写入 DONE
 3. **故障恢复**：Watchdog 检测租约/硬截止时间 → 回滚任务为 PENDING（≤5次重试）
 4. **质量门禁**：test 失败 → 发送 FIX 消息到相关服务 → 轮询消息状态 → 所有修复完成后重测（≤3次重试）
 5. **流程终止**：所有任务 DONE → 流程结束；超过重试上限 → FAILED

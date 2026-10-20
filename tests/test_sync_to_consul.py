@@ -314,7 +314,8 @@ class TestValidateDependencies:
             },
         }
         errors = validate_dependencies(data)
-        assert any("acp.agent must be claude or codex" in e for e in errors)
+        assert any("acp.agent 'unknown' 不受支持" in e for e in errors)
+        assert any("opencode" in e for e in errors)
 
     def test_depends_on_unknown_task(self):
         """depends_on 引用了不存在的任务。"""

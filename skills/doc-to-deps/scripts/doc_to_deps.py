@@ -19,6 +19,11 @@ DEFAULT_ACP_MAP = {
     "test": "codex", "deploy": "codex",
 }
 
+# Skills are installed standalone (no harness_framework import), so the
+# provider list is duplicated here; keep it in sync with
+# harness_framework/agent_providers.py.
+SUPPORTED_AGENTS = ("claude", "codex", "opencode")
+
 
 def slugify(name: str) -> str:
     s = re.sub(r"[^\w\s-]", "", name.lower())
@@ -149,8 +154,11 @@ def build_deps(tasks: list[dict], hint_deps: list[str] = None,
         task_type = infer_type(task["text"]) if not is_heading else "design"
         agent_name = agent_map.get(task_name) or agent_map.get(task_type, "")
         provider = acp_map.get(task_name) or acp_map.get(task_type, "codex")
-        if provider not in {"claude", "codex"}:
-            raise ValueError(f"ACP map for '{task_name}' must be claude or codex")
+        if provider not in SUPPORTED_AGENTS:
+            raise ValueError(
+                f"ACP map for '{task_name}' has unsupported agent '{provider}'"
+                f" (supported: {', '.join(SUPPORTED_AGENTS)})"
+            )
 
         result[task_name] = {
             "type": task_type,
@@ -204,9 +212,11 @@ def main():
     except json.JSONDecodeError as exc:
         parser.error(f"--acp-map must be valid JSON: {exc}")
     if not isinstance(acp_map, dict) or not all(
-            isinstance(key, str) and value in {"claude", "codex"}
+            isinstance(key, str) and value in SUPPORTED_AGENTS
             for key, value in acp_map.items()):
-        parser.error("--acp-map must map strings to claude or codex")
+        parser.error(
+            "--acp-map must map strings to " + " or ".join(SUPPORTED_AGENTS)
+        )
 
     tasks = extract_tasks(content)
     try:

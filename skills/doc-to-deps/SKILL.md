@@ -24,7 +24,7 @@ Parse any document and generate a `dependencies.json` for Harness Framework.
    - "请提供要转换的文档路径（如 `spec.md`）："
 2. **确认 req_id**：如果后续要同步到 Consul，需要 `req_id`。如果用户未指定，提问：
    - "请提供 req_id（需求唯一标识符，如 `req-001`）："
-3. **确认 ACP 映射**：默认 `design/review → claude`，其他任务 → `codex`；用户可用 `--acp-map` 覆盖
+3. **确认 ACP 映射**：默认 `design/review → claude`，其他任务 → `codex`；可用 provider 为 `claude`、`codex`、`opencode`，用户可用 `--acp-map` 覆盖
 
 > `agent_name` 仅供旧 Worker 兼容，不再必填。`service_name` 仅是可选业务上下文。
 

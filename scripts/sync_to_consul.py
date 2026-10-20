@@ -58,6 +58,10 @@ from harness_framework.versioning import VersionedResourceStore
 from harness_framework.budgets import ResourceBudget
 from harness_framework.recovery import RecoveryPolicy, validate_recovery_target
 from harness_framework.model_execution import validate_execution
+from harness_framework.agent_providers import (
+    SUPPORTED_AGENT_PROVIDERS,
+    supported_agents_text,
+)
 
 
 # 非任务元数据 key，自动从任务提取中排除
@@ -108,9 +112,10 @@ def validate_dependencies(data: dict) -> list[str]:
                 errors.append(f"task '{name}': acp must be an object")
             else:
                 provider = acp.get("agent")
-                if provider is not None and provider not in {"claude", "codex"}:
+                if provider is not None and provider not in SUPPORTED_AGENT_PROVIDERS:
                     errors.append(
-                        f"task '{name}': acp.agent must be claude or codex"
+                        f"task '{name}': acp.agent '{provider}' 不受支持"
+                        f" (可选: {supported_agents_text()})"
                     )
                 cwd = acp.get("cwd")
                 if cwd is not None and (not isinstance(cwd, str) or not cwd):

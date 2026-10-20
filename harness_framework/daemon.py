@@ -25,6 +25,12 @@ from typing import Any
 
 from .consul_client import ConsulClient
 from .agent_runtimes import ensure_daemon_runtime
+from .agent_providers import (
+    DEFAULT_AGENT_COMMANDS,
+    SUPPORTED_AGENT_PROVIDERS,
+    is_supported_agent,
+    supported_agents_text,
+)
 from .aggregator import Aggregator
 from .watchdog import Watchdog
 from .webapi import serve as webapi_serve
@@ -127,16 +133,22 @@ def main() -> None:
     p.add_argument("--acp-claude-command",
                    default=os.environ.get(
                        "ACP_CLAUDE_COMMAND",
-                       '["npx", "-y", "@agentclientprotocol/claude-agent-acp"]'),
+                       json.dumps(DEFAULT_AGENT_COMMANDS["claude"])),
                    help="Claude ACP adapter argv（JSON 数组）")
     p.add_argument("--acp-codex-command",
                    default=os.environ.get(
                        "ACP_CODEX_COMMAND",
-                       '["npx", "-y", "@agentclientprotocol/codex-acp"]'),
+                       json.dumps(DEFAULT_AGENT_COMMANDS["codex"])),
                    help="Codex ACP adapter argv（JSON 数组）")
+    p.add_argument("--acp-opencode-command",
+                   default=os.environ.get(
+                       "ACP_OPENCODE_COMMAND",
+                       json.dumps(DEFAULT_AGENT_COMMANDS["opencode"])),
+                   help="OpenCode ACP adapter argv（JSON 数组，默认使用原生 `opencode acp`）")
     p.add_argument("--acp-routing",
                    default=os.environ.get("ACP_TASK_ROUTING", "{}"),
-                   help="task type 到 claude/codex 的覆盖映射（JSON 对象）")
+                   help="task type 到 " + "/".join(SUPPORTED_AGENT_PROVIDERS)
+                        + " 的覆盖映射（JSON 对象）")
     p.add_argument("--acp-workspace-root",
                    default=os.environ.get("ACP_WORKSPACE_ROOT", os.getcwd()),
                    help="ACP Agent 默认工作目录")
@@ -268,13 +280,19 @@ def main() -> None:
             commands = {
                 "claude": _json_argv(args.acp_claude_command, "--acp-claude-command"),
                 "codex": _json_argv(args.acp_codex_command, "--acp-codex-command"),
+                "opencode": _json_argv(
+                    args.acp_opencode_command, "--acp-opencode-command"
+                ),
             }
             routing = json.loads(args.acp_routing)
             if not isinstance(routing, dict) or not all(
-                isinstance(k, str) and v in {"claude", "codex"}
+                isinstance(k, str) and is_supported_agent(v)
                 for k, v in routing.items()
             ):
-                raise ValueError("--acp-routing must map task types to claude or codex")
+                raise ValueError(
+                    "--acp-routing must map task types to one of: "
+                    + supported_agents_text()
+                )
         except (json.JSONDecodeError, ValueError) as exc:
             p.error(str(exc))
         # 把实际 adapter 启动命令注册为 Agent Runtime 事实记录，

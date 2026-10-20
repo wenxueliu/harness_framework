@@ -48,7 +48,7 @@ Sync workflow tasks to Consul KV for the Harness Framework.
 
 ### 一、准备 dependencies.json
 
-> **注意：** `description` 是每个任务的必填字段；可用 `acp.agent` 显式选择 `claude` 或 `codex`。
+> **注意：** `description` 是每个任务的必填字段；可用 `acp.agent` 显式选择 `claude`、`codex` 或 `opencode`。
 
 ```json
 {
@@ -190,7 +190,7 @@ workflows/<req_id>/
 - `task_name` - 任务名称（唯一标识），如 `design-api`
 - `type` - 任务类型：`design` | `review` | `backend` | `test` | `deploy`
 - `depends_on` - 依赖任务列表（数组），如 `["design-api"]`
-- `acp.agent` - 可选，`claude` 或 `codex`；缺省按任务类型路由
+- `acp.agent` - 可选，`claude`、`codex` 或 `opencode`；缺省按任务类型路由
 - `agent_name` - 旧 Worker 兼容字段（可选）
 - `service_name` - 可选业务或仓库归属，如 `user-service`
 - `description` - **任务描述（必填）**，如 `为登录功能设计 API 契约`

@@ -11,6 +11,12 @@ import json
 import uuid
 from typing import Any
 
+from .agent_providers import (
+    SUPPORTED_AGENT_PROVIDERS,
+    is_supported_agent,
+    normalize_agent,
+    unsupported_agent_message,
+)
 from .api_errors import APIError
 from .kv_store_protocol import KVStore
 from .secrets import SecretStore
@@ -20,7 +26,6 @@ INSTANCE_PREFIX = "jobflows/instances"
 IDEMPOTENCY_PREFIX = "jobflows/idempotency"
 TERMINAL_INSTANCE_STATES = {"SUCCEEDED", "FAILED", "ABORTED", "SUPERSEDED"}
 DELETABLE_INSTANCE_STATES = TERMINAL_INSTANCE_STATES | {"QUEUED", "ARCHIVED"}
-SUPPORTED_AGENT_PROVIDERS = {"claude", "codex"}
 
 
 def _now() -> str:
@@ -229,11 +234,17 @@ class JobFlowService:
                     "location": {"node": task_id, "field": "agent",
                                  "line": _source_line(raw_source, task_id, "agent")},
                 })
-            if str(agent) not in SUPPORTED_AGENT_PROVIDERS:
-                raise APIError("INVALID_AGENT", f"节点 {task_id} 的 Agent 不受支持", 422, {
-                    "location": {"node": task_id, "field": "agent",
-                                 "line": _source_line(raw_source, task_id, "agent")},
-                })
+            raw_agent = agent
+            agent = normalize_agent(agent) if isinstance(agent, str) else agent
+            if not is_supported_agent(agent):
+                raise APIError(
+                    "INVALID_AGENT",
+                    unsupported_agent_message(raw_agent, node=task_id), 422, {
+                        "agent": raw_agent if isinstance(raw_agent, str) else str(raw_agent),
+                        "supported_agents": list(SUPPORTED_AGENT_PROVIDERS),
+                        "location": {"node": task_id, "field": "agent",
+                                     "line": _source_line(raw_source, task_id, "agent")},
+                    })
             item = dict(raw)
             item["id"] = task_id
             item.setdefault("type", "backend")
@@ -636,6 +647,16 @@ class JobFlowService:
         )
         if manifest.get("parameter_schema"):
             _validate_parameter_schema(manifest["parameter_schema"], parameters)
+        directory = body.get("directory")
+        if directory is not None:
+            if not isinstance(directory, str) or not directory.strip():
+                raise APIError(
+                    "INVALID_DIRECTORY",
+                    "实例执行目录 directory 必须是非空字符串",
+                    422,
+                    {"location": {"field": "directory"}},
+                )
+            directory = directory.strip()
         now = _now()
         context = {
             "parameters": parameters,
@@ -643,6 +664,10 @@ class JobFlowService:
             "workspace": body.get("workspace", {}),
             "execution_policy": body.get("execution_policy", {}),
         }
+        if directory:
+            # 实例级执行目录：未配置 workspace（非 managed 模式）时作为节点默认 cwd；
+            # 节点可用 acp.cwd / repo_path 覆盖（见 ACPDispatcher._execute）。
+            context["directory"] = directory
         meta = {
             "instance_id": instance_id, "template_id": template_id,
             "version_id": version["version_id"], "definition_hash": version["manifest_hash"],
@@ -935,7 +960,7 @@ class JobFlowService:
             return cached
         source = self.get_instance(instance_id)
         context = dict(source["context"])
-        for field in ("parameters", "git", "workspace", "execution_policy"):
+        for field in ("parameters", "git", "workspace", "execution_policy", "directory"):
             if field in body:
                 context[field] = body[field]
         request = {
@@ -943,6 +968,7 @@ class JobFlowService:
             "instance_id": body.get("instance_id"), "name": body.get("name") or f"{source['name']} (rerun)",
             "parameters": context["parameters"], "git": context["git"],
             "workspace": context["workspace"], "execution_policy": context["execution_policy"],
+            "directory": context.get("directory"),
             "successor_of": instance_id,
         }
         if body.get("execution_profile_id"):

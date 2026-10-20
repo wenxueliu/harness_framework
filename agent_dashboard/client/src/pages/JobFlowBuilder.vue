@@ -52,6 +52,8 @@ const template = ref<JobFlowTemplate | null>(null)
 const name = ref('未命名作业流')
 const description = ref('')
 const tasksText = ref('[{"id":"build","name":"构建","type":"backend","agent":"codex","depends_on":[]}]')
+// 与 harness_framework/agent_providers.py 保持一致
+const SUPPORTED_AGENTS = ['claude', 'codex', 'opencode']
 const parameterSchemaText = ref('{\n  "type": "object",\n  "properties": {},\n  "required": []\n}')
 const message = ref('')
 const error = ref('')
@@ -212,7 +214,7 @@ function localValidation(): JobFlowValidation {
       ids.add(task.id)
       if (task.type === '') errors.push({ code: 'TASK_FIELD_REQUIRED', message: `节点 ${task.id} 必填字段 type 不能为空`, node_id: task.id, field: 'type', line: idLines.get(task.id) })
       if (task.agent === '') errors.push({ code: 'TASK_FIELD_REQUIRED', message: `节点 ${task.id} 必填字段 agent 不能为空`, node_id: task.id, field: 'agent', line: idLines.get(task.id) })
-      else if (task.agent && !['claude', 'codex'].includes(task.agent)) errors.push({ code: 'INVALID_AGENT', message: `节点 ${task.id} 的 Agent 不受支持`, node_id: task.id, field: 'agent', line: idLines.get(task.id) })
+      else if (task.agent && !SUPPORTED_AGENTS.includes(task.agent)) errors.push({ code: 'INVALID_AGENT', message: `节点 ${task.id} 的 Agent 不受支持: ${task.agent}（可选: ${SUPPORTED_AGENTS.join(', ')}）`, node_id: task.id, field: 'agent', line: idLines.get(task.id) })
     }
     for (const task of tasks) {
       for (const dependency of task.depends_on ?? []) {

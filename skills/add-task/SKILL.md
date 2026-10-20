@@ -26,7 +26,7 @@ allowed-tools:
 | `task_name` | 新任务名称（唯一） | `e2e-test` |
 | `--description` | 任务描述 | `"端到端登录流程测试"` |
 | `--type` | 任务类型 | `backend`、`test`、`design`、`review`、`deploy` |
-| `--acp-agent` | 可选 ACP Agent 覆盖 | `claude` 或 `codex` |
+| `--acp-agent` | 可选 ACP Agent 覆盖 | `claude`、`codex` 或 `opencode` |
 | `--service-name` | 可选业务归属 | `user-service` |
 
 ### 检查流程
@@ -71,7 +71,7 @@ python scripts/add_task.py <req_id> <task_name> \
 | `--description` | 否 | 任务描述 |
 | `--type` | 否 | 任务类型：`design` `review` `backend` `test` `deploy` `generic`（默认 `generic`） |
 | `--depends-on` | 否 | 上游依赖，逗号分隔（如 `design,review`） |
-| `--acp-agent` | 否 | 覆盖默认 ACP Agent：`claude` 或 `codex` |
+| `--acp-agent` | 否 | 覆盖默认 ACP Agent：`claude`、`codex` 或 `opencode` |
 | `--agent-name` | 否 | 旧注册/抢占 Worker 的兼容字段 |
 | `--service-name` | 否 | 关联服务名 |
 | `--consul` | 否 | Consul 地址（默认 `CONSUL_ADDR` 环境变量或 `127.0.0.1:8500`） |

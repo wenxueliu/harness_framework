@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from harness_framework.acp_client import ACPResult
 from harness_framework.acp_dispatcher import ACPDispatcher, JobFlowACPDispatcher
+from harness_framework.api_errors import APIError
 from harness_framework.job_flows import JobFlowService
 from harness_framework.human_interaction import create_human_message, list_human_messages
 from harness_framework.run_manager import RunManager
@@ -310,12 +313,12 @@ def test_completion_contract_is_enforced():
     assert "artifact:implementation" in store._store[f"{base}/error_message"]
 
 
-def _job_flow_service(store):
+def _job_flow_service(store, tasks=None, instance_extra=None):
     FakeACPClient.instances.clear()
     service = JobFlowService(store)
     service.create_template({
         "template_id": "tpl-acp", "name": "ACP Flow",
-        "tasks": [
+        "tasks": tasks or [
             {"id": "build", "type": "backend", "depends_on": []},
             {"id": "test", "type": "test", "depends_on": ["build"]},
         ],
@@ -323,10 +326,13 @@ def _job_flow_service(store):
     version = service.publish_template(
         "tpl-acp", {"expected_revision": 1}, "local:alice", "publish-acp",
     )["version"]
-    service.create_instance({
+    instance_body = {
         "template_id": "tpl-acp", "version_id": version["version_id"],
         "instance_id": "inst-acp", "name": "acp-main",
-    }, "local:alice", "create-acp")
+    }
+    if instance_extra:
+        instance_body.update(instance_extra)
+    service.create_instance(instance_body, "local:alice", "create-acp")
     service.start_instance("inst-acp", "local:alice")
     return service
 
@@ -467,3 +473,146 @@ def test_job_flow_expired_lease_is_recovered_to_pending():
     status = json.loads(store._store[f"{base}/status"])
     assert status["state"] == "PENDING"
     assert status["lease_epoch"] == claim["lease_epoch"] + 1
+
+
+def _dispatch_job_flow_task(dispatcher):
+    instance_id, task_name, meta = dispatcher._pending_tasks()[0]
+    claim = dispatcher._claim(instance_id, task_name, meta)
+    assert claim is not None
+    dispatcher._active[(f"jobflow:{instance_id}", task_name)] = {
+        **claim, "scope_id": instance_id, "client": None,
+    }
+    dispatcher._execute(instance_id, task_name, meta, claim)
+    return instance_id, task_name
+
+
+def test_job_flow_instance_directory_sets_agent_cwd(tmp_path):
+    FakeACPClient.instances.clear()
+    store = MockConsulStore()
+    _job_flow_service(store, instance_extra={"directory": str(tmp_path)})
+    dispatcher = JobFlowACPDispatcher(
+        store,
+        commands={"claude": ["claude-acp"], "codex": ["codex-acp"]},
+        client_factory=FakeACPClient,
+    )
+    _dispatch_job_flow_task(dispatcher)
+
+    assert FakeACPClient.instances[0].cwd == str(tmp_path)
+
+
+def test_job_flow_node_repo_path_overrides_instance_directory(tmp_path):
+    FakeACPClient.instances.clear()
+    instance_dir = tmp_path / "instance"
+    node_dir = tmp_path / "node"
+    instance_dir.mkdir()
+    node_dir.mkdir()
+    store = MockConsulStore()
+    _job_flow_service(
+        store,
+        tasks=[{"id": "build", "type": "backend", "depends_on": [],
+                "repo_path": str(node_dir)}],
+        instance_extra={"directory": str(instance_dir)},
+    )
+    dispatcher = JobFlowACPDispatcher(
+        store,
+        commands={"claude": ["claude-acp"], "codex": ["codex-acp"]},
+        client_factory=FakeACPClient,
+    )
+    _dispatch_job_flow_task(dispatcher)
+
+    assert FakeACPClient.instances[0].cwd == str(node_dir)
+
+
+def test_job_flow_node_acp_cwd_overrides_instance_directory(tmp_path):
+    FakeACPClient.instances.clear()
+    instance_dir = tmp_path / "instance"
+    node_dir = tmp_path / "node"
+    instance_dir.mkdir()
+    node_dir.mkdir()
+    store = MockConsulStore()
+    _job_flow_service(
+        store,
+        tasks=[{"id": "build", "type": "backend", "depends_on": [],
+                "acp": {"cwd": str(node_dir)}}],
+        instance_extra={"directory": str(instance_dir)},
+    )
+    dispatcher = JobFlowACPDispatcher(
+        store,
+        commands={"claude": ["claude-acp"], "codex": ["codex-acp"]},
+        client_factory=FakeACPClient,
+    )
+    _dispatch_job_flow_task(dispatcher)
+
+    assert FakeACPClient.instances[0].cwd == str(node_dir)
+
+
+def test_job_flow_node_directory_overrides_managed_workspace(tmp_path):
+    FakeACPClient.instances.clear()
+    node_dir = tmp_path / "node"
+    node_dir.mkdir()
+    store = MockConsulStore()
+    _job_flow_service(
+        store,
+        tasks=[{"id": "build", "type": "backend", "depends_on": [],
+                "acp": {"cwd": str(node_dir)}}],
+    )
+    instance_id = "inst-acp"
+    task_name = "build"
+    base = f"jobflows/instances/{instance_id}/tasks/{task_name}"
+    run_id = json.loads(store._store[f"jobflows/instances/{instance_id}/run/current"])["run_id"]
+    store.kv_put(f"jobflows/instances/{instance_id}/execution_mode", "managed-workspace")
+    store.kv_put(f"{base}/attempt_id", "attempt-x")
+    store.kv_put(f"{base}/lease_epoch", "1")
+    dispatcher = JobFlowACPDispatcher(
+        store,
+        commands={"claude": ["claude-acp"], "codex": ["codex-acp"]},
+        client_factory=FakeACPClient,
+    )
+    _, _, meta = dispatcher._pending_tasks()[0]
+    claim = {"provider": "codex", "attempt_id": "attempt-x", "lease_epoch": 1,
+             "agent_id": "acp:codex:test", "run_id": run_id}
+    dispatcher._active[(f"jobflow:{instance_id}", task_name)] = {
+        **claim, "scope_id": instance_id, "client": None,
+    }
+    dispatcher._execute(instance_id, task_name, meta, claim)
+
+    assert FakeACPClient.instances[0].cwd == str(node_dir)
+
+
+def test_job_flow_missing_instance_directory_waits_for_human(tmp_path):
+    FakeACPClient.instances.clear()
+    store = MockConsulStore()
+    missing = tmp_path / "gone"
+    _job_flow_service(store, instance_extra={"directory": str(missing)})
+    dispatcher = JobFlowACPDispatcher(
+        store,
+        commands={"claude": ["claude-acp"], "codex": ["codex-acp"]},
+        client_factory=FakeACPClient,
+    )
+    instance_id, task_name = _dispatch_job_flow_task(dispatcher)
+
+    status = json.loads(
+        store._store[f"jobflows/instances/{instance_id}/tasks/{task_name}/status"]
+    )
+    assert status["state"] == "WAITING_FOR_HUMAN"
+    assert FakeACPClient.instances == []
+
+
+def test_create_instance_rejects_blank_directory():
+    store = MockConsulStore()
+    service = JobFlowService(store)
+    service.create_template({
+        "template_id": "tpl-acp", "name": "ACP Flow",
+        "tasks": [{"id": "build", "type": "backend", "depends_on": []}],
+    }, "local:alice")
+    version = service.publish_template(
+        "tpl-acp", {"expected_revision": 1}, "local:alice", "publish-acp",
+    )["version"]
+
+    with pytest.raises(APIError) as excinfo:
+        service.create_instance({
+            "template_id": "tpl-acp", "version_id": version["version_id"],
+            "instance_id": "inst-bad", "directory": "   ",
+        }, "local:alice", "create-bad")
+    assert excinfo.value.code == "INVALID_DIRECTORY"
+

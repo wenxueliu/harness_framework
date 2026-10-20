@@ -24,6 +24,7 @@ if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
 from harness_framework.model_execution import validate_execution
+from harness_framework.agent_providers import SUPPORTED_AGENT_PROVIDERS
 
 try:
     import requests
@@ -112,7 +113,7 @@ def main():
     parser.add_argument("--depends-on", default="", help="Comma-separated list of upstream task names")
     parser.add_argument("--agent-name", default="",
                         help="Deprecated logical Worker name (legacy claim mode only)")
-    parser.add_argument("--acp-agent", choices=("claude", "codex"), default="",
+    parser.add_argument("--acp-agent", choices=SUPPORTED_AGENT_PROVIDERS, default="",
                         help="ACP agent override; otherwise selected from task type")
     parser.add_argument("--acp-cwd", default="", help="ACP session working directory")
     parser.add_argument(

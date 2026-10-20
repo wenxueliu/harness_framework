@@ -31,7 +31,7 @@ description: |
 2. **如果用户未提供 `title`** → 提问用户：
    - "请提供需求标题（如 `用户认证功能`）："
 3. 生成 `dependencies.json` 后，检查每个任务的 `description` 与可选 `acp.agent`
-4. 未指定 Agent 时按类型选择：`design/review → claude`，其余 → `codex`
+4. 未指定 Agent 时按类型选择：`design/review → claude`，其余 → `codex`；可用 provider 为 `claude`、`codex`、`opencode`
 
 > **禁止行为**：不得自动生成 `req-id`、`title`。ACP Agent 可以按类型自动选择。
 

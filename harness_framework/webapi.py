@@ -58,6 +58,11 @@ from .secrets import SecretStore
 from .artifacts import ArtifactService
 from .cleanup_notifications import CleanupNotificationService
 from .capability_preflight import CapabilityPreflightService, PreflightError
+from .agent_providers import (
+    SUPPORTED_AGENT_PROVIDERS,
+    is_supported_agent,
+    unsupported_agent_message,
+)
 
 log = logging.getLogger("webapi")
 
@@ -1744,8 +1749,12 @@ class APIHandler(BaseHTTPRequestHandler):
                 definition["description"] = description
             agent = str(raw_task.get("agent", "")).strip().lower()
             if agent:
-                if agent not in {"claude", "codex"}:
-                    raise APIError("INVALID_AGENT", f"不支持的 Agent: {agent}", 422)
+                if not is_supported_agent(agent):
+                    raise APIError("INVALID_AGENT", unsupported_agent_message(agent, node=task_id), 422, {
+                        "agent": agent,
+                        "supported_agents": list(SUPPORTED_AGENT_PROVIDERS),
+                        "task_id": task_id,
+                    })
                 definition["acp"] = {"agent": agent}
             dependencies[task_id] = definition
             task_records.append((task_id, raw_task, upstream))

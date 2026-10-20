@@ -59,7 +59,7 @@ export interface CreateWorkflowTask {
   name: string;
   description: string;
   type: string;
-  agent: "claude" | "codex";
+  agent: "claude" | "codex" | "opencode";
   dependsOn: string[];
   acceptance: string;
 }

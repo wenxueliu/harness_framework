@@ -45,6 +45,8 @@ export interface JobFlowInstance {
     parameters: Record<string, unknown>
     git: Record<string, unknown>
     workspace: Record<string, unknown>
+    /** 实例级执行目录；未配置时按节点目录 / 全局默认解析。 */
+    directory?: string
   }
   status: { state: string; revision: number }
   created_at?: string
@@ -293,6 +295,8 @@ export async function createJobFlowInstance(input: {
   git: Record<string, unknown>
   workspace: Record<string, unknown>
   execution_profile_id?: string
+  /** 实例级执行目录（绝对路径）；节点 acp.cwd / repo_path 可覆盖。 */
+  directory?: string
 }): Promise<JobFlowInstance> {
   const result = await apiRequest<{ instance: JobFlowInstance }>(
     '/api/instances', jsonRequest('POST', input, { 'Idempotency-Key': crypto.randomUUID() }),

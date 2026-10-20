@@ -113,7 +113,7 @@ Watchdog 监控所有 IN_PROGRESS 的任务：
 框架主动扫描 `PENDING` 任务，通过 CAS（Check-And-Set）原子接管，然后创建任务级 ACP Agent：
 
 ```
-发现 PENDING → CAS 接管 → 选择 Claude/Codex → 创建 ACP session → 执行 prompt
+发现 PENDING → CAS 接管 → 选择 Claude/Codex/OpenCode → 创建 ACP session → 执行 prompt
 ```
 
 CAS 保证同一时刻只有一个 Dispatcher 实例能启动该任务。旧的注册/抢占 Worker 仅作为
@@ -196,5 +196,5 @@ workflows/<req_id>/
 ### ACPDispatcher — 主动 Agent 调度
 
 ACPDispatcher 扫描 `PENDING` 任务，以 CAS 将任务置为 `IN_PROGRESS`，根据任务类型或
-`acp.agent` 创建 Claude/Codex ACP adapter，并通过 stdio JSON-RPC 执行
+`acp.agent` 创建 Claude/Codex/OpenCode ACP adapter，并通过 stdio JSON-RPC 执行
 `initialize → session/new|load → session/prompt`。详见 [ACP Agent 执行](acp-execution.md)。
