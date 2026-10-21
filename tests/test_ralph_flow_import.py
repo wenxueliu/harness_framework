@@ -89,6 +89,57 @@ def test_each_step_lowers_to_do_and_check_nodes():
     assert tasks["design__check"]["ralph_flow"]["role"] == "check"
 
 
+def test_adversarial_check_maps_to_independent_verifier_with_deny_edit():
+    workflow = parse_workflow("""
+adversarial_check:
+  agent: codex
+  system_prompt: |
+    你是一个严格的代码审查员。
+  timeout_ms: 1800000
+steps:
+  - id: a
+    desc: a
+    do: a
+    input: i
+    output: o
+    check: c
+    on_pass: done
+    on_fail: a
+    max_fail_count: 1
+""")
+    compiled = compile_workflow(workflow, agent="opencode", check_agent="claude")
+    check = {task["id"]: task for task in compiled["tasks"]}["a__check"]
+
+    # 独立验证者：agent 优先取 adversarial_check.agent
+    assert check["agent"] == "codex"
+    # 可以读文件、跑命令，但不能改工作区
+    assert check["acp"] == {"permission_policy": "deny_edit"}
+    # system_prompt 并入验证指令
+    assert "你是一个严格的代码审查员。" in check["do"]
+    assert "VERDICT: PASS" in check["do"]
+
+
+def test_unknown_adversarial_agent_falls_back_to_check_agent():
+    workflow = parse_workflow("""
+adversarial_check:
+  agent: ralph-check
+steps:
+  - id: a
+    desc: a
+    do: a
+    input: i
+    output: o
+    check: c
+    on_pass: done
+    on_fail: a
+    max_fail_count: 1
+""")
+    compiled = compile_workflow(workflow, agent="opencode", check_agent="claude")
+    check = {task["id"]: task for task in compiled["tasks"]}["a__check"]
+    assert check["agent"] == "claude"
+    assert check["acp"] == {"permission_policy": "deny_edit"}
+
+
 def test_check_nodes_can_use_a_different_agent():
     compiled = compile_workflow(
         parse_workflow(LOOP), agent="opencode", check_agent="claude")

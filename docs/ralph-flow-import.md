@@ -46,7 +46,9 @@ explore ──▶ explore__check ──▶ propose ──▶ propose__check ─�
 | `manual_step` | 验证节点 `require_approval: true` |
 | `check_voting` | N 个并行验证节点，下一节点依赖全部（AND 合流 = 全票通过） |
 | `reset` / `auto_reset` | 每个节点本身是新会话，天然满足 |
-| `adversarial_check` | 记录在 `ralph_flow` 元数据里 |
+| `adversarial_check.agent` | 验证节点用独立 agent（claude/codex/opencode） |
+| `adversarial_check.system_prompt` | 并入验证节点的 `do` |
+| `adversarial_check.timeout_ms` | 记录在 `ralph_flow` 元数据里（框架暂未按节点覆盖超时） |
 
 `ralph_flow` 只保留溯源信息（`source` / `workflow` / `step` / `role` / `reset` /
 `adversarial_check`），语义全部落在节点的 `do` / `input` / `output` /
@@ -63,6 +65,16 @@ Agent 只看契约字段，不存在两个真相来源。
 
 验证节点没给出 `VERDICT: PASS` → 产物格式校验失败 → 任务失败 → 触发 `on_fail`
 回退到对应的执行节点重跑（最多 `max_fail_count` 次）。
+
+**独立验证者**：工作流带 `adversarial_check` 时，验证节点会带上
+`acp.permission_policy = "deny_edit"` —— 验证者可以读文件、跑验证命令，但不能改动
+工作区（与 ralph-flow 的 `edit: deny` 对齐）。框架的第三种权限策略：
+
+| 策略 | 行为 |
+|------|------|
+| `allow_once` | 每次询问都允许一次（默认） |
+| `deny` | 拒绝一切权限请求 |
+| `deny_edit` | 拒绝改文件/删除/移动，允许执行命令 |
 
 验证节点的提示词要求最后一行输出：
 

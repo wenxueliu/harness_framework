@@ -18,6 +18,9 @@ except ImportError:  # pragma: no cover - exercised only when PyYAML is absent
     yaml = None
 
 
+SUPPORTED_PROVIDERS = ("claude", "codex", "opencode")
+
+
 class RalphFlowImportError(ValueError):
     """Raised when a ralph-flow workflow cannot be compiled."""
 
@@ -135,14 +138,18 @@ def _derive_output_format(output: str) -> dict[str, Any]:
     return {"kind": "file", "path": match.group(0)}
 
 
-def _check_instruction(criteria: str) -> str:
-    return "\n".join([
+def _check_instruction(criteria: str, system_prompt: str = "") -> str:
+    lines = []
+    if system_prompt:
+        lines.extend(["额外要求:", system_prompt, ""])
+    lines.extend([
         "你是独立验证者，没有参与上面的实现，只依据工作区里的实际内容判断。",
         f"验收标准:\n{criteria or '（该步骤没有显式验收标准，请确认产出存在且完整）'}",
         "检查方式: 阅读产出文件、查看代码、运行必要的验证命令。不要相信任何"
         "\"已完成\"的声明。",
         "最后一行必须且只能输出一行结论: VERDICT: PASS 或 VERDICT: FAIL <原因>。",
     ])
+    return "\n".join(lines)
 
 
 
@@ -265,16 +272,22 @@ def compile_workflow(
             criteria_list = [str(step["check"])]
         for index, check_id in enumerate(check_nodes[step_id]):
             criteria = criteria_list[index] if index < len(criteria_list) else ""
-            tasks.append({
+            adversarial = workflow.get("adversarial_check")
+            adversarial = adversarial if isinstance(adversarial, dict) else {}
+            verifier = str(adversarial.get("agent") or "").strip().lower()
+            if verifier not in SUPPORTED_PROVIDERS:
+                verifier = ""
+            system_prompt = str(adversarial.get("system_prompt") or "").strip()
+            check_task: dict[str, Any] = {
                 "id": check_id,
                 "name": f"{step.get('desc') or step_id}（验证{index + 1 if voting else ''}）",
                 "type": task_type,
-                "agent": check_agent or agent,
+                "agent": verifier or check_agent or agent,
                 "depends_on": [step_id],
                 "description": _check_description(
                     step_id, step.get("desc") or step_id, criteria,
                 ),
-                "do": _check_instruction(criteria),
+                "do": _check_instruction(criteria, system_prompt),
                 "input": str(step.get("output") or "").strip(),
                 "output": "验证结论（VERDICT: PASS）",
                 "output_format": {"kind": "marker", "pattern": r"VERDICT:\s*PASS"},
@@ -286,7 +299,11 @@ def compile_workflow(
                     "max_fail_count": int(step["max_fail_count"]),
                 },
                 "ralph_flow": {**ralph, "role": "check"},
-            })
+            }
+            if adversarial:
+                # 独立验证者：可以读文件、跑命令，但不能改工作区。
+                check_task["acp"] = {"permission_policy": "deny_edit"}
+            tasks.append(check_task)
     return {
         "name": name or str(workflow.get("name") or "ralph-flow"),
         "description": str(workflow.get("description") or ""),

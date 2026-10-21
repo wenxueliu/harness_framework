@@ -60,3 +60,28 @@ def test_deny_permission_policy_returns_cancelled():
     assert client._permission_response({"options": [{"optionId": "yes"}]}) == {
         "outcome": {"outcome": "cancelled"}
     }
+
+
+def test_deny_edit_policy_blocks_writes_but_allows_commands():
+    client = ACPClient(["unused"], cwd="/tmp", permission_policy="deny_edit")
+    options = [{"optionId": "yes", "kind": "allow_once"}]
+
+    edit = client._permission_response({
+        "toolCall": {"kind": "edit", "title": "Edit file.py"},
+        "options": options,
+    })
+    assert edit == {"outcome": {"outcome": "cancelled"}}
+
+    command = client._permission_response({
+        "toolCall": {"kind": "execute", "title": "Run pytest"},
+        "options": options,
+    })
+    assert command == {"outcome": {"outcome": "selected", "optionId": "yes"}}
+
+
+def test_deny_edit_policy_ignores_calls_without_tool_call():
+    client = ACPClient(["unused"], cwd="/tmp", permission_policy="deny_edit")
+    options = [{"optionId": "yes", "kind": "allow_once"}]
+    assert client._permission_response({"options": options}) == {
+        "outcome": {"outcome": "selected", "optionId": "yes"}
+    }

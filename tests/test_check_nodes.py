@@ -102,6 +102,26 @@ def test_approval_gate_holds_the_task_until_approved():
     assert "workflows/req-1/tasks/build/approval" not in store._store
 
 
+def test_task_level_permission_policy_reaches_the_agent():
+    FakeACPClient.instances.clear()
+    VerdictACPClient.instances.clear()
+    store = _store("backend")
+    store.kv_put("workflows/req-1/tasks/build/acp",
+                 json.dumps({"permission_policy": "deny_edit"}))
+    dispatcher = ACPDispatcher(
+        store, RunManager(store),
+        commands={"codex": ["codex-acp"]},
+        client_factory=VerdictACPClient,
+    )
+
+    req_id, task_name, meta = dispatcher._pending_tasks()[0]
+    claim = dispatcher._claim(req_id, task_name, meta)
+    dispatcher._active[(req_id, task_name)] = {**claim, "client": None}
+    dispatcher._execute(req_id, task_name, meta, claim)
+
+    assert VerdictACPClient.instances[0].permission_policy == "deny_edit"
+
+
 def _check_instance(fail_count: int = 0) -> dict:
     return {
         "jobflows/instances/inst-010/status": json.dumps(

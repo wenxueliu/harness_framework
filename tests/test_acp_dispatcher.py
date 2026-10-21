@@ -23,6 +23,7 @@ class FakeACPClient:
         self.command = command
         self.cwd = cwd
         self.env = env
+        self.permission_policy = permission_policy
         self.update_handler = update_handler
         self.session_id = ""
         self.cancelled = False

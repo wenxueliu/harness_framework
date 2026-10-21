@@ -51,8 +51,10 @@ class ACPClient:
     ):
         if not command or not all(isinstance(item, str) and item for item in command):
             raise ValueError("ACP command must be a non-empty argv list")
-        if permission_policy not in {"allow_once", "deny"}:
-            raise ValueError("ACP permission policy must be allow_once or deny")
+        if permission_policy not in {"allow_once", "deny", "deny_edit"}:
+            raise ValueError(
+                "ACP permission policy must be allow_once, deny or deny_edit"
+            )
         self.command = list(command)
         self.cwd = os.path.abspath(cwd)
         self.env = dict(env or {})
@@ -269,6 +271,9 @@ class ACPClient:
     def _permission_response(self, params: dict[str, Any]) -> dict[str, Any]:
         if self._cancelled or self.permission_policy == "deny":
             return {"outcome": {"outcome": "cancelled"}}
+        if self.permission_policy == "deny_edit" and _is_write_tool_call(params):
+            # 验证者可以读文件、跑命令，但不能改动工作区。
+            return {"outcome": {"outcome": "cancelled"}}
         options = params.get("options", [])
         option = next(
             (item for item in options if item.get("kind") == "allow_once"),
@@ -286,3 +291,18 @@ class ACPClient:
 
     def __exit__(self, *_args: object) -> None:
         self.close()
+
+
+_WRITE_TOOL_KINDS = {"edit", "delete", "move", "create"}
+
+
+def _is_write_tool_call(params: dict[str, Any]) -> bool:
+    """判断一次权限请求是不是改文件的操作。"""
+    tool_call = params.get("toolCall") if isinstance(params, dict) else None
+    if not isinstance(tool_call, dict):
+        return False
+    kind = str(tool_call.get("kind") or "").strip().lower()
+    if kind in _WRITE_TOOL_KINDS:
+        return True
+    title = str(tool_call.get("title") or "").lower()
+    return any(word in title for word in ("edit", "write", "delete", "patch"))

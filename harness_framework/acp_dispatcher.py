@@ -481,12 +481,7 @@ class ACPDispatcher:
                     "TASK_NAME": task_name, "ATTEMPT_ID": claim["attempt_id"],
                     "LEASE_EPOCH": str(claim["lease_epoch"]),
                 },
-                permission_policy=(
-                    "deny"
-                    if self.permission_policy == "deny"
-                    or config.get("permission_policy") == "deny"
-                    else self.permission_policy
-                ),
+                permission_policy=self._permission_policy(config),
                 update_handler=on_update,
             )
             with self._lock:
@@ -652,6 +647,13 @@ class ACPDispatcher:
             client = entry.get("client") if entry else None
             if client:
                 client.close()
+
+    def _permission_policy(self, config: dict[str, Any]) -> str:
+        """节点级权限策略优先：allow_once / deny / deny_edit。"""
+        task_policy = str((config or {}).get("permission_policy") or "").strip()
+        if task_policy in {"allow_once", "deny", "deny_edit"}:
+            return task_policy
+        return self.permission_policy
 
     def _resolve_agent(self, meta: dict[str, str]) -> tuple[str, dict[str, Any]]:
         raw = meta.get("acp", "")
