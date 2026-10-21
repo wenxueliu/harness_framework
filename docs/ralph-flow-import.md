@@ -36,10 +36,12 @@ explore ──▶ explore__check ──▶ propose ──▶ propose__check ─�
 | ralph-flow | 作业流模板 |
 |------------|-----------|
 | `steps[].id` | 任务 `<id>`（执行） |
-| `steps[].do` + `input` + `output` | 任务 `<id>` 的 `description` |
-| `steps[].check` / `check_voting` | 任务 `<id>__check`（验证），`check_criteria` |
+| `steps[].do` | 任务 `<id>` 的 `do` |
+| `steps[].input` / `output` | 任务 `<id>` 的 `input` / `output` |
+| `steps[].check` / `check_voting` | 任务 `<id>__check`（验证），`do` = 验收标准 |
+| 验证结论 | 验证节点的 `output` + `output_format`（marker: `VERDICT: PASS`） |
 | `on_pass` | 下一个执行节点的 `depends_on` |
-| `on_fail` | 验证节点上的 `on_fail: {task, max_fail_count}` |
+| `on_fail` | 验证节点上的 `on_fail: {task, max_fail_count}`（回退到执行节点） |
 | `max_fail_count` | 回退次数上限 |
 | `manual_step` | 验证节点 `require_approval: true` |
 | `check_voting` | N 个并行验证节点，下一节点依赖全部（AND 合流 = 全票通过） |
@@ -53,6 +55,9 @@ explore ──▶ explore__check ──▶ propose ──▶ propose__check ─�
 | `require_verdict` | 结论必须是 `VERDICT: PASS`，否则任务判失败 | `acp_dispatcher._execute` |
 | `require_approval` | 需要人工批准才执行；批准只对本次有效 | `acp_dispatcher._claim` |
 | `on_fail` | 失败时回退到指定任务重跑 | `aggregator._recover_failed_checks` |
+
+验证节点没给出 `VERDICT: PASS` → 产物格式校验失败 → 任务失败 → 触发 `on_fail`
+回退到对应的执行节点重跑（最多 `max_fail_count` 次）。
 
 验证节点的提示词要求最后一行输出：
 

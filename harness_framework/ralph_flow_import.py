@@ -9,6 +9,7 @@ as explicit instructions in the step description, because a DAG cannot loop.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 try:  # PyYAML is optional; JSON sources work without it.
@@ -123,6 +124,28 @@ def _check_description(step_id: str, desc: str, criteria: str) -> str:
     ])
 
 
+_FILE_OUTPUT = re.compile(r"[\w./-]+\.[A-Za-z0-9]{1,5}")
+
+
+def _derive_output_format(output: str) -> dict[str, Any]:
+    """产物是文件名时用文件校验，否则不声明格式。"""
+    match = _FILE_OUTPUT.search(output or "")
+    if not match:
+        return {}
+    return {"kind": "file", "path": match.group(0)}
+
+
+def _check_instruction(criteria: str) -> str:
+    return "\n".join([
+        "你是独立验证者，没有参与上面的实现，只依据工作区里的实际内容判断。",
+        f"验收标准:\n{criteria or '（该步骤没有显式验收标准，请确认产出存在且完整）'}",
+        "检查方式: 阅读产出文件、查看代码、运行必要的验证命令。不要相信任何"
+        "\"已完成\"的声明。",
+        "最后一行必须且只能输出一行结论: VERDICT: PASS 或 VERDICT: FAIL <原因>。",
+    ])
+
+
+
 def compile_workflow(
     workflow: dict[str, Any],
     *,
@@ -224,15 +247,22 @@ def compile_workflow(
         }
         if workflow.get("adversarial_check"):
             ralph["adversarial_check"] = workflow["adversarial_check"]
-        tasks.append({
+        task: dict[str, Any] = {
             "id": step_id,
             "name": f"{step.get('desc') or step_id}（执行）",
             "type": task_type,
             "agent": agent,
             "depends_on": do_dependencies[step_id],
             "description": _description(step, workflow),
+            "do": str(step.get("do") or "").strip(),
+            "input": str(step.get("input") or "").strip(),
+            "output": str(step.get("output") or "").strip(),
             "ralph_flow": ralph,
-        })
+        }
+        output_format = _derive_output_format(task["output"])
+        if output_format:
+            task["output_format"] = output_format
+        tasks.append(task)
         voting = step.get("check_voting") or []
         criteria_list = [
             str(entry.get("check") or "") for entry in voting
@@ -251,6 +281,10 @@ def compile_workflow(
                 "description": _check_description(
                     step_id, step.get("desc") or step_id, criteria,
                 ),
+                "do": _check_instruction(criteria),
+                "input": str(step.get("output") or "").strip(),
+                "output": "验证结论（VERDICT: PASS）",
+                "output_format": {"kind": "marker", "pattern": r"VERDICT:\s*PASS"},
                 "check_criteria": criteria,
                 "require_verdict": True,
                 "require_approval": step_id in manual,

@@ -96,6 +96,14 @@ daemon 日志同样记录该具体名称。
 | `compensation_task` | 失败后的补偿任务 | 目标必须存在且为 `compensation_only` |
 | `activation` | `normal` 或 `compensation_only` | 补偿任务不会被 Aggregator 正常激活 |
 | `execution` | 按任务选择模型命令和原生会话策略 | 使用 profile；支持 `new`、`continue`、`resume` |
+| `do` | 这一步要做什么（执行指令） | 与 `description` 至少有一个 |
+| `input` | 这一步消费什么 | 有前置步骤时必填 |
+| `output` | 这一步要产出什么 | 有后续步骤时必填；配置 `on_fail` 时必填 |
+| `output_format` | 产物的机器可校验格式 | `file` / `json` / `marker` / `text`；不符即视为该节点失败 |
+| `on_fail` | 失败时回退到哪个节点重来 | `{task, max_fail_count}`；目标节点必须存在，且本节点必须有 `output` + `output_format` |
+
+产物流向：节点通过校验后，产物记录写入 `tasks/<task>/output`，下游节点的
+TASK PACKAGE 里以 `upstream` 字段带给 Agent。
 
 每个任务初始化时还会写入独立的 `validity=UNKNOWN`。正常完成或通过检查后
 变为 `VALID`；需求变更或自适应恢复会把受影响的 DAG 下游闭包标记为

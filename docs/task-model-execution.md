@@ -124,6 +124,33 @@ python scripts/add_task.py req-001 fix-login \
 `--allowed-executables` 或 `ALLOWED_MODEL_EXECUTABLES` 明确授权可执行文件名。
 未授权命令会在启动前被拒绝。生产环境推荐只开放命名 profile。
 
+## 任务契约（do / input / output）
+
+TASK PACKAGE 里除了任务元信息，还带结构化的节点契约：
+
+```json
+{
+  "do": "这一步要做什么",
+  "input": "消费什么",
+  "output": "要产出什么",
+  "output_format": {"kind": "marker", "pattern": "VERDICT:\\s*PASS"},
+  "upstream": [{"task": "explore", "output": "proposal.md",
+                "evidence": {"path": "proposal.md", "bytes": 812}}]
+}
+```
+
+- `output_format` 支持 `file` / `json` / `marker` / `text`，由框架在 Agent
+  结束这一轮后校验；**不符格式就视为该节点失败**
+- 节点失败时，若声明了 `on_fail: {task, max_fail_count}`，Aggregator 会把
+  目标节点重置为 PENDING 重跑；超过 `max_fail_count` 才判整个实例失败
+- 校验通过的产物写入 `tasks/<task>/output`，下游节点通过 `upstream` 字段拿到
+
+模板校验规则（有契约字段的模板）：
+
+- 有前置步骤 → 必须声明 `input`
+- 有后续步骤 → 必须声明 `output`
+- 配置 `on_fail` → 必须声明 `output` 与 `output_format`
+
 ## 会话查看（ACP）
 
 对话正文只保存在 Agent 自己的会话存储里，框架 **不再复制** 到 KV。Dispatcher 只写映射：

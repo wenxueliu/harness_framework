@@ -26,6 +26,7 @@ from .human_interaction import (
 )
 from .kv_store_protocol import KVStore
 from .run_manager import RunManager
+from .output_check import verify_output
 from .verdict import parse_verdict
 from .workspace_manager import WorkspaceManager
 from .event_journal import EventJournal
@@ -583,6 +584,29 @@ class ACPDispatcher:
                     break
                 prompt_text = self._build_human_prompt(current_message)
 
+            # 产物格式校验：不符格式视为该节点失败，on_fail 会触发回退。
+            output_spec = _json_value(meta.get("output_format"), None)
+            if isinstance(output_spec, dict) and output_spec:
+                passed, reason, evidence = verify_output(
+                    output_spec, _agent_text(result.updates), cwd=cwd,
+                    task_id=task_name,
+                )
+                if not passed:
+                    self._fail(
+                        req_id, task_name, claim,
+                        f"产物校验未通过: {reason}",
+                    )
+                    return
+                self.store.kv_put(
+                    f"{base}/output",
+                    json.dumps({
+                        "declared": meta.get("output", ""),
+                        "format": output_spec,
+                        "evidence": evidence,
+                        "verified_at": _now_iso(),
+                    }, ensure_ascii=False),
+                )
+
             # 验证型任务：结论不通过就判失败，由 Aggregator 决定是否回退上游。
             if _truthy(meta.get("require_verdict")):
                 passed, reason = parse_verdict(_agent_text(result.updates))
@@ -697,6 +721,28 @@ class ACPDispatcher:
         parameters = context.get("parameters") if isinstance(context, dict) else None
         return parameters if isinstance(parameters, dict) else {}
 
+    def _upstream_outputs(self, req_id: str, meta: dict[str, Any]) -> list[dict[str, Any]]:
+        """前置节点已产出的产物，供本节点消费。"""
+        result: list[dict[str, Any]] = []
+        for dependency in meta.get("depends_on", []) or []:
+            if not isinstance(dependency, str) or not dependency:
+                continue
+            raw, _ = self.store.kv_get(
+                f"{self._task_base(req_id, dependency)}/output")
+            if not raw:
+                continue
+            try:
+                record = json.loads(raw)
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if isinstance(record, dict):
+                result.append({
+                    "task": dependency,
+                    "output": record.get("declared", ""),
+                    "evidence": record.get("evidence", {}),
+                })
+        return result
+
     def _build_prompt(self, req_id: str, task_name: str, meta: dict[str, str]) -> str:
         context = self._load_context(req_id, task_name, meta)
         contract = _json_value(meta.get("agent_contract"), {})
@@ -705,11 +751,16 @@ class ACPDispatcher:
             "workflow_id": req_id,
             "task_name": task_name,
             "task_type": meta.get("type", "task"),
+            "do": meta.get("do", ""),
+            "input": meta.get("input", ""),
+            "output": meta.get("output", ""),
+            "output_format": _json_value(meta.get("output_format"), {}) or {},
             "description": meta.get("description", ""),
             "service_name": meta.get("service_name", ""),
             "agent_contract": contract,
             "completion_contract": completion,
             "parameters": self._instance_parameters(req_id),
+            "upstream": self._upstream_outputs(req_id, meta),
             "context": context,
         }
         ralph_flow = _json_value(meta.get("ralph_flow"), None)
