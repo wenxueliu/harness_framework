@@ -74,6 +74,23 @@ def test_on_fail_target_must_exist():
     assert "on_fail" in str(exc.value)
 
 
+def test_same_fail_group_must_share_the_same_on_fail_target():
+    with pytest.raises(APIError) as exc:
+        _create([
+            {"id": "a", "do": "做事", "output": "结果"},
+            {"id": "a__check1", "do": "验收1", "input": "结果", "output": "结论",
+             "depends_on": ["a"], "fail_group": "a",
+             "on_fail": {"task": "a", "max_fail_count": 3},
+             "output_format": {"kind": "marker", "pattern": "V"}},
+            {"id": "a__check2", "do": "验收2", "input": "结果", "output": "结论",
+             "depends_on": ["a"], "fail_group": "a",
+             "on_fail": {"task": "b", "max_fail_count": 3},
+             "output_format": {"kind": "marker", "pattern": "V"}},
+            {"id": "b", "do": "兜底", "output": "结果3"},
+        ])
+    assert "fail_group" in str(exc.value) or "on_fail" in str(exc.value)
+
+
 def test_task_needs_do_or_description():
     with pytest.raises(APIError) as exc:
         _create([{"id": "a", "output": "结果"}])

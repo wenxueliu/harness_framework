@@ -208,6 +208,27 @@ def _validate_task_contracts(tasks: list[dict], raw_source: str = "") -> None:
                 {"location": {"node": task_id, "field": "output_format",
                               "line": _source_line(raw_source, task_id, "output_format")}},
             )
+    # 同一 fail_group（同一验证组）的节点必须用相同的回退目标与预算，
+    # 否则多个验证者会同时重置不同的上游节点，产生并行冲突。
+    groups: dict[str, dict[str, Any]] = {}
+    for task in tasks:
+        group = str(task.get("fail_group") or "").strip()
+        if not group:
+            continue
+        on_fail = task.get("on_fail")
+        target = on_fail.get("task") if isinstance(on_fail, dict) else str(on_fail or "")
+        budget = int(on_fail.get("max_fail_count") or 1) if isinstance(on_fail, dict) else 1
+        existing = groups.get(group)
+        if existing and (existing["task"] != target
+                         or existing["max_fail_count"] != budget):
+            raise APIError(
+                "INCONSISTENT_ON_FAIL",
+                f"同一验证组 {group} 的节点必须使用相同的 on_fail 目标与预算",
+                422,
+                {"location": {"node": task["id"], "field": "on_fail",
+                              "fail_group": group}},
+            )
+        groups[group] = {"task": target, "max_fail_count": budget}
 
 
 class JobFlowService:

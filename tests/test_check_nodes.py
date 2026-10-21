@@ -228,9 +228,9 @@ def test_voting_verifiers_share_one_fail_budget():
 
     agg._process_instance("inst-030")
 
-    # 两个验证者共享预算：一轮里两次失败 → 计数累加到 2
+    # 同一轮里两个验证者失败 → 只记一次（对齐 ralph 的步骤级 fail_count）
     assert store._store[
-        "jobflows/instances/inst-030/tasks/explore/fail_count"] == "2"
+        "jobflows/instances/inst-030/tasks/explore/fail_count"] == "1"
     # 执行节点回到 PENDING，验证节点回到 BLOCKED 等它重跑
     explore = json.loads(store._store[
         "jobflows/instances/inst-030/tasks/explore/status"])
@@ -239,7 +239,7 @@ def test_voting_verifiers_share_one_fail_budget():
         status = json.loads(store._store[
             f"jobflows/instances/inst-030/tasks/{check_id}/status"])
         assert status["state"] == "BLOCKED"
-        assert status["fail_count"] in (1, 2)
+        assert status["fail_count"] == 1
 
 
 def test_fail_budget_is_shared_and_exhausts_after_max_fail_count():

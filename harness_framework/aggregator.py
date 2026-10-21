@@ -204,14 +204,20 @@ class Aggregator:
             if not target or target not in tasks:
                 continue
             # 失败预算按步骤共享：同一 fail_group 的多个验证者共用一个计数，
-            # 对应 ralph-flow 的步骤级 fail_count（一轮失败记一次）。
+            # 对应 ralph-flow 的步骤级 fail_count（一轮失败只记一次，
+            # 与该轮有几个验证者失败无关）。
             group = str(info.get("fail_group") or task_id)
             group_base = f"{INSTANCE_PREFIX}/{instance_id}/tasks/{group}"
+            round_id = self._step_round(instance_id, group)
+            last_round, _ = self.consul.kv_get(f"{group_base}/fail_round")
             count_raw, _ = self.consul.kv_get(f"{group_base}/fail_count")
-            count = int(count_raw or 0) + 1
+            count = int(count_raw or 0)
+            if str(last_round or "") != round_id:
+                count += 1
+                self.consul.kv_put(f"{group_base}/fail_count", str(count))
+                self.consul.kv_put(f"{group_base}/fail_round", round_id)
             if count > max_count:
                 continue
-            self.consul.kv_put(f"{group_base}/fail_count", str(count))
             info["fail_count"] = count
             info["state"] = "BLOCKED"
             info["error_message"] = (
@@ -233,6 +239,18 @@ class Aggregator:
                 instance_id, task_id, target, count, max_count,
             )
 
+    def _step_round(self, instance_id: str, group: str) -> str:
+        """一轮 = 步骤（fail_group 指向的执行节点）的一次 attempt。"""
+        raw, _ = self.consul.kv_get(
+            f"{INSTANCE_PREFIX}/{instance_id}/tasks/{group}/status")
+        try:
+            status = json.loads(raw) if isinstance(raw, str) else (raw or {})
+        except (TypeError, ValueError):
+            status = {}
+        if not isinstance(status, dict):
+            return ""
+        return str(status.get("attempt_count", ""))
+
     def _clear_spent_fail_budgets(self, instance_id: str, tasks: dict) -> None:
         """验证通过后清掉该步骤共享的失败预算。
 
@@ -247,10 +265,11 @@ class Aggregator:
             group = str(info.get("fail_group") or "").strip()
             if not group:
                 continue
-            key = f"{INSTANCE_PREFIX}/{instance_id}/tasks/{group}/fail_count"
-            current, _ = self.consul.kv_get(key)
-            if current:
-                self.consul.kv_delete(key)
+            base = f"{INSTANCE_PREFIX}/{instance_id}/tasks/{group}"
+            for key in (f"{base}/fail_count", f"{base}/fail_round"):
+                current, _ = self.consul.kv_get(key)
+                if current:
+                    self.consul.kv_delete(key)
 
     def _write_instance_task(self, instance_id: str, task_id: str, task_info: dict) -> None:
         import json as _json
