@@ -298,6 +298,8 @@ def compile_workflow(
                     "task": str(step["on_fail"]),
                     "max_fail_count": int(step["max_fail_count"]),
                 },
+                # 同一��骤的多个验证者共享失败预算（对应 ralph 的步骤级 fail_count）
+                "fail_group": step_id,
                 "ralph_flow": {**ralph, "role": "check"},
             }
             if adversarial:

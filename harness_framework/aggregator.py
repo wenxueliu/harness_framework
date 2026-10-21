@@ -117,6 +117,7 @@ class Aggregator:
             return
 
         self._recover_failed_checks(instance_id, tasks)
+        self._clear_spent_fail_budgets(instance_id, tasks)
 
         for task_id, task_info in tasks.items():
             if not isinstance(task_info, dict):
@@ -202,9 +203,15 @@ class Aggregator:
                 max_count = 1
             if not target or target not in tasks:
                 continue
-            count = int(info.get("fail_count") or 0) + 1
+            # 失败预算按步骤共享：同一 fail_group 的多个验证者共用一个计数，
+            # 对应 ralph-flow 的步骤级 fail_count（一轮失败记一次）。
+            group = str(info.get("fail_group") or task_id)
+            group_base = f"{INSTANCE_PREFIX}/{instance_id}/tasks/{group}"
+            count_raw, _ = self.consul.kv_get(f"{group_base}/fail_count")
+            count = int(count_raw or 0) + 1
             if count > max_count:
                 continue
+            self.consul.kv_put(f"{group_base}/fail_count", str(count))
             info["fail_count"] = count
             info["state"] = "BLOCKED"
             info["error_message"] = (
@@ -225,6 +232,25 @@ class Aggregator:
                 "instance %s: check %s failed, fallback to %s (%s/%s)",
                 instance_id, task_id, target, count, max_count,
             )
+
+    def _clear_spent_fail_budgets(self, instance_id: str, tasks: dict) -> None:
+        """验证通过后清掉该步骤共享的失败预算。
+
+        只在「验证节点完成」时清理：执行节点先 DONE、验证后失败的场景里，
+        执行节点的 DONE 不能清预算，否则计数永远停在 1。
+        """
+        for task_id, info in tasks.items():
+            if not isinstance(info, dict):
+                continue
+            if info.get("state") not in ("DONE", "SUCCEEDED"):
+                continue
+            group = str(info.get("fail_group") or "").strip()
+            if not group:
+                continue
+            key = f"{INSTANCE_PREFIX}/{instance_id}/tasks/{group}/fail_count"
+            current, _ = self.consul.kv_get(key)
+            if current:
+                self.consul.kv_delete(key)
 
     def _write_instance_task(self, instance_id: str, task_id: str, task_info: dict) -> None:
         import json as _json

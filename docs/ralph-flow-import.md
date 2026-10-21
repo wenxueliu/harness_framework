@@ -45,6 +45,7 @@ explore ──▶ explore__check ──▶ propose ──▶ propose__check ─�
 | `max_fail_count` | 回退次数上限 |
 | `manual_step` | 验证节点 `require_approval: true` |
 | `check_voting` | N 个并行验证节点，下一节点依赖全部（AND 合流 = 全票通过） |
+| 失败预算 | 同一 `fail_group`（= 步骤）的验证者共享一个计数，对应 ralph 的步骤级 `fail_count` |
 | `reset` / `auto_reset` | 每个节点本身是新会话，天然满足 |
 | `adversarial_check.agent` | 验证节点用独立 agent（claude/codex/opencode） |
 | `adversarial_check.system_prompt` | 并入验证节点的 `do` |
@@ -65,6 +66,15 @@ Agent 只看契约字段，不存在两个真相来源。
 
 验证节点没给出 `VERDICT: PASS` → 产物格式校验失败 → 任务失败 → 触发 `on_fail`
 回退到对应的执行节点重跑（最多 `max_fail_count` 次）。
+
+**多验证者语义**（对应 ralph-flow 的 `check_voting`）
+
+- 全过才放行：后继节点依赖全部验证节点（DAG AND 合流），任一验证失败就回退重跑
+- 失败预算按**步骤**共享：同一 `fail_group` 的 N 个验证者共用一个计数（`tasks/<step>/fail_count`），
+  一轮里失败几次就加几次，与 ralph 的步骤级 `fail_count` 一致
+- 验证通过后清零该步骤的预算
+- 在**框架**的 DAG 语义里，每个验证节点是独立节点，可以各自配不同的 `on_fail`（不同回退目标、
+  不同预算）甚至指向不同后继；ralph YAML 是步骤级路由，适配器不生成这种分歧
 
 **独立验证者**：工作流带 `adversarial_check` 时，验证节点会带上
 `acp.permission_policy = "deny_edit"` —— 验证者可以读文件、跑验证命令，但不能改动

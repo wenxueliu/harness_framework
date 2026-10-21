@@ -123,7 +123,7 @@ def test_task_level_permission_policy_reaches_the_agent():
 
 
 def _check_instance(fail_count: int = 0) -> dict:
-    return {
+    store = {
         "jobflows/instances/inst-010/status": json.dumps(
             {"state": "RUNNING", "revision": 1}
         ),
@@ -136,6 +136,7 @@ def _check_instance(fail_count: int = 0) -> dict:
         "jobflows/instances/inst-010/tasks/explore__check/definition": json.dumps({
             "id": "explore__check", "depends_on": ["explore"],
             "on_fail": {"task": "explore", "max_fail_count": 2},
+            "fail_group": "explore",
         }),
         "jobflows/instances/inst-010/tasks/explore__check/status": json.dumps(
             {"state": "FAILED", "attempt_count": 1, "fail_count": fail_count}
@@ -147,6 +148,10 @@ def _check_instance(fail_count: int = 0) -> dict:
             {"state": "BLOCKED", "attempt_count": 0}
         ),
     }
+    if fail_count:
+        # 共享的失败预算（同一 fail_group 的验证者共用）
+        store["jobflows/instances/inst-010/tasks/explore/fail_count"] = str(fail_count)
+    return store
 
 
 def test_failed_check_falls_back_to_the_upstream_task():
@@ -178,6 +183,109 @@ def test_failed_check_beyond_budget_stays_failed():
     propose = json.loads(puts.get(
         "jobflows/instances/inst-010/tasks/propose/status", "{}"))
     assert propose.get("state") == "SKIPPED_UPSTREAM_FAILED"
+
+
+def _voting_instance() -> dict:
+    """一个步骤配两个验证者（check_voting），共享同一个失败预算。"""
+    return {
+        "jobflows/instances/inst-030/status": json.dumps(
+            {"state": "RUNNING", "revision": 1}
+        ),
+        "jobflows/instances/inst-030/tasks/explore/definition": json.dumps(
+            {"id": "explore", "depends_on": []}
+        ),
+        "jobflows/instances/inst-030/tasks/explore/status": json.dumps(
+            {"state": "DONE", "attempt_count": 1}
+        ),
+        "jobflows/instances/inst-030/tasks/explore__check1/definition": json.dumps({
+            "id": "explore__check1", "depends_on": ["explore"],
+            "on_fail": {"task": "explore", "max_fail_count": 3},
+            "fail_group": "explore",
+        }),
+        "jobflows/instances/inst-030/tasks/explore__check1/status": json.dumps(
+            {"state": "FAILED", "attempt_count": 1}
+        ),
+        "jobflows/instances/inst-030/tasks/explore__check2/definition": json.dumps({
+            "id": "explore__check2", "depends_on": ["explore"],
+            "on_fail": {"task": "explore", "max_fail_count": 3},
+            "fail_group": "explore",
+        }),
+        "jobflows/instances/inst-030/tasks/explore__check2/status": json.dumps(
+            {"state": "FAILED", "attempt_count": 1}
+        ),
+        "jobflows/instances/inst-030/tasks/propose/definition": json.dumps({
+            "id": "propose", "depends_on": ["explore__check1", "explore__check2"],
+        }),
+        "jobflows/instances/inst-030/tasks/propose/status": json.dumps(
+            {"state": "BLOCKED", "attempt_count": 0}
+        ),
+    }
+
+
+def test_voting_verifiers_share_one_fail_budget():
+    store = MockConsulStore(_voting_instance())
+    agg = Aggregator(store, run_manager=make_mock_run_manager(), poll_interval=1)
+
+    agg._process_instance("inst-030")
+
+    # 两个验证者共享预算：一轮里两次失败 → 计数累加到 2
+    assert store._store[
+        "jobflows/instances/inst-030/tasks/explore/fail_count"] == "2"
+    # 执行节点回到 PENDING，验证节点回到 BLOCKED 等它重跑
+    explore = json.loads(store._store[
+        "jobflows/instances/inst-030/tasks/explore/status"])
+    assert explore["state"] == "PENDING"
+    for check_id in ("explore__check1", "explore__check2"):
+        status = json.loads(store._store[
+            f"jobflows/instances/inst-030/tasks/{check_id}/status"])
+        assert status["state"] == "BLOCKED"
+        assert status["fail_count"] in (1, 2)
+
+
+def test_fail_budget_is_shared_and_exhausts_after_max_fail_count():
+    store = MockConsulStore(_voting_instance())
+    store.kv_put(
+        "jobflows/instances/inst-030/tasks/explore/fail_count", "3",
+    )
+    agg = Aggregator(store, run_manager=make_mock_run_manager(), poll_interval=1)
+
+    agg._process_instance("inst-030")
+
+    # 预算已用尽：不再回退，验证节点保持 FAILED
+    check = json.loads(store._store[
+        "jobflows/instances/inst-030/tasks/explore__check1/status"])
+    assert check["state"] == "FAILED"
+    explore = json.loads(store._store[
+        "jobflows/instances/inst-030/tasks/explore/status"])
+    assert explore["state"] == "DONE"
+
+
+def test_passed_verification_clears_the_shared_budget():
+    store = MockConsulStore({
+        "jobflows/instances/inst-031/status": json.dumps(
+            {"state": "RUNNING", "revision": 1}
+        ),
+        "jobflows/instances/inst-031/tasks/explore/definition": json.dumps(
+            {"id": "explore", "depends_on": []}
+        ),
+        "jobflows/instances/inst-031/tasks/explore/status": json.dumps(
+            {"state": "DONE", "attempt_count": 1}
+        ),
+        "jobflows/instances/inst-031/tasks/explore__check/definition": json.dumps({
+            "id": "explore__check", "depends_on": ["explore"],
+            "on_fail": {"task": "explore", "max_fail_count": 3},
+            "fail_group": "explore",
+        }),
+        "jobflows/instances/inst-031/tasks/explore__check/status": json.dumps(
+            {"state": "DONE", "attempt_count": 1}
+        ),
+    })
+    store.kv_put("jobflows/instances/inst-031/tasks/explore/fail_count", "2")
+    agg = Aggregator(store, run_manager=make_mock_run_manager(), poll_interval=1)
+
+    agg._process_instance("inst-031")
+
+    assert "jobflows/instances/inst-031/tasks/explore/fail_count" not in store._store
 
 
 def test_approve_task_releases_a_waiting_check():
