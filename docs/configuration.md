@@ -84,9 +84,6 @@ daemon 日志同样记录该具体名称。
 | `acp` | 指定 `claude`/`codex`/`opencode`、cwd、权限和 session 策略 | 可选；缺省按任务类型路由 |
 | `agent_name` | 历史逻辑 Agent 名称 | 新模型不作为调度键；使用 capability requirements + Agent Runtime |
 | `service_name` | 标记业务或代码仓库归属 | 可选；不参与 Agent 匹配 |
-| `agent_contract` | 输入、输出、职责、排除项、权限、上下文预算 | 列表字段必须为非空字符串列表 |
-| `completion_contract` | required artifacts 与 verifier gates | 未满足时拒绝 `DONE` |
-| `review_policy` | 单任务内独立 Reviewer、最大修订轮数与人工确认 | 启用时 `completion_contract.required_gates` 必须包含 `review` |
 | `context_inputs` | 精确选择 facts/artifacts/summaries | 缺省为空；不能通配 restricted/events |
 | `evaluator_policy` | 最大迭代、平台期、fallback、升级 | fallback 名称唯一且有序 |
 | `resource_budget` | token、cost、tool call、wall clock 上限 | 任一越界打开 circuit breaker |
@@ -96,7 +93,7 @@ daemon 日志同样记录该具体名称。
 | `compensation_task` | 失败后的补偿任务 | 目标必须存在且为 `compensation_only` |
 | `activation` | `normal` 或 `compensation_only` | 补偿任务不会被 Aggregator 正常激活 |
 | `execution` | 按任务选择模型命令和原生会话策略 | 使用 profile；支持 `new`、`continue`、`resume` |
-| `do` | 这一步要做什么（执行指令） | 与 `description` 至少有一个 |
+| `do` | 这一步要做什么（执行指令） | 与 `description` 至少有一个；发给 Agent |
 | `input` | 这一步消费什么 | 有前置步骤时必填 |
 | `output` | 这一步要产出什么 | 有后续步骤时必填；配置 `on_fail` 时必填 |
 | `output_format` | 产物的机器可校验格式 | `file` / `json` / `marker` / `text`；不符即视为该节点失败 |

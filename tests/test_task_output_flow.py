@@ -89,10 +89,9 @@ def test_prompt_carries_contract_fields_and_upstream_outputs():
     })
     package = json.loads(prompt.split("TASK PACKAGE:\n", 1)[1])
 
+    assert set(package) == {"do", "input", "output", "parameters"}
     assert package["do"] == "做事"
-    assert package["input"] == "上游产物"
     assert package["output"] == "本步骤产物"
-    assert package["upstream"] == [{
-        "task": "upstream", "output": "上游产物",
-        "evidence": {"path": "up.md"},
-    }]
+    # 上游产物并入 input
+    assert "上游产物" in package["input"]
+    assert "[上游产物] upstream: 上游产物" in package["input"]

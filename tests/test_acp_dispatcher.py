@@ -144,15 +144,14 @@ def test_task_package_carries_instance_parameters():
         client_factory=FakeACPClient,
     )
     prompt = dispatcher._build_prompt("inst-1", "build", {
-        "type": "backend", "description": "do it",
-        "ralph_flow": {"source": "ralph-flow", "workflow": "spec", "step": "build"},
+        "type": "backend", "do": "do it",
     })
 
     package = json.loads(prompt.split("TASK PACKAGE:\n", 1)[1])
     assert package["parameters"] == {"env": "dev", "token": "$ref:secret:token"}
-    assert package["description"] == "do it"
-    # 溯源信息不进提示词，Agent 只看契约字段
-    assert "ralph_flow" not in package
+    assert package["do"] == "do it"
+    # 提示词只有 do / input / output / parameters
+    assert set(package) == {"do", "input", "output", "parameters"}
 
 
 def test_dispatcher_publishes_updates_to_live_hub():
@@ -373,7 +372,8 @@ def test_context_resolves_versioned_artifact_and_wildcard():
     assert context["facts/b"] == "two"
 
 
-def test_completion_contract_is_enforced():
+def test_completion_contract_no_longer_blocks_the_task():
+    """完成契约已废弃：门禁改由 output_format / VERDICT 承担。"""
     store = _store()
     base = "workflows/req-1/tasks/build"
     store._store[f"{base}/completion_contract"] = json.dumps({
@@ -388,8 +388,7 @@ def test_completion_contract_is_enforced():
     claim = dispatcher._claim(req_id, task_name, meta)
     dispatcher._active[(req_id, task_name)] = {**claim, "client": None}
     dispatcher._execute(req_id, task_name, meta, claim)
-    assert store._store[f"{base}/status"] == "FAILED"
-    assert "artifact:implementation" in store._store[f"{base}/error_message"]
+    assert store._store[f"{base}/status"] == "DONE"
 
 
 def _job_flow_service(store, tasks=None, instance_extra=None):

@@ -307,7 +307,7 @@ def compile_workflow(
                 ),
                 "do": _check_instruction(criteria, system_prompt),
                 "input": str(step.get("output") or "").strip(),
-                "output": "验证结论（VERDICT: PASS）",
+                "output": "验证结论：最后一行输出 VERDICT: PASS",
                 "output_format": {"kind": "marker", "pattern": r"VERDICT:\s*PASS"},
                 "check_criteria": criteria,
                 "require_verdict": True,

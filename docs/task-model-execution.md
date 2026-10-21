@@ -124,44 +124,37 @@ python scripts/add_task.py req-001 fix-login \
 `--allowed-executables` 或 `ALLOWED_MODEL_EXECUTABLES` 明确授权可执行文件名。
 未授权命令会在启动前被拒绝。生产环境推荐只开放命名 profile。
 
-## 任务契约（do / input / output）
+## 节点契约与提示词
 
-TASK PACKAGE 里除了任务元信息，还带结构化的节点契约：
+TASK PACKAGE 只包含四样东西：
 
 ```json
 {
   "do": "这一步要做什么",
-  "input": "消费什么",
+  "input": "消费什么（含注入的上下文与上游产物）",
   "output": "要产出什么",
-  "output_format": {"kind": "marker", "pattern": "VERDICT:\\s*PASS"},
-  "upstream": [{"task": "explore", "output": "proposal.md",
-                "evidence": {"path": "proposal.md", "bytes": 812}}]
+  "parameters": {"requirement": "实例级输入参数"}
 }
 ```
 
-- `output_format` 支持 `file` / `json` / `marker` / `text`，由框架在 Agent
-  结束这一轮后校验；**不符格式就视为该节点失败**
-- 节点失败时，若声明了 `on_fail: {task, max_fail_count}`，Aggregator 会把
-  目标节点重置为 PENDING 重跑；超过 `max_fail_count` 才判整个实例失败
-- 校验通过的产物写入 `tasks/<task>/output`，下游节点通过 `upstream` 字段拿到
+- `do`：节点的执行指令（没有 `do` 时回落用 `description`）
+- `input`：节点声明的 input + 注入的上下文（`context_inputs`）+ 上游节点已产出的产物
+- `output`：节点要交付的东西；模板里的 `output_format` 是框架侧的校验规则，不发给 Agent
+- `parameters`：实例创建时填的输入参数
 
-模板校验规则（有契约字段的模板）：
+提示词开场白只保留通用要求，不再出现 stage-bridge 之类的旧机制。
 
-- 有前置步骤 → 必须声明 `input`
-- 有后续步骤 → 必须声明 `output`
-- 配置 `on_fail` → 必须声明 `output` 与 `output_format`
+## 产物门禁
 
-## 提示词开场白
+| 机制 | 作用 |
+|------|------|
+| `output_format` | 框架在本轮结束后校验产物（`file` / `json` / `marker` / `text`），不符即视为节点失败 |
+| `require_verdict` | 要求 Agent 给出 `VERDICT: PASS` |
+| `on_fail` | 失败时回退到指定节点重跑，受 `max_fail_count` 限制 |
 
-开场白按执行范围收敛：
-
-- 旧 workflow 范围（Agent 自己领任务、写产物/证据）**且**节点声明了
-  `completion_contract` 时，才会提示用 stage-bridge 命令登记产物与证据
-- 作业流范围不出现 stage-bridge（那里没有这条命令），门禁用节点契约的
-  `output_format` 与 `VERDICT` 结论
-
-作业流范围也不再校验旧式 `completion_contract`（没有写入通道，校验只会让任务
-永远失败），改由 `output_format` / `require_verdict` 承担门禁。
+旧的 `completion_contract` / `agent_contract` 已废弃：它们依赖 stage-bridge 写
+Consul 键，在当前执行路径上没有写入通道，保留只会让任务永远失败或让 Agent 去找
+不存在的工具。
 
 ## 会话查看（ACP）
 

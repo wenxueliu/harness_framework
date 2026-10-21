@@ -10,14 +10,13 @@ const fields: { name: string; type: string; required: string; desc: string }[] =
   { name: 'description', type: 'string', required: '与 do 二选一', desc: '人类可读说明；do 存在时以 do 为准' },
   { name: 'input', type: 'string', required: '有前置时必填', desc: '这一步消费什么；上游产物会自动带进提示词' },
   { name: 'output', type: 'string', required: '有后续或 on_fail 时必填', desc: '这一步要产出什么' },
-  { name: 'output_format', type: 'object', required: '可选', desc: '产物格式校验：file / json / marker / text；不符即视为节点失败' },
+  { name: 'output_format', type: 'object', required: '可选', desc: '产物格式校验（框架侧）：file / json / marker / text；不符即视为节点失败' },
+  { name: 'fail_group', type: 'string', required: '可选', desc: '共享失败预算的验证组（同一组必须用相同 on_fail）' },
   { name: 'on_fail', type: 'object', required: '可选', desc: '{task, max_fail_count}：失败时回退到哪个节点重跑' },
   { name: 'require_approval', type: 'boolean', required: '可选', desc: '需要人工批准才执行（批准只对本次有效）' },
   { name: 'require_verdict', type: 'boolean', required: '可选', desc: '要求 Agent 给出 VERDICT: PASS 结论' },
   { name: 'acp', type: 'object', required: '可选', desc: '{agent, cwd, permission_policy, session}：覆盖 agent、工作目录、权限与会话策略' },
   { name: 'context_inputs', type: 'string[]', required: '可选', desc: '允许注入的上下文 selector：facts / artifacts / summaries / working_memory' },
-  { name: 'agent_contract', type: 'object', required: '可选', desc: '输入输出、职责、排除项、权限、上下文预算' },
-  { name: 'completion_contract', type: 'object', required: '可选', desc: 'required_artifacts 与 required_gates；不满足拒绝 DONE' },
 ]
 
 const formats = [

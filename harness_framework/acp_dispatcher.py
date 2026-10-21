@@ -612,9 +612,6 @@ class ACPDispatcher:
                     )
                     return
 
-            missing = self._missing_completion_requirements(req_id, task_name)
-            if missing:
-                raise ACPError("completion contract not satisfied: " + ", ".join(missing))
             self._complete(req_id, task_name, claim, result)
             self.run_manager.record_session_end(
                 req_id, claim["run_id"], task_name, event_count, 0,
@@ -746,48 +743,36 @@ class ACPDispatcher:
         return result
 
     def _build_prompt(self, req_id: str, task_name: str, meta: dict[str, str]) -> str:
-        context = self._load_context(req_id, task_name, meta)
-        contract = _json_value(meta.get("agent_contract"), {})
-        completion = _json_value(meta.get("completion_contract"), {})
         package = {
-            "workflow_id": req_id,
-            "task_name": task_name,
-            "task_type": meta.get("type", "task"),
-            "do": meta.get("do", ""),
-            "input": meta.get("input", ""),
-            "output": meta.get("output", ""),
-            "output_format": _json_value(meta.get("output_format"), {}) or {},
-            "description": meta.get("description", ""),
-            "service_name": meta.get("service_name", ""),
-            "agent_contract": contract,
-            "completion_contract": completion,
+            "do": str(meta.get("do") or meta.get("description") or "").strip(),
+            "input": self._compose_input(req_id, task_name, meta),
+            "output": str(meta.get("output") or "").strip(),
             "parameters": self._instance_parameters(req_id),
-            "upstream": self._upstream_outputs(req_id, meta),
-            "context": context,
         }
-        return self._prompt_preamble(completion) + "\n\nTASK PACKAGE:\n" + json.dumps(
+        return self._prompt_preamble() + "\n\nTASK PACKAGE:\n" + json.dumps(
             package, ensure_ascii=False, indent=2
         )
 
-    def _prompt_preamble(self, completion: dict[str, Any]) -> str:
-        """任务提示词的开场白。
+    def _compose_input(self, req_id: str, task_name: str, meta: dict[str, Any]) -> str:
+        """节点消费的东西 = 声明的 input + 注入的上下文 + 上游节点已产出的产物。"""
+        parts: list[str] = []
+        declared = str(meta.get("input") or "").strip()
+        if declared:
+            parts.append(declared)
+        for key, value in self._load_context(req_id, task_name, meta).items():
+            parts.append(f"[上下文] {key}: {value}")
+        for item in self._upstream_outputs(req_id, meta):
+            parts.append(f"[上游产物] {item['task']}: {item['output']}")
+        return "\n".join(parts)
 
-        stage-bridge 是旧 workflow 范围（Agent 自己领任务、写产物/证据）才有的
-        机制；作业流范围里没有这条命令，提到它只会让 Agent 去找不存在的工具。
-        """
-        preamble = (
+    @staticmethod
+    def _prompt_preamble() -> str:
+        return (
             "You are the execution agent for one Harness Framework DAG task. "
             "Work autonomously in the provided workspace, implement the task completely, "
             "run appropriate verification, and do not merely describe what should be done. "
-            "Respect the contract and exclusions. "
+            "Do not claim success when verification fails."
         )
-        if self.scope == WORKFLOW_SCOPE and completion:
-            preamble += (
-                "If completion artifacts or evidence gates are required, record them "
-                "with the installed stage-bridge commands before ending. "
-            )
-        preamble += "Do not claim success when verification fails."
-        return preamble
 
     @staticmethod
     def _build_human_prompt(message: dict[str, Any]) -> str:
@@ -854,28 +839,6 @@ class ACPDispatcher:
             if value is not None:
                 result[selector] = value
         return result
-
-    def _missing_completion_requirements(self, req_id: str, task_name: str) -> list[str]:
-        """旧 workflow 范围的完成契约校验。
-
-        作业流范围没有产物/证据的写入通道（stage-bridge 只在旧范围可用），
-        那里用节点契约的 output_format / VERDICT 作为门禁，不在这里拦。
-        """
-        if self.scope != WORKFLOW_SCOPE:
-            return []
-        base = self._task_base(req_id, task_name)
-        raw, _ = self.store.kv_get(f"{base}/completion_contract")
-        contract = _json_value(raw, {})
-        missing = []
-        for artifact in contract.get("required_artifacts", []):
-            value, _ = self.store.kv_get(f"{base}/artifacts/{artifact}/current_version")
-            if not value:
-                missing.append(f"artifact:{artifact}")
-        for gate in contract.get("required_gates", []):
-            value, _ = self.store.kv_get(f"{base}/evidence/{gate}/verdict")
-            if value != "PASS":
-                missing.append(f"gate:{gate}")
-        return missing
 
     def _complete(
         self, req_id: str, task_name: str, claim: dict[str, Any], result: ACPResult
