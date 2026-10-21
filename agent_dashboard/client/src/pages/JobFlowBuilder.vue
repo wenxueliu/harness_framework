@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import AppShell from '@/layouts/AppShell.vue'
 import { ArrowLeft } from 'lucide-vue-next'
 import DagGraph from '@/components/DagGraph.vue'
+import TaskFieldReference from '@/components/TaskFieldReference.vue'
 import ConflictDialog from '@/components/ConflictDialog.vue'
 import PublishDialog from '@/components/PublishDialog.vue'
 import { useCapabilityStore } from '@/stores/capabilities'
@@ -166,6 +167,36 @@ async function importRalphFlow(event: Event) {
   } finally {
     importing.value = false
   }
+}
+
+const CONTRACT_EXAMPLE = [
+  {
+    id: 'build',
+    name: '构建',
+    type: 'backend',
+    agent: 'opencode',
+    depends_on: [],
+    do: '按设计实现代码，并运行测试直到全绿',
+    input: '设计文档',
+    output: '实现的代码 + 全绿的测试',
+    output_format: { kind: 'file', path: 'result.md' },
+  },
+  {
+    id: 'build__check',
+    name: '构建验证',
+    type: 'backend',
+    agent: 'opencode',
+    depends_on: ['build'],
+    do: '独立验证实现是否满足验收标准；最后一行输出 VERDICT: PASS',
+    input: '实现的代码 + 全绿的测试',
+    output: '验证结论（VERDICT: PASS）',
+    output_format: { kind: 'marker', pattern: 'VERDICT:\\s*PASS' },
+    on_fail: { task: 'build', max_fail_count: 3 },
+  },
+]
+
+function fillContractExample() {
+  tasksText.value = JSON.stringify(CONTRACT_EXAMPLE, null, 2)
 }
 
 function parseTasks(): JobFlowTask[] {
@@ -500,11 +531,18 @@ function scrollToTaskLine(task: Task) {
           <label class="mt-4 block text-xs font-medium text-muted-foreground">描述<textarea v-model="description" class="mt-2 w-full rounded border border-input bg-background px-3 py-2 text-sm" rows="3" /></label>
         </div>
         <div class="rounded-lg border border-border bg-card p-4">
-          <div class="mb-2 flex items-center justify-between"><h2 class="text-sm font-semibold">节点定义 JSON</h2><button class="text-xs text-blue-300" @click="validate">校验 DAG</button></div>
+          <div class="mb-2 flex items-center justify-between">
+            <h2 class="text-sm font-semibold">节点定义 JSON</h2>
+            <div class="flex items-center gap-3">
+              <button data-testid="tasks-contract-example" class="text-xs text-muted-foreground hover:text-foreground" @click="fillContractExample">填入契约示例</button>
+              <button class="text-xs text-blue-300" @click="validate">校验 DAG</button>
+            </div>
+          </div>
           <div data-testid="tasks-editor" class="h-80 overflow-hidden rounded border border-input">
             <MonacoEditor v-model:value="tasksText" language="json" theme="vs-dark" :options="{ automaticLayout: true, minimap: { enabled: false }, fontSize: 12 }" @mount="onTasksEditorMounted" />
           </div>
           <p class="mt-2 text-[11px] text-muted-foreground">支持节点数组或“节点 ID → 配置”对象；节点可使用 id、depends_on、type、service_name 及 ACP、资源预算等扩展字段。</p>
+          <TaskFieldReference />
         </div>
         <div class="rounded-lg border border-border bg-card p-4">
           <div class="mb-2 flex items-center justify-between"><h2 class="text-sm font-semibold">参数 Schema</h2><button class="text-xs text-blue-300" data-testid="schema-editor-toggle" @click="parameterSchemaText = JSON.stringify(parseSchema(), null, 2)">格式化</button></div>
