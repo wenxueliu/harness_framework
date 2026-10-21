@@ -123,3 +123,33 @@ python scripts/add_task.py req-001 fix-login \
 如确需在任务中提供 argv，可使用 `--command-json`，并在 Worker 上通过
 `--allowed-executables` 或 `ALLOWED_MODEL_EXECUTABLES` 明确授权可执行文件名。
 未授权命令会在启动前被拒绝。生产环境推荐只开放命名 profile。
+
+## 会话查看（ACP）
+
+对话正文只保存在 Agent 自己的会话存储里，框架 **不再复制** 到 KV。Dispatcher 只写映射：
+
+| Key | 含义 |
+|-----|------|
+| `jobflows/instances/<id>/tasks/<task>/acp/provider` | 实际使用的 provider（`claude` / `codex` / `opencode`） |
+| `.../acp/session_id` | Agent 原生会话 ID |
+| `.../acp/cwd` | 会话启动时的执行目录 |
+| `.../acp/attempt_id` / `.../acp/run_id` | 最近一次执行归属 |
+
+看板通过 `GET /api/instances/<instance_id>/tasks/<task>/session` 读取映射，
+凭 `provider + session_id + cwd` 连接 ACP 桥接（`ws://127.0.0.1:8787/acp`），
+由 Agent 用 `session/load` 回放历史。页面上的「连接 / 断开」按需创建和释放
+Agent 进程，断开后不会常驻。
+
+任务执行中不允许连接（避免两个进程同时写同一个会话）；任务结束后可连接、
+查看完整历史并继续对话。执行中的进度改用内存实时流：
+
+- `GET /api/instances/<instance_id>/tasks/<task>/live?after=<seq>` 返回增量 ACP
+  更新（`events[].payload.update`）、`cursor`、`active` 与 `truncated`。
+- 数据只存在于 daemon 进程的内存环形缓冲（每任务 2000 条），不落 KV、不落盘；
+  daemon 重启即清空，Agent 会话仍是唯一持久副本。
+- 看板在任务 `PENDING` / `IN_PROGRESS` 时每 1.2 秒轮询一次，任务结束后停止，
+  再通过「连接」用 `session/load` 读取完整历史。
+
+> 历史由各 Agent 自己回放：`opencode acp` 会回放用户与助手文本，
+> `codex-acp` 目前只回放工具调用。文本是否可读取决于 Agent 的
+> `session/load` 实现，框架不做二次存储。

@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, onMounted, onUnmounted, ref } from 'vue'
+import type { SessionUpdate } from '@agentclientprotocol/sdk'
 import { useRoute, useRouter } from 'vue-router'
-import { ArrowLeft, File, Folder, GitBranch, GitCommit, LoaderCircle, Play, RefreshCw, Save, Search } from 'lucide-vue-next'
+import { ArrowLeft, File, Folder, GitBranch, GitCommit, LoaderCircle, Play, Plug, RefreshCw, Save, Search, Unplug } from 'lucide-vue-next'
 import AppShell from '@/layouts/AppShell.vue'
-import ExecutionTimeline from '@/components/ExecutionTimeline.vue'
-import { fetchTaskMessages, fetchTaskSessionEvents, sendTaskMessage, type HumanMessage } from '@/lib/harnessApi'
+import AcpConversation from '@/components/AcpConversation.vue'
+import { useAcpChat } from '@/lib/acp/useAcpChat'
 import {
   createWorkspaceCheckpoint,
   getRunManifest,
@@ -23,12 +24,15 @@ import { HarnessApiError } from '@/api/client'
 import {
   getJobFlowInstance,
   getJobFlowPreflight,
+  getTaskLiveUpdates,
+  getTaskSessionMapping,
+  approveJobFlowTask,
   retryJobFlowTask,
   type JobFlowInstance,
+  type TaskSessionMapping,
 } from '@/api/jobFlow'
 import type {
   AttemptWorkspaceBinding,
-  SessionEvent,
   WorkspaceAction,
   WorkspaceActionResult,
   WorkspaceChange,
@@ -50,7 +54,6 @@ const taskId = String(route.params.taskId || '')
 const loading = ref(true)
 const workspaceLoading = ref(false)
 const retrying = ref(false)
-const sending = ref(false)
 const saving = ref(false)
 const error = ref('')
 const workspaceError = ref('')
@@ -67,8 +70,14 @@ const openFiles = ref<WorkspaceFile[]>([])
 const draft = ref('')
 const baseContent = ref('')
 const conflict = ref<{ currentSha: string | null; currentContent: string } | null>(null)
-const messages = ref<HumanMessage[]>([])
-const events = ref<SessionEvent[]>([])
+const sessionMapping = ref<TaskSessionMapping | null>(null)
+const sessionMappingError = ref('')
+const acpDraft = ref('')
+const liveCursor = ref(0)
+const liveActive = ref(false)
+const liveError = ref('')
+let liveTimer: number | undefined
+let liveStateCheckedAt = 0
 const actions = ref<WorkspaceAction[]>([])
 const actionResult = ref<WorkspaceActionResult | null>(null)
 const actionRunning = ref('')
@@ -77,20 +86,56 @@ const searchQuery = ref('')
 const searchResults = ref<Array<Record<string, unknown>>>([])
 const manifest = ref<WorkspaceManifest | null>(null)
 const diffText = ref('')
-const message = ref('')
-const messageMode = ref<'queue' | 'interrupt'>('queue')
 const checkpointMessage = ref('')
 const preflightStatus = ref('')
 const instanceState = computed(() => instance.value?.status?.state || '')
-const followCurrentAttempt = ref(true)
-let pollTimer: number | undefined
-let pollCount = 0
+
+const DEFAULT_BRIDGE = 'ws://127.0.0.1:8787/acp'
+const {
+  status: acpStatus,
+  isBusy: acpBusy,
+  errorMessage: acpError,
+  items: acpItems,
+  permission: acpPermission,
+  connect: connectAcp,
+  send: sendAcp,
+  cancel: cancelAcp,
+  disconnect: disconnectAcp,
+  answerPermission,
+  applyUpdate,
+  finishStreaming,
+  resetStream,
+} = useAcpChat()
 
 const capabilityText = computed(() => {
   if (!preflightStatus.value) return 'Preflight 未知'
   if (preflightStatus.value === 'PASSED') return '✅ Preflight 通过'
   if (preflightStatus.value === 'IDLE') return 'Preflight 未执行'
   return '⚠ Preflight 阻塞'
+})
+
+const approving = ref(false)
+const taskRunning = computed(() => ['PENDING', 'IN_PROGRESS'].includes(taskState.value))
+const acpConnected = computed(() => acpStatus.value === 'ready' || acpStatus.value === 'busy')
+const acpStatusLabel = computed(() => ({
+  idle: '未连接',
+  connecting: '连接中',
+  ready: '已连接',
+  busy: '执行中',
+  error: '异常',
+}[acpStatus.value]))
+
+const connectBlockedReason = computed(() => {
+  if (acpConnected.value) return ''
+  const mapping = sessionMapping.value
+  if (!mapping) return sessionMappingError.value ? '' : '正在读取会话映射…'
+  if (!mapping.loadable) {
+    if (mapping.missing.includes('session_id')) return '该任务还没有 Agent 会话'
+    if (mapping.missing.includes('cwd')) return '缺少执行目录映射，无法连接历史会话'
+    return '缺少 Agent 映射，无法连接历史会话'
+  }
+  if (taskRunning.value) return '任务执行中：上方实时推送；完成后可连接查看完整历史'
+  return ''
 })
 
 function goBack() {
@@ -149,62 +194,97 @@ async function loadWorkspace(attemptId?: string) {
   }
 }
 
-async function loadCollaboration() {
+async function loadSessionMapping() {
+  sessionMappingError.value = ''
   try {
-    const [session, human] = await Promise.all([
-      fetchTaskSessionEvents(instanceId, taskId, { attemptId: selectedAttemptId.value || undefined }),
-      fetchTaskMessages(instanceId, taskId),
-    ])
-    events.value = session.events
-    messages.value = human
+    sessionMapping.value = await getTaskSessionMapping(instanceId, taskId)
   } catch (cause) {
-    if (!(cause instanceof HarnessApiError && cause.status === 404)) {
-      workspaceError.value = cause instanceof Error ? cause.message : '协作记录加载失败'
-    }
+    sessionMapping.value = null
+    sessionMappingError.value = cause instanceof Error ? cause.message : '会话映射加载失败'
   }
+}
+
+/** 运行中任务：轮询内存中的 ACP 增量，实时显示工具调用和输出。 */
+async function pollLive() {
+  liveTimer = undefined
+  if (!taskRunning.value) {
+    finishStreaming()
+    liveActive.value = false
+    return
+  }
+  try {
+    const payload = await getTaskLiveUpdates(instanceId, taskId, liveCursor.value)
+    if (payload.truncated) {
+      // 缓冲已丢弃最早的事件，下一轮从头取。
+      liveCursor.value = 0
+    } else {
+      for (const event of payload.events) {
+        liveCursor.value = Math.max(liveCursor.value, event.seq)
+        const update = event.payload?.update
+        if (update && typeof update === 'object' && 'sessionUpdate' in update) {
+          applyUpdate(update as unknown as SessionUpdate, { userMessages: true })
+        }
+      }
+    }
+    liveActive.value = payload.active
+    liveError.value = ''
+    // 流停止但页面仍认为在运行：低频核对任务状态，结束后切回“可连接”。
+    if (!payload.active && Date.now() - liveStateCheckedAt > 5000) {
+      liveStateCheckedAt = Date.now()
+      await loadTask()
+      if (!taskRunning.value) {
+        finishStreaming()
+        liveActive.value = false
+        void loadSessionMapping()
+        return
+      }
+    }
+  } catch (cause) {
+    liveError.value = cause instanceof Error ? cause.message : '实时更新加载失败'
+  }
+  if (taskRunning.value) liveTimer = window.setTimeout(pollLive, 1200)
+}
+
+function startLivePolling() {
+  if (liveTimer !== undefined) window.clearTimeout(liveTimer)
+  liveTimer = undefined
+  if (taskRunning.value) void pollLive()
+}
+
+function stopLivePolling() {
+  if (liveTimer !== undefined) window.clearTimeout(liveTimer)
+  liveTimer = undefined
+  liveActive.value = false
 }
 
 async function selectAttempt(event: Event) {
   const attemptId = (event.target as HTMLSelectElement).value
-  followCurrentAttempt.value = false
   selectedAttemptId.value = attemptId
-  await Promise.all([loadWorkspace(attemptId), loadCollaboration()])
+  await loadWorkspace(attemptId)
 }
 
-function hasPendingMessage() {
-  return messages.value.some(
-    (entry) => entry.status === 'PENDING' || entry.status === 'PROCESSING',
-  )
-}
-
-function stopPolling() {
-  if (pollTimer !== undefined) window.clearTimeout(pollTimer)
-  pollTimer = undefined
-}
-
-/** 消息还在排队/执行时轮询刷新，AI 的回复返回后自动出现在对话区和消息列表里。 */
-async function pollCollaboration() {
-  pollTimer = undefined
-  if (!hasPendingMessage() || pollCount >= 150) {
-    pollCount = 0
+/** 连接 = 让 Agent 回放自己的会话历史；断开 = 关闭桥接进程，避免长期占用。 */
+async function toggleAcpConnection() {
+  if (acpConnected.value) {
+    await disconnectAcp()
     return
   }
-  pollCount += 1
-  try {
-    if (followCurrentAttempt.value) await loadTask()
-    await loadCollaboration()
-  } catch {
-    // 轮询失败不打扰用户，下一轮再试
-  }
-  if (hasPendingMessage() && pollCount < 150) {
-    pollTimer = window.setTimeout(pollCollaboration, 3000)
-  }
+  await loadSessionMapping()
+  const mapping = sessionMapping.value
+  if (!mapping?.loadable || taskRunning.value) return
+  await connectAcp({
+    bridgeUrl: DEFAULT_BRIDGE,
+    agent: mapping.provider,
+    cwd: mapping.cwd,
+    loadSessionId: mapping.session_id,
+  })
 }
 
-function startPolling() {
-  stopPolling()
-  pollCount = 0
-  pollTimer = window.setTimeout(pollCollaboration, 1500)
+async function submitAcp() {
+  const text = acpDraft.value.trim()
+  if (!text || !acpConnected.value) return
+  acpDraft.value = ''
+  await sendAcp(text)
 }
 
 async function openEntry(entry: WorkspaceTreeEntry) {
@@ -305,22 +385,16 @@ async function checkpoint() {
   }
 }
 
-async function send() {
-  if (!message.value.trim()) return
-  sending.value = true
+async function approve() {
+  approving.value = true
   error.value = ''
   try {
-    await sendTaskMessage(instanceId, taskId, { message: message.value.trim(), mode: messageMode.value })
-    message.value = ''
-    followCurrentAttempt.value = true
-    // 任务被重新入队后 current_attempt 会变化，先刷新任务再取新 attempt 的会话事件。
+    await approveJobFlowTask(instanceId, taskId)
     await loadTask()
-    await loadCollaboration()
-    startPolling()
   } catch (cause) {
-    error.value = cause instanceof Error ? cause.message : '消息发送失败'
+    error.value = cause instanceof Error ? cause.message : '批准失败'
   } finally {
-    sending.value = false
+    approving.value = false
   }
 }
 
@@ -328,7 +402,10 @@ async function retry() {
   retrying.value = true
   try {
     await retryJobFlowTask(instanceId, taskId)
-    await Promise.all([loadTask(), loadWorkspace(), loadCollaboration()])
+    await Promise.all([loadTask(), loadWorkspace(), loadSessionMapping()])
+    resetStream()
+    liveCursor.value = 0
+    startLivePolling()
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : '任务重试失败'
   } finally {
@@ -343,8 +420,8 @@ onMounted(async () => {
       const preflight = await getJobFlowPreflight(instanceId)
       preflightStatus.value = preflight.status
     } catch { preflightStatus.value = '' }
-    await Promise.all([loadWorkspace(), loadCollaboration()])
-    if (hasPendingMessage()) startPolling()
+    await Promise.all([loadWorkspace(), loadSessionMapping()])
+    startLivePolling()
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : '任务加载失败'
   } finally {
@@ -352,7 +429,11 @@ onMounted(async () => {
   }
 })
 
-onUnmounted(stopPolling)
+onUnmounted(() => {
+  stopLivePolling()
+  // 离开页面就断开桥接，不把 Agent 进程留在后台。
+  void disconnectAcp()
+})
 </script>
 
 <template>
@@ -381,41 +462,54 @@ onUnmounted(stopPolling)
         <span data-testid="instance-state" class="rounded bg-background px-2 py-0.5">实例 {{ instanceState }}</span>
         <span class="rounded bg-background px-2 py-0.5">Attempt {{ selectedAttemptId || attemptCount }}</span>
         <span class="rounded bg-background px-2 py-0.5">{{ capabilityText }}</span>
+        <button v-if="taskState === 'AWAITING_REVIEW'" data-testid="task-approve" class="rounded border border-amber-400/50 px-2 py-1 text-amber-300 disabled:opacity-50" :disabled="approving" @click="approve">批准验证</button>
         <button class="ml-auto rounded border border-border px-2 py-1 disabled:opacity-50" :disabled="retrying" @click="retry">重试任务</button>
       </div>
 
       <div data-testid="task-workbench" class="grid flex-1 grid-cols-1 min-h-0 xl:grid-cols-[minmax(20rem,0.9fr)_minmax(16rem,0.65fr)_minmax(28rem,1.25fr)]">
         <section aria-label="Agent 会话" class="flex min-h-0 flex-col border-border p-3 xl:border-r">
-          <h2 class="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Agent Collaboration</h2>
-          <div class="min-h-48 flex-1 overflow-auto"><ExecutionTimeline :events="events" /></div>
-          <div class="mt-3 space-y-2 border-t border-border pt-3">
-            <textarea v-model="message" data-testid="human-message-input" class="min-h-20 w-full rounded border border-border bg-background p-2 text-sm" placeholder="发送人工消息" />
-            <div class="flex gap-2">
-              <select v-model="messageMode" class="rounded border border-border bg-background px-2 text-xs" aria-label="消息模式">
-                <option value="queue">排队</option><option value="interrupt">立即中断</option>
-              </select>
-              <button data-testid="send-human-message" class="rounded bg-blue-500 px-3 py-1.5 text-xs text-white disabled:opacity-50" :disabled="sending" @click="send">发送</button>
-            </div>
-            <p class="text-[11px] text-muted-foreground">
-              已记录 {{ messages.length }} 条人工消息
-              <span v-if="hasPendingMessage()" class="ml-1 text-amber-300">· 等待 AI 回复…</span>
-            </p>
-            <!-- 最近的人工消息：发送后立刻可见，并展示 Agent 的回复/失败原因 -->
-            <ul v-if="messages.length" data-testid="human-message-list" class="max-h-56 space-y-1 overflow-auto">
-              <li v-for="entry in messages.slice(-5).reverse()" :key="entry.message_id"
-                class="rounded border border-border bg-background px-2 py-1 text-[11px]">
-                <div class="flex items-center gap-1">
-                  <span class="font-mono text-muted-foreground">{{ entry.status }}</span>
-                  <span v-if="entry.response" class="text-[10px] text-blue-300">AI 回复</span>
-                </div>
-                <p class="mt-0.5 whitespace-pre-wrap break-words">{{ entry.message }}</p>
-                <p v-if="entry.response" data-testid="human-message-response"
-                  class="mt-1 whitespace-pre-wrap break-words border-l-2 border-blue-400/40 pl-2 text-blue-200">{{ entry.response }}</p>
-                <p v-else-if="entry.error" data-testid="human-message-error"
-                  class="mt-1 whitespace-pre-wrap break-words text-red-300">{{ entry.error }}</p>
-              </li>
-            </ul>
+          <div class="mb-2 flex flex-wrap items-center gap-2">
+            <h2 class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Agent Conversation</h2>
+            <span class="rounded border border-border px-1.5 py-0.5 font-mono text-[10px]">{{ sessionMapping?.provider || '—' }}</span>
+            <span class="max-w-40 truncate font-mono text-[10px] text-muted-foreground" :title="sessionMapping?.session_id || ''">{{ sessionMapping?.session_id || '无会话' }}</span>
+            <span v-if="taskRunning" class="flex items-center gap-1 rounded border border-blue-500/30 bg-blue-500/10 px-1.5 py-0.5 text-[10px] text-blue-300">
+              <span class="size-1.5 animate-pulse rounded-full bg-blue-400" />实时
+            </span>
+            <span v-else class="rounded border px-1.5 py-0.5 text-[10px]"
+              :class="acpConnected ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300' : acpStatus === 'error' ? 'border-red-400/30 bg-red-400/10 text-red-300' : 'border-border text-muted-foreground'">
+              {{ acpStatusLabel }}
+            </span>
+            <button data-testid="task-acp-toggle"
+              class="ml-auto flex items-center gap-1 rounded border border-border px-2 py-1 text-[11px] disabled:opacity-50"
+              :disabled="!acpConnected && (acpStatus === 'connecting' || Boolean(connectBlockedReason))"
+              @click="toggleAcpConnection">
+              <Unplug v-if="acpConnected" :size="12" /><Plug v-else :size="12" />
+              {{ acpConnected ? '断开' : '连接' }}
+            </button>
           </div>
+          <p v-if="connectBlockedReason" class="mb-2 rounded border border-amber-400/20 bg-amber-400/10 px-2 py-1 text-[11px] text-amber-200">
+            {{ connectBlockedReason }}
+          </p>
+          <p v-if="acpError" role="alert" class="mb-2 rounded border border-red-400/20 bg-red-400/10 px-2 py-1 text-[11px] text-red-300">{{ acpError }}</p>
+          <p v-if="liveError" role="alert" class="mb-2 rounded border border-red-400/20 bg-red-400/10 px-2 py-1 text-[11px] text-red-300">{{ liveError }}</p>
+
+          <AcpConversation :items="acpItems" :permission="acpPermission"
+            :empty-title="taskRunning ? '等待 Agent 输出…' : '尚未连接'"
+            :empty-description="taskRunning ? '任务执行中的工具调用和消息会实时出现在这里。' : '连接后读取 Agent 自己保存的会话历史，断开即释放进程。'"
+            @answer-permission="answerPermission" />
+
+          <form class="mt-3 shrink-0 space-y-2 border-t border-border pt-3" @submit.prevent="submitAcp">
+            <textarea v-model="acpDraft" data-testid="task-acp-input" :disabled="!acpConnected"
+              class="min-h-16 w-full rounded border border-border bg-background p-2 text-sm disabled:opacity-50"
+              placeholder="连接后可继续对话（Enter 发送，Shift+Enter 换行）"
+              @keydown.enter.exact.prevent="submitAcp" />
+            <div class="flex gap-2">
+              <button data-testid="task-acp-send" type="submit"
+                class="rounded bg-blue-500 px-3 py-1.5 text-xs text-white disabled:opacity-50"
+                :disabled="!acpConnected || acpBusy || !acpDraft.trim()">发送</button>
+              <button v-if="acpBusy" type="button" class="rounded border border-border px-3 py-1.5 text-xs" @click="cancelAcp()">停止</button>
+            </div>
+          </form>
         </section>
 
         <section aria-label="工作区文件" class="flex min-h-0 flex-col border-border p-3 xl:border-r">

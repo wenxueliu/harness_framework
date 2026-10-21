@@ -26,6 +26,7 @@ from .human_interaction import (
 )
 from .kv_store_protocol import KVStore
 from .run_manager import RunManager
+from .verdict import parse_verdict
 from .workspace_manager import WorkspaceManager
 from .event_journal import EventJournal
 from .project_groups import UNASSIGNED_GROUP_ID
@@ -73,6 +74,7 @@ class ACPDispatcher:
         workspace_manager: WorkspaceManager | None = None,
         event_journal: EventJournal | None = None,
         scope: str = WORKFLOW_SCOPE,
+        live_hub: Any = None,
     ):
         self.store = store
         self.run_manager = run_manager
@@ -87,6 +89,7 @@ class ACPDispatcher:
         self.client_factory = client_factory
         self.workspace_manager = workspace_manager
         self.event_journal = event_journal or EventJournal(store)
+        self.live_hub = live_hub
         self.scope = scope
         # workflow 与 jobflow 两种布局都支持人工消息；具体前缀由
         # human_interaction 依据实例 meta 自行判定。
@@ -284,6 +287,17 @@ class ACPDispatcher:
         status, index = self._read_task_status(req_id, task_name)
         if self._task_state(status) != "PENDING":
             return None
+        # 人工审查门：需要批准才执行的验证节点，未批准就停在 AWAITING_REVIEW。
+        if _truthy(meta.get("require_approval")):
+            approved_raw, _ = self.store.kv_get(f"{base}/approval")
+            if not approved_raw:
+                self._write_task_state(
+                    req_id, task_name, "AWAITING_REVIEW", index, current=status,
+                    fields={"error_message": "等待人工批准后执行验证"},
+                )
+                return None
+            # 批准只对本次执行有效，验证重跑时需要重新批准。
+            self.store.kv_delete(f"{base}/approval")
         if self.scope == JOBFLOW_SCOPE:
             instance_raw, _ = self.store.kv_get(f"{self._scope_base(req_id)}/status")
             try:
@@ -402,46 +416,32 @@ class ACPDispatcher:
         current_message: dict[str, Any] | None = None
 
         def on_update(params: dict[str, Any]) -> None:
+            # 会话内容只保存在 Agent 自己的会话里（通过 ACP session/load 读取），
+            # 框架只记录映射，避免同一份对话在 KV 中再存一遍。
             nonlocal event_count
             event_count += 1
-            event_key = f"{int(time.time() * 1000000):021d}-{event_count:06d}"
-            if session_id:
-                self.store.kv_put(
-                    f"{self._scope_base(req_id)}/sessions/{task_name}/{session_id}/events/{event_key}",
-                    json.dumps({
-                        "timestamp": _now_iso(), "type": "ACP_UPDATE",
-                        "provider": provider, "run_id": claim["run_id"],
-                        "attempt_id": claim["attempt_id"], "payload": params,
-                    }, ensure_ascii=False),
+            if not session_id:
+                return
+            if self.live_hub is not None:
+                self.live_hub.publish(
+                    req_id, task_name,
+                    attempt_id=claim["attempt_id"],
+                    session_id=session_id,
+                    payload=params,
                 )
-                self._task_event(
-                    req_id, claim["run_id"], task_name, claim["attempt_id"],
-                    "SESSION_EVENT", {"session_id": session_id,
-                                      "event_count": event_count},
-                    {"type": "agent", "id": claim["agent_id"]},
-                )
+            update = params.get("update", {}) if isinstance(params, dict) else {}
+            changed_path = ""
+            if isinstance(update, dict):
+                changed_path = str(update.get("path") or update.get("filePath") or update.get("file_path") or "")
+            if changed_path:
                 self.event_journal.append(
-                    "SESSION_EVENT",
-                    subject={
-                        "req_id": req_id, "run_id": claim["run_id"],
-                        "task_id": task_name, "attempt_id": claim["attempt_id"],
-                    },
+                    "WORKSPACE_FILE_CHANGED",
+                    subject={"req_id": req_id, "run_id": claim["run_id"],
+                             "task_id": task_name, "attempt_id": claim["attempt_id"]},
                     actor={"type": "agent", "id": claim["agent_id"]},
-                    data={"session_id": session_id, "payload": params},
+                    data={"path": changed_path, "source": "agent",
+                          "session_id": session_id},
                 )
-                update = params.get("update", {}) if isinstance(params, dict) else {}
-                changed_path = ""
-                if isinstance(update, dict):
-                    changed_path = str(update.get("path") or update.get("filePath") or update.get("file_path") or "")
-                if changed_path:
-                    self.event_journal.append(
-                        "WORKSPACE_FILE_CHANGED",
-                        subject={"req_id": req_id, "run_id": claim["run_id"],
-                                 "task_id": task_name, "attempt_id": claim["attempt_id"]},
-                        actor={"type": "agent", "id": claim["agent_id"]},
-                        data={"path": changed_path, "source": "agent",
-                              "session_id": session_id},
-                    )
 
         try:
             provider, config = self._resolve_agent(meta)
@@ -467,6 +467,12 @@ class ACPDispatcher:
                         )
                 else:
                     cwd = os.path.abspath(self.workspace_root)
+            # 会话映射：UI 依据这组键直连 Agent 会话（session/load），
+            # 对话正文不再落 KV。
+            self.store.kv_put(f"{base}/acp/provider", provider)
+            self.store.kv_put(f"{base}/acp/cwd", cwd)
+            self.store.kv_put(f"{base}/acp/attempt_id", claim["attempt_id"])
+            self.store.kv_put(f"{base}/acp/run_id", claim["run_id"])
             client = self.client_factory(
                 self.commands[provider], cwd=cwd,
                 env={
@@ -577,6 +583,16 @@ class ACPDispatcher:
                     break
                 prompt_text = self._build_human_prompt(current_message)
 
+            # 验证型任务：结论不通过就判失败，由 Aggregator 决定是否回退上游。
+            if _truthy(meta.get("require_verdict")):
+                passed, reason = parse_verdict(_agent_text(result.updates))
+                if not passed:
+                    self._fail(
+                        req_id, task_name, claim,
+                        f"验证未通过: {reason}",
+                    )
+                    return
+
             missing = self._missing_completion_requirements(req_id, task_name)
             if missing:
                 raise ACPError("completion contract not satisfied: " + ", ".join(missing))
@@ -626,8 +642,11 @@ class ACPDispatcher:
                 f"task acp configuration must be an object, got {type(config).__name__}"
             )
         task_type = meta.get("type", "task")
-        requested = config.get("agent") or self.routing.get(
-            task_type, DEFAULT_AGENT_PROVIDER
+        # 模板里的 agent 是任务级字段；acp.agent 更具体，优先。都没有才走类型路由。
+        requested = (
+            config.get("agent")
+            or meta.get("agent")
+            or self.routing.get(task_type, DEFAULT_AGENT_PROVIDER)
         )
         provider = normalize_agent(requested)
         if not is_supported_agent(provider):
@@ -666,6 +685,18 @@ class ACPDispatcher:
             raise ValueError(f"ACP {mode} session could not be resolved")
         return str(value)
 
+    def _instance_parameters(self, scope_id: str) -> dict[str, Any]:
+        """实例级输入参数；只对作业流实例生效，敏感项保持 secret 引用。"""
+        if self.scope != JOBFLOW_SCOPE:
+            return {}
+        raw, _ = self.store.kv_get(f"{self._scope_base(scope_id)}/context")
+        try:
+            context = json.loads(raw or "{}")
+        except (TypeError, json.JSONDecodeError):
+            return {}
+        parameters = context.get("parameters") if isinstance(context, dict) else None
+        return parameters if isinstance(parameters, dict) else {}
+
     def _build_prompt(self, req_id: str, task_name: str, meta: dict[str, str]) -> str:
         context = self._load_context(req_id, task_name, meta)
         contract = _json_value(meta.get("agent_contract"), {})
@@ -678,8 +709,12 @@ class ACPDispatcher:
             "service_name": meta.get("service_name", ""),
             "agent_contract": contract,
             "completion_contract": completion,
+            "parameters": self._instance_parameters(req_id),
             "context": context,
         }
+        ralph_flow = _json_value(meta.get("ralph_flow"), None)
+        if isinstance(ralph_flow, dict):
+            package["ralph_flow"] = ralph_flow
         return (
             "You are the execution agent for one Harness Framework DAG task. "
             "Work autonomously in the provided workspace, implement the task completely, "
@@ -1007,6 +1042,7 @@ class JobFlowACPDispatcher(ACPDispatcher):
         client_factory: Callable[..., ACPClient] = ACPClient,
         event_journal: EventJournal | None = None,
         workspace_manager: WorkspaceManager | None = None,
+        live_hub: Any = None,
     ):
         super().__init__(
             store,
@@ -1024,6 +1060,7 @@ class JobFlowACPDispatcher(ACPDispatcher):
             event_journal=event_journal,
             scope=JOBFLOW_SCOPE,
             workspace_manager=workspace_manager,
+            live_hub=live_hub,
         )
 
     def _tick(self) -> None:
@@ -1138,6 +1175,14 @@ class JobFlowACPDispatcher(ACPDispatcher):
             for instance_id, task_id, meta in tasks
             if instance_id in running
         ]
+
+
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
 
 
 def _json_value(value: Any, default: Any) -> Any:

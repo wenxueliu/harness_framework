@@ -677,6 +677,105 @@ class TestWebAPI:
         assert resp["body"]["events"][0]["step_type"] == "ASSISTANT_MSG"
         assert resp["body"]["events"][0]["message"] == "finished"
 
+    def test_session_route_coalesces_thought_chunks(self):
+        store = {}
+        for seq, text in (("0001", "thinking "), ("0002", "about it")):
+            store[f"workflows/req-001/sessions/backend/session-1/events/{seq}"] = json.dumps({
+                "timestamp": f"2026-09-06T01:02:0{int(seq) + 3}Z",
+                "type": "ACP_UPDATE",
+                "provider": "opencode",
+                "payload": {
+                    "update": {
+                        "sessionUpdate": "agent_thought_chunk",
+                        "content": {"type": "text", "text": text},
+                    }
+                },
+            })
+        handler, _, _, _ = make_handler(store)
+
+        resp = call_do_method(
+            handler, "GET", "/api/sessions/req-001/backend?limit=100",
+        )
+
+        assert resp["code"] == 200
+        events = resp["body"]["events"]
+        assert len(events) == 1
+        assert events[0]["step_type"] == "THOUGHT"
+        assert events[0]["message"] == "thinking about it"
+
+    def test_task_session_mapping_uses_recorded_agent_keys(self):
+        store = {
+            "jobflows/instances/inst-1/tasks/build/acp/session_id": "ses_123",
+            "jobflows/instances/inst-1/tasks/build/acp/provider": "opencode",
+            "jobflows/instances/inst-1/tasks/build/acp/cwd": "/tmp/project",
+            "jobflows/instances/inst-1/tasks/build/acp/attempt_id": "att-1",
+            "jobflows/instances/inst-1/tasks/build/acp/run_id": "run-1",
+        }
+        handler, _, _, _ = make_handler(store)
+
+        payload = handler._task_session_mapping(
+            "inst-1", "build", {"context": {}, "tasks": {"build": {"state": "DONE"}}},
+        )
+
+        assert payload["loadable"] is True
+        assert payload["missing"] == []
+        assert payload["provider"] == "opencode"
+        assert payload["session_id"] == "ses_123"
+        assert payload["cwd"] == "/tmp/project"
+        assert payload["attempt_id"] == "att-1"
+        assert payload["state"] == "DONE"
+
+    def test_task_session_mapping_falls_back_to_initialize_and_context(self):
+        store = {
+            "jobflows/instances/inst-2/tasks/dev/acp/session_id": "ses_456",
+            "jobflows/instances/inst-2/tasks/dev/acp/initialize": json.dumps({
+                "agentInfo": {"name": "codex-acp", "version": "1.0"},
+            }),
+        }
+        handler, _, _, _ = make_handler(store)
+
+        payload = handler._task_session_mapping(
+            "inst-2", "dev", {"context": {"directory": "/tmp/instance-dir"}, "tasks": {}},
+        )
+
+        assert payload["provider"] == "codex"
+        assert payload["cwd"] == "/tmp/instance-dir"
+        assert payload["attempt_id"] == ""
+        assert payload["loadable"] is True
+
+    def test_task_session_mapping_reports_missing_parts(self):
+        handler, _, _, _ = make_handler({})
+
+        payload = handler._task_session_mapping("inst-3", "test", {"context": {}})
+
+        assert payload["loadable"] is False
+        assert payload["missing"] == ["session_id", "provider", "cwd"]
+
+    def test_task_live_updates_reads_in_memory_hub(self):
+        from harness_framework.live_sessions import LiveSessionHub
+
+        handler, _, _, _ = make_handler({})
+        hub = LiveSessionHub()
+        hub.publish("inst-1", "build", attempt_id="att-1", session_id="ses-1",
+                    payload={"update": {"sessionUpdate": "agent_message_chunk",
+                                        "content": {"type": "text", "text": "hi"}}})
+        handler.live_hub = hub
+
+        payload = handler._task_live_updates("inst-1", "build", {})
+
+        assert payload["cursor"] == 1
+        assert payload["active"] is True
+        assert payload["events"][0]["payload"]["update"]["content"]["text"] == "hi"
+
+    def test_task_live_updates_without_hub_returns_empty(self):
+        handler, _, _, _ = make_handler({})
+        handler.live_hub = None
+
+        payload = handler._task_live_updates("inst-1", "build", {})
+
+        assert payload["events"] == []
+        assert payload["active"] is False
+
     def test_task_message_is_queued_for_running_task(self):
         store = {"workflows/req-001/tasks/backend/status": "IN_PROGRESS"}
         handler, consul, _, _ = make_handler(store)

@@ -3,7 +3,7 @@ export type WorkflowPhase = 'EMPTY' | 'PENDING' | 'RUNNING' | 'DONE' | 'FAILED' 
 
 export interface SessionEvent { ts: string; agent_id: string; level: 'debug' | 'info' | 'warn' | 'error'; message: string; step_type: string; run_id: string; data?: Record<string, unknown>; seq?: string }
 export interface SessionInfo { session_id: string; event_count: number }
-export interface TaskSessionEvents { req_id: string; task: string; events: SessionEvent[]; sessions: SessionInfo[] }
+export interface TaskSessionEvents { req_id: string; task: string; events: SessionEvent[]; sessions: SessionInfo[]; total?: number; next_cursor?: number | null }
 export interface Task {
   id: string; name: string; status: TaskStatus; raw_status?: string; assigned_agent: string; depends_on: string[]; last_updated: string
   deployed_version?: string; health_check_url?: string; error_log_url?: string; screenshot_url?: string; git_commit?: string; error_message?: string

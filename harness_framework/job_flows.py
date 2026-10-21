@@ -1006,6 +1006,30 @@ class JobFlowService:
         return {"instance": self.get_instance(instance_id), "attempt_id": attempt_id,
                 "resumed": resumed}
 
+    def approve_task(self, instance_id: str, task_id: str, actor: str) -> dict:
+        """批准一个等待人工审查的验证节点，放回队列等待调度。"""
+        self._instance(instance_id)
+        base = f"{INSTANCE_PREFIX}/{instance_id}/tasks/{task_id}"
+        status = self._read(f"{base}/status")
+        if not isinstance(status, dict):
+            raise APIError("TASK_NOT_FOUND", "实例任务不存在", 404)
+        if status.get("state") != "AWAITING_REVIEW":
+            raise APIError(
+                "TASK_NOT_AWAITING_REVIEW", "任务当前不在等待审查状态", 409,
+                {"state": status.get("state", "")},
+            )
+        self._write(f"{base}/approval", {
+            "approved_at": _now(), "approved_by": actor,
+        })
+        updated = dict(status)
+        updated["state"] = "PENDING"
+        updated["updated_at"] = _now()
+        self._write(f"{base}/status", updated)
+        return {
+            "instance": self.get_instance(instance_id), "task_id": task_id,
+            "approved": True,
+        }
+
     def resume_for_message(self, instance_id: str, actor: str) -> dict:
         """把已结束的实例拉回 RUNNING，让重新入队的任务能被调度器认领。
 

@@ -127,6 +127,18 @@ export async function createJobFlowTemplate(input: {
   return result.template
 }
 
+export async function importRalphFlowTemplate(input: {
+  yaml: string
+  name?: string
+  group_id?: string
+  agent?: string
+  check_agent?: string
+}): Promise<{ template: JobFlowTemplate; tasks: JobFlowTask[] }> {
+  return apiRequest<{ template: JobFlowTemplate; tasks: JobFlowTask[] }>(
+    '/api/templates/import-ralph-flow', jsonRequest('POST', input),
+  )
+}
+
 export async function getJobFlowTemplate(templateId: string): Promise<JobFlowTemplate> {
   const result = await apiRequest<{ template: JobFlowTemplate }>(
     '/api/templates/' + encodeURIComponent(templateId),
@@ -349,6 +361,59 @@ export async function getJobFlowInstance(instanceId: string): Promise<JobFlowIns
   return result.instance
 }
 
+export interface TaskSessionMapping {
+  instance_id: string
+  task: string
+  provider: string
+  session_id: string
+  cwd: string
+  attempt_id: string
+  run_id: string
+  state: string
+  loadable: boolean
+  missing: string[]
+}
+
+export async function getTaskSessionMapping(
+  instanceId: string,
+  taskId: string,
+): Promise<TaskSessionMapping> {
+  return apiRequest<TaskSessionMapping>(
+    '/api/instances/' + encodeURIComponent(instanceId)
+      + '/tasks/' + encodeURIComponent(taskId) + '/session',
+  )
+}
+
+export interface TaskLiveUpdate {
+  seq: number
+  ts: string
+  attempt_id: string
+  session_id: string
+  payload: { update?: Record<string, unknown> } & Record<string, unknown>
+}
+
+export interface TaskLiveUpdates {
+  instance_id: string
+  task: string
+  events: TaskLiveUpdate[]
+  cursor: number
+  active: boolean
+  attempt_id: string
+  session_id: string
+  truncated: boolean
+}
+
+export async function getTaskLiveUpdates(
+  instanceId: string,
+  taskId: string,
+  after = 0,
+): Promise<TaskLiveUpdates> {
+  return apiRequest<TaskLiveUpdates>(
+    '/api/instances/' + encodeURIComponent(instanceId)
+      + '/tasks/' + encodeURIComponent(taskId) + '/live?after=' + String(after),
+  )
+}
+
 export async function listJobFlowChangesets(instanceId: string): Promise<JobFlowChangeSet[]> {
   const result = await apiRequest<{ changesets: JobFlowChangeSet[] }>(
     '/api/instances/' + encodeURIComponent(instanceId) + '/changesets',
@@ -402,6 +467,13 @@ export async function startJobFlowInstance(instanceId: string) {
 export async function retryJobFlowTask(instanceId: string, taskId: string) {
   return apiRequest<{ task: Record<string, unknown> }>(
     `/api/instances/${encodeURIComponent(instanceId)}/tasks/${encodeURIComponent(taskId)}/retry`,
+    jsonRequest('POST', {}),
+  )
+}
+
+export async function approveJobFlowTask(instanceId: string, taskId: string) {
+  return apiRequest<{ instance: JobFlowInstance; approved: boolean }>(
+    `/api/instances/${encodeURIComponent(instanceId)}/tasks/${encodeURIComponent(taskId)}/approve`,
     jsonRequest('POST', {}),
   )
 }

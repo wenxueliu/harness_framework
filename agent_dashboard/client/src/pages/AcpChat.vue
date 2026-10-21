@@ -5,24 +5,14 @@
  * 数据链路：浏览器 WebSocket → server/acpBridge.ts → ACP Agent stdio。
  * 页面只消费 `useAcpChat` 暴露的 items 列表，不直接接触协议细节。
  */
-import type { ToolUIPart } from 'ai'
-import { MessageSquare, Plug, Send, ShieldAlert, Sparkles, Square, Unplug } from 'lucide-vue-next'
+import { Plug, Send, Square, Unplug } from 'lucide-vue-next'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import AppShell from '@/layouts/AppShell.vue'
+import AcpConversation from '@/components/AcpConversation.vue'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
-import {
-  Conversation,
-  ConversationContent,
-  ConversationEmptyState,
-  ConversationScrollButton,
-} from '@/components/ai-elements/conversation'
-import { Message, MessageAvatar, MessageContent, MessageResponse } from '@/components/ai-elements/message'
-import { Reasoning, ReasoningContent, ReasoningTrigger } from '@/components/ai-elements/reasoning'
-import { Tool, ToolContent, ToolHeader, ToolOutput } from '@/components/ai-elements/tool'
-import type { ChatItem, ToolStatus } from '@/lib/acp/chatModel'
 import { useAcpChat } from '@/lib/acp/useAcpChat'
 
 const DEFAULT_BRIDGE = 'ws://127.0.0.1:8787/acp'
@@ -194,20 +184,6 @@ const statusTone = computed(() => {
 })
 
 /** ACP 工具状态 → ai-elements 期望的 AI SDK 状态。 */
-function toolState(toolStatus: ToolStatus): ToolUIPart['state'] {
-  if (toolStatus === 'in_progress') return 'input-available'
-  if (toolStatus === 'completed') return 'output-available'
-  if (toolStatus === 'failed') return 'output-error'
-  return 'input-streaming'
-}
-
-function toolType(item: Extract<ChatItem, { kind: 'tool' }>): ToolUIPart['type'] {
-  return `tool-${item.name || item.toolKind || 'tool'}` as ToolUIPart['type']
-}
-
-function permissionVariant(kind: string): 'default' | 'outline' {
-  return kind.startsWith('allow') ? 'default' : 'outline'
-}
 </script>
 
 <template>
@@ -362,96 +338,13 @@ function permissionVariant(kind: string): 'default' | 'outline' {
         </div>
       </div>
 
-      <Conversation v-if="connected" class="min-h-0 flex-1">
-        <ConversationContent>
-          <ConversationEmptyState
-            v-if="items.length === 0"
-            title="还没有消息"
-            description="在左侧填写工作目录并连接，然后开始对话。"
-          >
-            <template #icon>
-              <MessageSquare :size="32" />
-            </template>
-          </ConversationEmptyState>
-
-          <template v-for="item in items" :key="item.id">
-            <Message v-if="item.role === 'user'" from="user">
-              <MessageContent>
-                <MessageResponse :content="item.text" />
-              </MessageContent>
-            </Message>
-
-            <Message v-else-if="item.kind === 'text'" from="assistant">
-              <MessageAvatar src="" name="AI" />
-              <MessageContent>
-                <MessageResponse :content="item.text" />
-              </MessageContent>
-            </Message>
-
-            <Message v-else-if="item.kind === 'thought'" from="assistant">
-              <MessageAvatar src="" name="AI" />
-              <MessageContent>
-                <Reasoning :is-streaming="item.streaming">
-                  <ReasoningTrigger />
-                  <ReasoningContent :content="item.text" />
-                </Reasoning>
-              </MessageContent>
-            </Message>
-
-            <Message v-else-if="item.kind === 'tool'" from="assistant">
-              <MessageAvatar src="" name="AI" />
-              <MessageContent>
-                <Tool>
-                  <ToolHeader :title="item.title" :type="toolType(item)" :state="toolState(item.status)" />
-                  <ToolContent>
-                    <ToolOutput
-                      :output="item.output || null"
-                      :error-text="item.status === 'failed' ? item.output : undefined"
-                    />
-                  </ToolContent>
-                </Tool>
-              </MessageContent>
-            </Message>
-
-            <Message v-else from="assistant">
-              <MessageAvatar src="" name="AI" />
-              <MessageContent>
-                <div class="flex items-start gap-2 rounded-md border border-border bg-muted/40 px-3 py-2">
-                  <Sparkles :size="14" class="mt-0.5 shrink-0 text-muted-foreground" />
-                  <pre class="whitespace-pre-wrap font-mono text-[11px]">{{ item.text }}</pre>
-                </div>
-              </MessageContent>
-            </Message>
-          </template>
-        </ConversationContent>
-        <ConversationScrollButton />
-      </Conversation>
-
-      <!-- 权限审批：ACP 的 session/request_permission 必须由客户端回应 -->
-      <div v-if="permission" class="shrink-0 border-t border-amber-500/30 bg-amber-500/5 px-3 py-3">
-        <div class="flex items-start gap-2">
-          <ShieldAlert :size="16" class="mt-0.5 shrink-0 text-amber-400" />
-          <div class="min-w-0 flex-1 space-y-2">
-            <p class="text-sm font-medium">{{ permission.title }}</p>
-            <pre
-              v-if="permission.detail"
-              class="max-h-40 overflow-auto whitespace-pre-wrap rounded border border-border bg-background/60 p-2 font-mono text-[11px]"
-            >{{ permission.detail }}</pre>
-            <div class="flex flex-wrap gap-2">
-              <Button
-                v-for="option in permission.options"
-                :key="option.optionId"
-                size="sm"
-                :variant="permissionVariant(option.kind)"
-                @click="answerPermission(option.optionId)"
-              >
-                {{ option.name }}
-              </Button>
-              <Button size="sm" variant="ghost" @click="answerPermission(null)">拒绝</Button>
-            </div>
-          </div>
-        </div>
-      </div>
+      <AcpConversation
+        v-if="connected"
+        :items="items"
+        :permission="permission"
+        empty-description="在左侧填写工作目录并连接，然后开始对话。"
+        @answer-permission="answerPermission"
+      />
 
       <!-- 输入区 -->
       <form class="shrink-0 border-t border-border p-3" @submit.prevent="submit">

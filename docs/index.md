@@ -55,6 +55,7 @@
 - [ACP Execution](acp-execution.md)：ACP 执行链路
 - [User Journey Map](user-journey-map.md)：用户旅程、页面导航和体验优化
 - [Task Model Execution](task-model-execution.md)：任务模型执行语义
+- [Ralph-Flow Import](ralph-flow-import.md)：把 ralph-flow YAML 编译成作业流模板
 - [Task Model Execution TODO](task-model-execution-todo.md)：执行能力待办
 - [Status State Machine](status-state-machine.md)：状态机和转换
 - [Adaptive Control](adaptive-control.md)：自适应控制

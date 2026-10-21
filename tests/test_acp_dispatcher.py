@@ -99,6 +99,83 @@ def test_task_type_selects_agent_and_dispatch_completes():
     assert not any(key.startswith("agents/") for key in store._store)
 
 
+def test_task_level_agent_overrides_type_routing():
+    store = _store("backend")
+    store.kv_put("workflows/req-1/tasks/build/agent", "opencode")
+    dispatcher = ACPDispatcher(
+        store, RunManager(store),
+        commands={"claude": ["claude-acp"], "codex": ["codex-acp"],
+                  "opencode": ["opencode", "acp"]},
+        client_factory=FakeACPClient,
+    )
+    req_id, task_name, meta = dispatcher._pending_tasks()[0]
+    claim = dispatcher._claim(req_id, task_name, meta)
+
+    assert claim is not None
+    assert claim["provider"] == "opencode"
+
+
+def test_acp_agent_still_wins_over_task_level_agent():
+    store = _store("backend", acp={"agent": "claude"})
+    store.kv_put("workflows/req-1/tasks/build/agent", "opencode")
+    dispatcher = ACPDispatcher(
+        store, RunManager(store),
+        commands={"claude": ["claude-acp"], "codex": ["codex-acp"],
+                  "opencode": ["opencode", "acp"]},
+        client_factory=FakeACPClient,
+    )
+    req_id, task_name, meta = dispatcher._pending_tasks()[0]
+    claim = dispatcher._claim(req_id, task_name, meta)
+
+    assert claim is not None
+    assert claim["provider"] == "claude"
+
+
+def test_task_package_carries_instance_parameters():
+    import json
+
+    store = _store("backend")
+    store.kv_put("jobflows/instances/inst-1/context", json.dumps({
+        "directory": "/tmp", "parameters": {"env": "dev", "token": "$ref:secret:token"},
+    }))
+    dispatcher = JobFlowACPDispatcher(
+        store, commands={"codex": ["codex-acp"]},
+        client_factory=FakeACPClient,
+    )
+    prompt = dispatcher._build_prompt("inst-1", "build", {
+        "type": "backend", "description": "do it",
+        "ralph_flow": {"step": "build", "on_fail": "build"},
+    })
+
+    package = json.loads(prompt.split("TASK PACKAGE:\n", 1)[1])
+    assert package["parameters"] == {"env": "dev", "token": "$ref:secret:token"}
+    assert package["description"] == "do it"
+    assert package["ralph_flow"] == {"step": "build", "on_fail": "build"}
+
+
+def test_dispatcher_publishes_updates_to_live_hub():
+    from harness_framework.live_sessions import LiveSessionHub
+
+    FakeACPClient.instances.clear()
+    store = _store("backend")
+    hub = LiveSessionHub()
+    dispatcher = ACPDispatcher(
+        store, RunManager(store),
+        commands={"claude": ["claude-acp"], "codex": ["codex-acp"]},
+        client_factory=FakeACPClient, live_hub=hub,
+    )
+    req_id, task_name, meta = dispatcher._pending_tasks()[0]
+    claim = dispatcher._claim(req_id, task_name, meta)
+    dispatcher._active[(req_id, task_name)] = {**claim, "client": None}
+    dispatcher._execute(req_id, task_name, meta, claim)
+
+    payload = hub.snapshot(req_id, task_name)
+    assert payload["events"]
+    assert payload["events"][0]["session_id"] == "acp-session-new"
+    assert payload["events"][0]["payload"]["update"]["sessionUpdate"] == \
+        "agent_message_chunk"
+
+
 def test_managed_workspace_task_is_not_claimed_before_run_is_active():
     store = _store("backend")
     store._store["workflows/req-1/execution_mode"] = "managed-workspace"

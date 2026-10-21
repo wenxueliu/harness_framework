@@ -12,6 +12,7 @@ import {
   createJobFlowInstance,
   createJobFlowTemplate,
   getJobFlowTemplate,
+  importRalphFlowTemplate,
   getJobFlowTemplateVersion,
   publishJobFlowTemplate,
   updateJobFlowDraft,
@@ -63,6 +64,7 @@ const validationErrors = ref<JobFlowValidation['errors']>([])
 const conflictVisible = ref(false)
 const serverRevision = ref(0)
 const publishing = ref(false)
+const importing = ref(false)
 const publishDialogVisible = ref(false)
 const publishChangeSummary = ref('')
 const parameterValues = ref<Record<string, unknown>>({})
@@ -143,6 +145,28 @@ const groupId = computed(() => {
   const value = route.query.groupId || route.query.group_id
   return typeof value === 'string' && value ? value : undefined
 })
+
+async function importRalphFlow(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file) return
+  importing.value = true
+  error.value = ''
+  message.value = ''
+  try {
+    const result = await importRalphFlowTemplate({
+      yaml: await file.text(),
+      name: file.name.replace(/\.(ya?ml|json)$/i, ''),
+      group_id: groupId.value,
+    })
+    window.location.assign('/templates/' + encodeURIComponent(result.template.template_id) + '/edit')
+  } catch (cause) {
+    error.value = cause instanceof Error ? cause.message : '导入失败'
+  } finally {
+    importing.value = false
+  }
+}
 
 function parseTasks(): JobFlowTask[] {
   const value = JSON.parse(tasksText.value) as unknown
@@ -458,6 +482,10 @@ function scrollToTaskLine(task: Task) {
       <ArrowLeft :size="13" />返回
     </button>
     <template #actions>
+      <label v-if="canEdit" class="cursor-pointer rounded border border-border px-3 py-2 text-xs" :class="importing ? 'opacity-50' : ''">
+        {{ importing ? '导入中…' : '导入 ralph-flow' }}
+        <input type="file" accept=".yaml,.yml,.json" class="hidden" :disabled="importing" @change="importRalphFlow" />
+      </label>
       <button data-testid="undo-editor" class="rounded border border-border px-3 py-2 text-xs" :disabled="historyIndex <= 0" @click="undo">撤销</button>
       <button data-testid="redo-editor" class="rounded border border-border px-3 py-2 text-xs" :disabled="historyIndex >= history.length - 1" @click="redo">重做</button>
       <button v-if="template" data-testid="restore-draft" class="rounded border border-border px-3 py-2 text-xs" @click="refreshDraft">恢复草稿</button>

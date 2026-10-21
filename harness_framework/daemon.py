@@ -45,6 +45,7 @@ from .workspace_cleanup import WorkspaceCleanupWorker
 from .artifacts import ArtifactCleanupWorker
 from .artifacts import ArtifactService
 from .event_journal import EventJournal
+from .live_sessions import LiveSessionHub
 
 
 def setup_logging(level: str, log_dir: str = "",
@@ -275,6 +276,8 @@ def main() -> None:
 
     # ACP task dispatcher.  This is the primary execution path: PENDING tasks
     # are claimed centrally and an ACP adapter is created for that step.
+    # 实时更新只驻留内存，供看板观看运行中的任务；正文仍只存在 Agent 会话里。
+    live_hub = LiveSessionHub()
     if not args.no_acp_dispatcher:
         try:
             commands = {
@@ -311,6 +314,7 @@ def main() -> None:
             permission_policy=args.acp_permission_policy,
             workspace_manager=workspace_manager,
             event_journal=EventJournal(consul),
+            live_hub=live_hub,
         )
         components.append(acp_dispatcher)
         t = threading.Thread(
@@ -330,6 +334,7 @@ def main() -> None:
             permission_policy=args.acp_permission_policy,
             event_journal=EventJournal(consul),
             workspace_manager=workspace_manager,
+            live_hub=live_hub,
         )
         components.append(jobflow_acp_dispatcher)
         jobflow_thread = threading.Thread(
@@ -391,7 +396,7 @@ def main() -> None:
                 consul, host=args.host, port=args.port,
                 run_manager=run_manager, auth_config=auth_config,
                 features=web_features, workspace_security=workspace_security,
-                workspace_manager=workspace_manager,
+                workspace_manager=workspace_manager, live_hub=live_hub,
             )
             t = threading.Thread(target=server.serve_forever, name="webapi", daemon=True)
         t.start()

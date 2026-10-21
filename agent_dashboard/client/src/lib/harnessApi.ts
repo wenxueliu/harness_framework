@@ -230,11 +230,12 @@ export async function fetchCapabilities(): Promise<CapabilitiesSnapshot> {
 export async function fetchTaskSessionEvents(
   reqId: string,
   taskName: string,
-  scope: { runId?: string; attemptId?: string } = {},
+  scope: { runId?: string; attemptId?: string; limit?: number; cursor?: number } = {},
 ): Promise<TaskSessionEvents> {
-  const params = new URLSearchParams({ limit: '200' })
+  const params = new URLSearchParams({ limit: String(scope.limit ?? 500) })
   if (scope.runId) params.set('run_id', scope.runId)
   if (scope.attemptId) params.set('attempt_id', scope.attemptId)
+  if (scope.cursor !== undefined) params.set('cursor', String(scope.cursor))
   const response = await fetch(
     `${HARNESS_API}/api/sessions/${encodeURIComponent(reqId)}/${encodeURIComponent(taskName)}?${params.toString()}`,
   );

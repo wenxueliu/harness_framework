@@ -116,6 +116,8 @@ class Aggregator:
         if not isinstance(tasks, dict):
             return
 
+        self._recover_failed_checks(instance_id, tasks)
+
         for task_id, task_info in tasks.items():
             if not isinstance(task_info, dict):
                 continue
@@ -179,6 +181,50 @@ class Aggregator:
                 except (_json.JSONDecodeError, TypeError):
                     pass
             log.info("instance %s reached terminal state: %s", instance_id, final_state)
+
+    def _recover_failed_checks(self, instance_id: str, tasks: dict) -> None:
+        """验证节点失败且声明了 on_fail 时，回退上游任务重跑。
+
+        DAG 本身不表达回退边，所以用「把上游任务重置为 PENDING」实现：
+        上游重跑完成后，验证节点（BLOCKED）会因依赖满足被重新激活。
+        失败次数超过 max_fail_count 时不再回退，任务保持 FAILED。
+        """
+        for task_id, info in list(tasks.items()):
+            if not isinstance(info, dict) or info.get("state") != "FAILED":
+                continue
+            on_fail = info.get("on_fail")
+            if not isinstance(on_fail, dict):
+                continue
+            target = str(on_fail.get("task") or "")
+            try:
+                max_count = int(on_fail.get("max_fail_count") or 1)
+            except (TypeError, ValueError):
+                max_count = 1
+            if not target or target not in tasks:
+                continue
+            count = int(info.get("fail_count") or 0) + 1
+            if count > max_count:
+                continue
+            info["fail_count"] = count
+            info["state"] = "BLOCKED"
+            info["error_message"] = (
+                f"验证未通过，回退到 {target} 重做（第 {count}/{max_count} 次）"
+            )
+            self._write_instance_task(instance_id, task_id, info)
+            target_info = tasks.get(target)
+            if isinstance(target_info, dict):
+                target_info["state"] = "PENDING"
+                target_info["current_attempt"] = ""
+                self._write_instance_task(instance_id, target, target_info)
+                base = f"{INSTANCE_PREFIX}/{instance_id}/tasks/{target}"
+                epoch, _ = self.consul.kv_get(f"{base}/lease_epoch")
+                self.consul.kv_put(
+                    f"{base}/lease_epoch", str(int(epoch or "0") + 1))
+                self.consul.kv_put(f"{base}/attempt_id", "")
+            log.info(
+                "instance %s: check %s failed, fallback to %s (%s/%s)",
+                instance_id, task_id, target, count, max_count,
+            )
 
     def _write_instance_task(self, instance_id: str, task_id: str, task_info: dict) -> None:
         import json as _json

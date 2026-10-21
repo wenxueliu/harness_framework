@@ -21,9 +21,11 @@ import datetime
 import uuid
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import Any
 from urllib.parse import unquote, urlparse, parse_qs
 
 from .kv_store_protocol import KVStore
+from .agent_providers import SUPPORTED_AGENT_PROVIDERS, normalize_agent
 from .message_bus import MessageBus, MessageStatus
 from .human_interaction import (
     create_human_message,
@@ -123,6 +125,7 @@ class APIHandler(BaseHTTPRequestHandler):
     mcp_service: MCPService = None
     artifacts: ArtifactService = None
     secrets: SecretStore = None
+    live_hub: Any = None
     sse_connection_seconds: float = 300.0
 
     def log_message(self, format, *args):
@@ -1194,6 +1197,14 @@ class APIHandler(BaseHTTPRequestHandler):
                 return {"attempts": service.list_task_attempts(
                     instance_id, unquote(parts[5])
                 )}
+            if len(parts) == 7 and parts[4] == "tasks" and parts[6] == "session":
+                return self._task_session_mapping(
+                    instance_id, unquote(parts[5]), instance
+                )
+            if len(parts) == 7 and parts[4] == "tasks" and parts[6] == "live":
+                return self._task_live_updates(
+                    instance_id, unquote(parts[5]), parse_qs(parsed_url.query)
+                )
             if (len(parts) == 9 and parts[4] == "tasks" and parts[6] == "attempts"
                     and parts[8] == "logs"):
                 task_id = unquote(parts[5])
@@ -1223,6 +1234,36 @@ class APIHandler(BaseHTTPRequestHandler):
         parts = path.split("/")
         actor = context.subject
         key = self.headers.get("Idempotency-Key")
+        if path == "/api/templates/import-ralph-flow":
+            from .ralph_flow_import import (
+                RalphFlowImportError, compile_workflow, parse_workflow,
+            )
+            group_id = str(body.get("group_id") or UNASSIGNED_GROUP_ID).strip()
+            if group_id != UNASSIGNED_GROUP_ID:
+                self.project_groups._require_active(group_id)
+            self._require(
+                context, "workflow:draft",
+                None if group_id == UNASSIGNED_GROUP_ID else group_id,
+            )
+            source = body.get("yaml") or body.get("source") or body.get("workflow")
+            try:
+                workflow = (
+                    source if isinstance(source, dict)
+                    else parse_workflow(source if isinstance(source, str) else "")
+                )
+                compiled = compile_workflow(
+                    workflow,
+                    name=str(body.get("name") or ""),
+                    agent=str(body.get("agent") or "opencode"),
+                    task_type=str(body.get("type") or "backend"),
+                    check_agent=str(body.get("check_agent") or ""),
+                )
+            except RalphFlowImportError as exc:
+                raise APIError("RALPH_FLOW_IMPORT_INVALID", str(exc), 422) from exc
+            compiled["group_id"] = group_id
+            template = service.create_template(compiled, actor)
+            self._jobflow_require(context, "group:read", template)
+            return {"template": template, "tasks": compiled["tasks"]}
         if path == "/api/templates" or (
             path.startswith("/api/templates/") and not path.endswith("/validate")
         ):
@@ -1330,6 +1371,9 @@ class APIHandler(BaseHTTPRequestHandler):
             if len(parts) == 7 and parts[4] == "tasks" and parts[6] == "retry":
                 self._require(context, "task:retry", template["group_id"])
                 return service.retry_task(instance_id, unquote(parts[5]), actor)
+            if len(parts) == 7 and parts[4] == "tasks" and parts[6] == "approve":
+                self._require(context, "task:retry", template["group_id"])
+                return service.approve_task(instance_id, unquote(parts[5]), actor)
             if len(parts) == 5 and parts[4] == "changesets":
                 self._require(context, "workflow:draft", template["group_id"])
                 return service.create_changeset(instance_id, body, actor)
@@ -1528,6 +1572,98 @@ class APIHandler(BaseHTTPRequestHandler):
             matched.append(event.to_dict())
         total = len(matched)
         return {"events": matched[-limit:], "total": total, "limit": limit}
+
+    def _task_live_updates(
+        self, instance_id: str, task_id: str, query: dict,
+    ) -> dict:
+        """In-memory tail of a running task's ACP updates (never persisted)."""
+        try:
+            after = int(query.get("after", ["0"])[0] or 0)
+        except (TypeError, ValueError):
+            raise APIError("INVALID_CURSOR", "after 必须是整数", 400)
+        payload = {
+            "instance_id": instance_id,
+            "task": task_id,
+            "events": [],
+            "cursor": max(0, after),
+            "active": False,
+            "attempt_id": "",
+            "session_id": "",
+            "truncated": False,
+        }
+        if self.live_hub is None:
+            return payload
+        payload.update(self.live_hub.snapshot(instance_id, task_id, after=max(0, after)))
+        return payload
+
+    def _task_session_mapping(
+        self, instance_id: str, task_id: str, instance: dict,
+    ) -> dict:
+        """Return the Agent-side session mapping for one task.
+
+        Conversation content deliberately stays in the Agent's own session
+        store.  The framework records only the mapping the browser needs to
+        attach with ACP ``session/load``.
+        """
+        base = f"jobflows/instances/{instance_id}/tasks/{task_id}"
+        session_id = ""
+        for key in ("acp/session_id", "harness_session_id", "native_session_id"):
+            value, _ = self.consul.kv_get(f"{base}/{key}")
+            if isinstance(value, str) and value.strip():
+                session_id = value.strip()
+                break
+
+        provider = ""
+        raw_provider, _ = self.consul.kv_get(f"{base}/acp/provider")
+        if isinstance(raw_provider, str):
+            provider = normalize_agent(raw_provider)
+        if not provider:
+            # 旧实例没有显式 provider，用 initialize 握手返回的 agentInfo.name 推断。
+            raw_init, _ = self.consul.kv_get(f"{base}/acp/initialize")
+            try:
+                info = json.loads(raw_init or "{}").get("agentInfo") or {}
+                agent_name = str(info.get("name", "")).lower()
+            except (TypeError, json.JSONDecodeError, AttributeError):
+                agent_name = ""
+            provider = next(
+                (name for name in SUPPORTED_AGENT_PROVIDERS if name in agent_name),
+                "",
+            )
+
+        cwd = ""
+        raw_cwd, _ = self.consul.kv_get(f"{base}/acp/cwd")
+        if isinstance(raw_cwd, str):
+            cwd = raw_cwd.strip()
+        if not cwd:
+            context = instance.get("context") if isinstance(instance, dict) else {}
+            if isinstance(context, dict):
+                directory = context.get("directory")
+                cwd = directory.strip() if isinstance(directory, str) else ""
+
+        missing = []
+        if not session_id:
+            missing.append("session_id")
+        if not provider:
+            missing.append("provider")
+        if not cwd:
+            missing.append("cwd")
+
+        attempt_id, _ = self.consul.kv_get(f"{base}/acp/attempt_id")
+        run_id, _ = self.consul.kv_get(f"{base}/acp/run_id")
+        task_status = (instance.get("tasks") or {}).get(task_id) or {}
+        state = str(task_status.get("state") or task_status.get("status") or "")
+        return {
+            "instance_id": instance_id,
+            "task": task_id,
+            "provider": provider,
+            "session_id": session_id,
+            "cwd": cwd,
+            "attempt_id": attempt_id or "",
+            "run_id": run_id or "",
+            "state": state,
+            "loadable": not missing,
+            "missing": missing,
+        }
 
     def _session_timeline_payload(
         self, req_id: str, task_name: str, query: dict | None = None,
@@ -2218,6 +2354,7 @@ def _normalize_session_event(event: dict, session_id: str) -> dict | None:
 
     step_type = {
         "agent_message_chunk": "ASSISTANT_MSG",
+        "agent_thought_chunk": "THOUGHT",
         "tool_call": "TOOL_CALL",
         "tool_call_update": "TOOL_RESULT",
         "plan": "PLAN",
@@ -2261,11 +2398,12 @@ def _event_message(update_type: str, update: dict) -> str:
 
 
 def _coalesce_timeline_events(events: list[dict]) -> list[dict]:
-    """Join adjacent assistant chunks so one response is readable as one event."""
+    """Join adjacent assistant/thought chunks so one response is readable as one event."""
+    mergeable = {"ASSISTANT_MSG", "THOUGHT"}
     result: list[dict] = []
     for event in events:
-        if (result and event.get("step_type") == "ASSISTANT_MSG"
-                and result[-1].get("step_type") == "ASSISTANT_MSG"
+        if (result and event.get("step_type") in mergeable
+                and result[-1].get("step_type") == event.get("step_type")
                 and result[-1].get("session_id") == event.get("session_id")):
             result[-1]["message"] += event.get("message", "")
             result[-1]["seq"] = event.get("seq", result[-1].get("seq", ""))
@@ -2279,6 +2417,7 @@ def serve(consul: KVStore, host: str = "0.0.0.0", port: int = 8080,
           features: FeatureConfig | None = None,
           workspace_security: WorkspaceSecurity | None = None,
           workspace_manager: WorkspaceManager | None = None,
+          live_hub: Any = None,
           sse_connection_seconds: float = 300.0) -> ThreadingHTTPServer:
     APIHandler.consul = consul
     APIHandler.message_bus = MessageBus(consul)
@@ -2294,6 +2433,7 @@ def serve(consul: KVStore, host: str = "0.0.0.0", port: int = 8080,
         APIHandler.project_groups,
     )
     APIHandler.event_journal = EventJournal(consul)
+    APIHandler.live_hub = live_hub
     APIHandler.sse_connection_seconds = sse_connection_seconds
     APIHandler.workspace_files = WorkspaceFileService(
         consul, APIHandler.workspace_manager, APIHandler.event_journal

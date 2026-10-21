@@ -45,6 +45,8 @@ export type ConnectOptions = {
   cwd: string
   /** Stable key so a reload can reattach to the same agent process. */
   sessionKey?: string
+  /** Existing ACP session to load (history is replayed by the agent). */
+  loadSessionId?: string
 }
 
 /** Client capabilities we advertise: no filesystem, no terminal — we are a browser. */
@@ -75,6 +77,9 @@ export function useAcpChat() {
   let pendingPermissionResolve: ((response: RequestPermissionResponse) => void) | null = null
   let openText: { id: string; messageId: string | null } | null = null
   let openThought: { id: string; messageId: string | null } | null = null
+  let openUser: { id: string; messageId: string | null } | null = null
+  /** True while `session/load` is replaying history: user chunks are real messages. */
+  let historyLoading = false
   const toolItems = new Map<string, string>()
 
   const isBusy = computed(() => status.value === 'busy')
@@ -97,10 +102,34 @@ export function useAcpChat() {
     }
     openText = null
     openThought = null
+    openUser = null
+  }
+
+  /** 历史回放里的用户消息（`user_message_chunk`），按 messageId 合并。 */
+  function appendUserChunk(text: string, messageId: string | null): void {
+    if (!text) return
+    const current = openUser
+    const sameMessage = current && (!messageId || !current.messageId || current.messageId === messageId)
+    if (sameMessage && current) {
+      const existing = items.value.find((item) => item.id === current.id)
+      if (existing && existing.role === 'user') {
+        patchItem(current.id, { text: existing.text + text } as Partial<ChatItem>)
+        return
+      }
+    }
+    const item: ChatItem = {
+      id: nextItemId('user'),
+      role: 'user',
+      kind: 'text',
+      text,
+    }
+    pushItem(item)
+    openUser = { id: item.id, messageId: messageId ?? null }
   }
 
   function appendChunk(kind: 'text' | 'thought', text: string, messageId: string | null): void {
     if (!text) return
+    openUser = null
     const current = kind === 'text' ? openText : openThought
     const sameMessage = current && (!messageId || !current.messageId || current.messageId === messageId)
     if (sameMessage && current) {
@@ -156,11 +185,14 @@ export function useAcpChat() {
     })
   }
 
-  function applyUpdate(update: SessionUpdate): void {
+  function applyUpdate(update: SessionUpdate, options: { userMessages?: boolean } = {}): void {
     const value = update as unknown as Record<string, unknown>
     switch (value.sessionUpdate) {
       case 'user_message_chunk':
-        // The agent echoes our own prompt; the UI already shows it locally.
+        // 自己刚发出的 prompt 会被 Agent 回显；只有历史回放时才是真实消息。
+        if (historyLoading || options.userMessages) {
+          appendUserChunk(contentText(value.content), (value.messageId as string | undefined) ?? null)
+        }
         return
       case 'agent_message_chunk':
         appendChunk('text', contentText(value.content), (value.messageId as string | undefined) ?? null)
@@ -269,17 +301,24 @@ export function useAcpChat() {
     )
   }
 
-  async function connect(options: ConnectOptions): Promise<void> {
-    await disconnect()
-    const token = ++runToken
-    status.value = 'connecting'
-    errorMessage.value = ''
+  /** 清空当前渲染的对话（连接新会话或任务重试时使用）。 */
+  function resetStream(): void {
     items.value = []
     usage.value = null
     permission.value = null
     toolItems.clear()
     openText = null
     openThought = null
+    openUser = null
+    historyLoading = false
+  }
+
+  async function connect(options: ConnectOptions): Promise<void> {
+    await disconnect()
+    const token = ++runToken
+    status.value = 'connecting'
+    errorMessage.value = ''
+    resetStream()
 
     const query = new URLSearchParams({ agent: options.agent, cwd: options.cwd })
     if (options.sessionKey) query.set('session', options.sessionKey)
@@ -323,6 +362,46 @@ export function useAcpChat() {
       )
 
       context.value = conn.agent
+      const loadSessionId = options.loadSessionId?.trim()
+      if (loadSessionId) {
+        if (!canLoadSession.value) {
+          throw new Error(`Agent ${options.agent} 不支持加载已有会话（loadSession）`)
+        }
+        // initialize 已成功，后续只是回放历史，不再受连接超时限制。
+        clearTimeout(guard)
+        historyLoading = true
+        // 先挂接会话再 load：history 的 session/update 才会进入 nextUpdate() 队列。
+        const attach = (conn.agent as unknown as {
+          attachSession: (response: { sessionId: string }) => ActiveSession
+        }).attachSession
+        const session = attach.call(conn.agent, { sessionId: loadSessionId })
+        activeSession.value = session
+        sessionId.value = session.sessionId
+        void readLoop(session, token)
+        const loadGuard = setTimeout(() => {
+          if (token !== runToken) return
+          errorMessage.value = '加载会话历史超时：Agent 在 60s 内没有完成 session/load。'
+          status.value = 'error'
+          void disconnect()
+        }, 60_000)
+        try {
+          await conn.agent.request(AGENT_METHODS.session_load, {
+            sessionId: loadSessionId,
+            cwd: options.cwd,
+            mcpServers: [],
+          })
+        } finally {
+          clearTimeout(loadGuard)
+        }
+        if (token !== runToken) return
+        // 回放结束时收尾流式状态；留一点时间给最后几个 chunk。
+        await new Promise((resolve) => setTimeout(resolve, 200))
+        if (token !== runToken) return
+        finishStreaming()
+        historyLoading = false
+        status.value = 'ready'
+        return
+      }
       const session = await conn.agent.buildSession(options.cwd).start()
       if (token !== runToken) return
       activeSession.value = session
@@ -378,6 +457,8 @@ export function useAcpChat() {
     }
     stream.value = null
     sessionId.value = ''
+    historyLoading = false
+    openUser = null
     pendingPermissionResolve?.({ outcome: { outcome: 'cancelled' } })
     permission.value = null
     if (status.value !== 'error') status.value = 'idle'
@@ -396,6 +477,9 @@ export function useAcpChat() {
     connect,
     send,
     cancel,
+    applyUpdate,
+    finishStreaming,
+    resetStream,
     disconnect,
     answerPermission,
   }
