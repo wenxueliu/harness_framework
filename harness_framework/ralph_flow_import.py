@@ -153,6 +153,33 @@ def _check_instruction(criteria: str, system_prompt: str = "") -> str:
 
 
 
+def _provenance(
+    workflow: dict[str, Any], steps: list[dict[str, Any]], manual: set[str],
+) -> dict[str, Any]:
+    """模板级溯源：足够把编译结果还原成 ralph-flow YAML。"""
+    return {
+        "source": "ralph-flow",
+        "workflow": str(workflow.get("name") or ""),
+        "description": str(workflow.get("description") or ""),
+        "manual_step": sorted(manual),
+        "auto_reset": bool(workflow.get("auto_reset")),
+        "adversarial_check": workflow.get("adversarial_check"),
+        "steps": [{
+            "id": step["id"],
+            "desc": str(step.get("desc") or ""),
+            "do": str(step.get("do") or ""),
+            "input": str(step.get("input") or ""),
+            "output": str(step.get("output") or ""),
+            "check": step.get("check"),
+            "check_voting": step.get("check_voting"),
+            "on_pass": str(step["on_pass"]),
+            "on_fail": str(step["on_fail"]),
+            "max_fail_count": int(step["max_fail_count"]),
+            "reset": bool(step.get("reset") or workflow.get("auto_reset")),
+        } for step in steps],
+    }
+
+
 def compile_workflow(
     workflow: dict[str, Any],
     *,
@@ -237,16 +264,8 @@ def compile_workflow(
     tasks: list[dict[str, Any]] = []
     for step in steps:
         step_id = step["id"]
-        # 只保留溯源信息：语义已经落在节点的 do/input/output/on_fail 等契约字段上。
-        ralph: dict[str, Any] = {
-            "source": "ralph-flow",
-            "workflow": str(workflow.get("name") or name or ""),
-            "step": step_id,
-        }
-        if step.get("reset") or workflow.get("auto_reset"):
-            ralph["reset"] = True
-        if workflow.get("adversarial_check"):
-            ralph["adversarial_check"] = workflow["adversarial_check"]
+        # 语义全部落在节点的 do/input/output/on_fail 等契约字段上，
+        # 节点里不再保留 ralph 专用字段；溯源信息放在模板级 provenance。
         task: dict[str, Any] = {
             "id": step_id,
             "name": f"{step.get('desc') or step_id}（执行）",
@@ -257,7 +276,6 @@ def compile_workflow(
             "do": str(step.get("do") or "").strip(),
             "input": str(step.get("input") or "").strip(),
             "output": str(step.get("output") or "").strip(),
-            "ralph_flow": ralph,
         }
         output_format = _derive_output_format(task["output"])
         if output_format:
@@ -300,7 +318,6 @@ def compile_workflow(
                 },
                 # 同一��骤的多个验证者共享失败预算（对应 ralph 的步骤级 fail_count）
                 "fail_group": step_id,
-                "ralph_flow": {**ralph, "role": "check"},
             }
             if adversarial:
                 # 独立验证者：可以读文件、跑命令，但不能改工作区。
@@ -310,6 +327,7 @@ def compile_workflow(
         "name": name or str(workflow.get("name") or "ralph-flow"),
         "description": str(workflow.get("description") or ""),
         "tasks": tasks,
+        "provenance": _provenance(workflow, steps, manual),
         # 实例创建表单里的用户任务输入；步骤通过 TASK PACKAGE.parameters 读取。
         "parameter_schema": {
             "type": "object",

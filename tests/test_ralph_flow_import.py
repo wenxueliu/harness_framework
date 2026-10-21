@@ -85,11 +85,9 @@ def test_each_step_lowers_to_do_and_check_nodes():
     # 同一��骤的多个验证者共享失败预算
     assert tasks["implement__check1"]["fail_group"] == "implement"
     assert tasks["implement__check2"]["fail_group"] == "implement"
-    # ralph_flow 只剩溯源信息，语义都在契约字段里
-    assert tasks["design"]["ralph_flow"] == {
-        "source": "ralph-flow", "workflow": "demo", "step": "design",
-    }
-    assert tasks["design__check"]["ralph_flow"]["role"] == "check"
+    # 节点里不再保留 ralph 专用字段
+    assert "ralph_flow" not in tasks["design"]
+    assert "ralph_flow" not in tasks["design__check"]
 
 
 def test_adversarial_check_maps_to_independent_verifier_with_deny_edit():
@@ -173,6 +171,9 @@ def test_compiled_template_is_accepted_by_job_flow_service():
     tasks = {task["id"]: task for task in draft["draft"]["tasks"]}
     assert tasks["design__check"]["require_verdict"] is True
     assert tasks["design__check"]["on_fail"]["task"] == "design"
+    # 溯源放在模板级，不进节点
+    assert draft["draft"]["provenance"]["source"] == "ralph-flow"
+    assert draft["draft"]["provenance"]["steps"][0]["id"] == "design"
 
 
 def test_unknown_references_are_rejected():

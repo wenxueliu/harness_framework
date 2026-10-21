@@ -51,10 +51,10 @@ explore ──▶ explore__check ──▶ propose ──▶ propose__check ─�
 | `adversarial_check.system_prompt` | 并入验证节点的 `do` |
 | `adversarial_check.timeout_ms` | 记录在 `ralph_flow` 元数据里（框架暂未按节点覆盖超时） |
 
-`ralph_flow` 只保留溯源信息（`source` / `workflow` / `step` / `role` / `reset` /
-`adversarial_check`），语义全部落在节点的 `do` / `input` / `output` /
-`output_format` / `on_fail` / `require_approval` 上。**它不会进 TASK PACKAGE**，
-Agent 只看契约字段，不存在两个真相来源。
+节点里**不留任何 ralph 专用字段**，语义全部落在 `do` / `input` / `output` /
+`output_format` / `on_fail` / `require_approval` / `fail_group` 上。
+溯源信息放在**模板级** `provenance`（含原始 steps，足以还原成 ralph YAML），
+它不会进节点、也不会进 TASK PACKAGE，Agent 只看契约字段，不存在两个真相来源。
 
 ## 框架原生语义（新增）
 

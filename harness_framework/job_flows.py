@@ -388,6 +388,8 @@ class JobFlowService:
             visit(task["id"])
         _validate_task_contracts(normalized, raw_source)
         manifest["tasks"] = normalized
+        if isinstance(body.get("provenance"), dict):
+            manifest["provenance"] = body["provenance"]
         manifest["parameters"] = manifest.get("parameters", body.get("parameters", {}))
         if "parameter_schema" in body:
             parameter_schema = body.get("parameter_schema")
