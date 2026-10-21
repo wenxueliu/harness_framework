@@ -161,7 +161,8 @@ async function importRalphFlow(event: Event) {
       name: file.name.replace(/\.(ya?ml|json)$/i, ''),
       group_id: groupId.value,
     })
-    window.location.assign('/templates/' + encodeURIComponent(result.template.template_id) + '/edit')
+    // 路由是 hash 模式（/#/templates/...），必须走 router，否则会落到首页。
+    await router.replace('/templates/' + encodeURIComponent(result.template.template_id) + '/edit')
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : '导入失败'
   } finally {
@@ -467,17 +468,31 @@ const requiredParameters = computed(() => {
   catch { return [] }
 })
 
+async function loadTemplateById(id: string) {
+  template.value = await getJobFlowTemplate(id)
+  capabilityStore.load(template.value.group_id).catch(() => undefined)
+  name.value = template.value.name
+  description.value = template.value.description || ''
+  tasksText.value = JSON.stringify(template.value.draft?.tasks || [], null, 2)
+  parameterSchemaText.value = JSON.stringify(template.value.draft?.parameter_schema || { type: 'object', properties: {}, required: [] }, null, 2)
+  await nextTick(); resetHistory()
+}
+
 onMounted(async () => {
   capabilityStore.load(groupId.value).catch(() => undefined)
   if (!templateId.value) return
   try {
-    template.value = await getJobFlowTemplate(templateId.value)
-    capabilityStore.load(template.value.group_id).catch(() => undefined)
-    name.value = template.value.name
-    description.value = template.value.description || ''
-    tasksText.value = JSON.stringify(template.value.draft?.tasks || [], null, 2)
-    parameterSchemaText.value = JSON.stringify(template.value.draft?.parameter_schema || { type: 'object', properties: {}, required: [] }, null, 2)
-    await nextTick(); resetHistory()
+    await loadTemplateById(templateId.value)
+  } catch (cause) { error.value = cause instanceof Error ? cause.message : '模板加载失败' }
+})
+
+// 导入或从别处跳转过来时，同一个组件实例要跟着换模板。
+watch(() => route.params.templateId, async (id) => {
+  const nextId = typeof id === 'string' ? id : ''
+  if (!nextId || nextId === template.value?.template_id) return
+  error.value = ''
+  try {
+    await loadTemplateById(nextId)
   } catch (cause) { error.value = cause instanceof Error ? cause.message : '模板加载失败' }
 })
 
