@@ -765,15 +765,29 @@ class ACPDispatcher:
             "upstream": self._upstream_outputs(req_id, meta),
             "context": context,
         }
-        return (
+        return self._prompt_preamble(completion) + "\n\nTASK PACKAGE:\n" + json.dumps(
+            package, ensure_ascii=False, indent=2
+        )
+
+    def _prompt_preamble(self, completion: dict[str, Any]) -> str:
+        """任务提示词的开场白。
+
+        stage-bridge 是旧 workflow 范围（Agent 自己领任务、写产物/证据）才有的
+        机制；作业流范围里没有这条命令，提到它只会让 Agent 去找不存在的工具。
+        """
+        preamble = (
             "You are the execution agent for one Harness Framework DAG task. "
             "Work autonomously in the provided workspace, implement the task completely, "
             "run appropriate verification, and do not merely describe what should be done. "
-            "Respect the contract and exclusions. If completion artifacts or evidence gates "
-            "are required, record them with the installed stage-bridge commands before ending. "
-            "Do not claim success when verification fails.\n\nTASK PACKAGE:\n"
-            + json.dumps(package, ensure_ascii=False, indent=2)
+            "Respect the contract and exclusions. "
         )
+        if self.scope == WORKFLOW_SCOPE and completion:
+            preamble += (
+                "If completion artifacts or evidence gates are required, record them "
+                "with the installed stage-bridge commands before ending. "
+            )
+        preamble += "Do not claim success when verification fails."
+        return preamble
 
     @staticmethod
     def _build_human_prompt(message: dict[str, Any]) -> str:
@@ -842,6 +856,13 @@ class ACPDispatcher:
         return result
 
     def _missing_completion_requirements(self, req_id: str, task_name: str) -> list[str]:
+        """旧 workflow 范围的完成契约校验。
+
+        作业流范围没有产物/证据的写入通道（stage-bridge 只在旧范围可用），
+        那里用节点契约的 output_format / VERDICT 作为门禁，不在这里拦。
+        """
+        if self.scope != WORKFLOW_SCOPE:
+            return []
         base = self._task_base(req_id, task_name)
         raw, _ = self.store.kv_get(f"{base}/completion_contract")
         contract = _json_value(raw, {})

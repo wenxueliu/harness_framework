@@ -151,6 +151,18 @@ TASK PACKAGE 里除了任务元信息，还带结构化的节点契约：
 - 有后续步骤 → 必须声明 `output`
 - 配置 `on_fail` → 必须声明 `output` 与 `output_format`
 
+## 提示词开场白
+
+开场白按执行范围收敛：
+
+- 旧 workflow 范围（Agent 自己领任务、写产物/证据）**且**节点声明了
+  `completion_contract` 时，才会提示用 stage-bridge 命令登记产物与证据
+- 作业流范围不出现 stage-bridge（那里没有这条命令），门禁用节点契约的
+  `output_format` 与 `VERDICT` 结论
+
+作业流范围也不再校验旧式 `completion_contract`（没有写入通道，校验只会让任务
+永远失败），改由 `output_format` / `require_verdict` 承担门禁。
+
 ## 会话查看（ACP）
 
 对话正文只保存在 Agent 自己的会话存储里，框架 **不再复制** 到 KV。Dispatcher 只写映射：
