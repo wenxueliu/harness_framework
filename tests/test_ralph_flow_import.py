@@ -82,6 +82,11 @@ def test_each_step_lowers_to_do_and_check_nodes():
     # 人工步骤标记为需要批准
     assert tasks["design__check"]["require_approval"] is True
     assert tasks["implement__check1"]["require_approval"] is False
+    # ralph_flow 只剩溯源信息，语义都在契约字段里
+    assert tasks["design"]["ralph_flow"] == {
+        "source": "ralph-flow", "workflow": "demo", "step": "design",
+    }
+    assert tasks["design__check"]["ralph_flow"]["role"] == "check"
 
 
 def test_check_nodes_can_use_a_different_agent():

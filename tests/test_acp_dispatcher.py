@@ -144,13 +144,14 @@ def test_task_package_carries_instance_parameters():
     )
     prompt = dispatcher._build_prompt("inst-1", "build", {
         "type": "backend", "description": "do it",
-        "ralph_flow": {"step": "build", "on_fail": "build"},
+        "ralph_flow": {"source": "ralph-flow", "workflow": "spec", "step": "build"},
     })
 
     package = json.loads(prompt.split("TASK PACKAGE:\n", 1)[1])
     assert package["parameters"] == {"env": "dev", "token": "$ref:secret:token"}
     assert package["description"] == "do it"
-    assert package["ralph_flow"] == {"step": "build", "on_fail": "build"}
+    # 溯源信息不进提示词，Agent 只看契约字段
+    assert "ralph_flow" not in package
 
 
 def test_dispatcher_publishes_updates_to_live_hub():

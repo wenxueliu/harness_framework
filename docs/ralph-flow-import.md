@@ -48,6 +48,11 @@ explore ──▶ explore__check ──▶ propose ──▶ propose__check ─�
 | `reset` / `auto_reset` | 每个节点本身是新会话，天然满足 |
 | `adversarial_check` | 记录在 `ralph_flow` 元数据里 |
 
+`ralph_flow` 只保留溯源信息（`source` / `workflow` / `step` / `role` / `reset` /
+`adversarial_check`），语义全部落在节点的 `do` / `input` / `output` /
+`output_format` / `on_fail` / `require_approval` 上。**它不会进 TASK PACKAGE**，
+Agent 只看契约字段，不存在两个真相来源。
+
 ## 框架原生语义（新增）
 
 | 任务字段 | 含义 | 实现位置 |

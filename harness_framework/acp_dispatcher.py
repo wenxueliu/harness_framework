@@ -763,9 +763,6 @@ class ACPDispatcher:
             "upstream": self._upstream_outputs(req_id, meta),
             "context": context,
         }
-        ralph_flow = _json_value(meta.get("ralph_flow"), None)
-        if isinstance(ralph_flow, dict):
-            package["ralph_flow"] = ralph_flow
         return (
             "You are the execution agent for one Harness Framework DAG task. "
             "Work autonomously in the provided workspace, implement the task completely, "

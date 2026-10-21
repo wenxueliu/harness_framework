@@ -230,21 +230,14 @@ def compile_workflow(
     tasks: list[dict[str, Any]] = []
     for step in steps:
         step_id = step["id"]
-        ralph = {
+        # 只保留溯源信息：语义已经落在节点的 do/input/output/on_fail 等契约字段上。
+        ralph: dict[str, Any] = {
+            "source": "ralph-flow",
             "workflow": str(workflow.get("name") or name or ""),
             "step": step_id,
-            "desc": str(step.get("desc", "")),
-            "do": str(step.get("do", "")),
-            "input": str(step.get("input", "")),
-            "output": str(step.get("output", "")),
-            "check": step.get("check"),
-            "check_voting": step.get("check_voting"),
-            "on_pass": str(step["on_pass"]),
-            "on_fail": str(step["on_fail"]),
-            "max_fail_count": int(step["max_fail_count"]),
-            "reset": bool(step.get("reset") or workflow.get("auto_reset")),
-            "manual": step_id in manual,
         }
+        if step.get("reset") or workflow.get("auto_reset"):
+            ralph["reset"] = True
         if workflow.get("adversarial_check"):
             ralph["adversarial_check"] = workflow["adversarial_check"]
         task: dict[str, Any] = {
@@ -292,7 +285,7 @@ def compile_workflow(
                     "task": str(step["on_fail"]),
                     "max_fail_count": int(step["max_fail_count"]),
                 },
-                "ralph_flow": {**ralph, "role": "check", "check_node": check_id},
+                "ralph_flow": {**ralph, "role": "check"},
             })
     return {
         "name": name or str(workflow.get("name") or "ralph-flow"),
