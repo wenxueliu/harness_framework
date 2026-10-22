@@ -45,7 +45,7 @@ class FakeACPClient:
         return session_id
 
     def prompt(self, text, *, timeout, should_cancel):
-        assert "TASK PACKAGE" in text or "HUMAN MESSAGE" in text
+        assert text.lstrip().startswith("{") or "HUMAN MESSAGE" in text
         assert not should_cancel()
         self.prompts.append(text)
         update = {
@@ -147,7 +147,7 @@ def test_task_package_carries_instance_parameters():
         "type": "backend", "do": "do it",
     })
 
-    package = json.loads(prompt.split("TASK PACKAGE:\n", 1)[1])
+    package = json.loads(prompt)
     assert package["parameters"] == {"env": "dev", "token": "$ref:secret:token"}
     assert package["do"] == "do it"
     # 提示词只有 do / input / output / parameters
@@ -662,6 +662,8 @@ def test_job_flow_missing_instance_directory_waits_for_human(tmp_path):
     store = MockConsulStore()
     missing = tmp_path / "gone"
     _job_flow_service(store, instance_extra={"directory": str(missing)})
+    # 目录在启动后被删除（例如用户手工清理），调度阶段仍应进入等待而不是崩掉。
+    missing.rmdir()
     dispatcher = JobFlowACPDispatcher(
         store,
         commands={"claude": ["claude-acp"], "codex": ["codex-acp"]},
@@ -693,4 +695,67 @@ def test_create_instance_rejects_blank_directory():
             "instance_id": "inst-bad", "directory": "   ",
         }, "local:alice", "create-bad")
     assert excinfo.value.code == "INVALID_DIRECTORY"
+
+
+def test_create_instance_creates_missing_directory(tmp_path):
+    store = MockConsulStore()
+    service = JobFlowService(store)
+    service.create_template({
+        "template_id": "tpl-acp", "name": "ACP Flow",
+        "tasks": [{"id": "build", "type": "backend", "depends_on": []}],
+    }, "local:alice")
+    version = service.publish_template(
+        "tpl-acp", {"expected_revision": 1}, "local:alice", "publish-dir",
+    )["version"]
+    target = tmp_path / "nested" / "run"
+
+    result = service.create_instance({
+        "template_id": "tpl-acp", "version_id": version["version_id"],
+        "instance_id": "inst-dir", "directory": str(target),
+    }, "local:alice", "create-dir")
+
+    assert target.is_dir()
+    assert result["instance"]["context"]["directory"] == str(target)
+
+
+def test_start_instance_recreates_deleted_directory(tmp_path):
+    store = MockConsulStore()
+    service = JobFlowService(store)
+    service.create_template({
+        "template_id": "tpl-acp", "name": "ACP Flow",
+        "tasks": [{"id": "build", "type": "backend", "depends_on": []}],
+    }, "local:alice")
+    version = service.publish_template(
+        "tpl-acp", {"expected_revision": 1}, "local:alice", "publish-dir-2",
+    )["version"]
+    target = tmp_path / "gone-later"
+    service.create_instance({
+        "template_id": "tpl-acp", "version_id": version["version_id"],
+        "instance_id": "inst-dir-2", "directory": str(target),
+    }, "local:alice", "create-dir-2")
+    target.rmdir()
+
+    service.start_instance("inst-dir-2", "local:alice")
+
+    assert target.is_dir()
+
+
+def test_write_task_state_clears_stale_waiting_reason():
+    store = MockConsulStore()
+    store.kv_put("jobflows/instances/inst-1/tasks/build/status", json.dumps({
+        "task_id": "build", "state": "WAITING_FOR_HUMAN",
+        "waiting_reason": "WORKSPACE_UNAVAILABLE",
+    }))
+    store.kv_put("jobflows/instances/inst-1/tasks/build/waiting_reason", "WORKSPACE_UNAVAILABLE")
+    dispatcher = JobFlowACPDispatcher(store, commands={"codex": ["codex-acp"]})
+
+    current, index = dispatcher._read_task_status("inst-1", "build")
+    assert dispatcher._write_task_state(
+        "inst-1", "build", "IN_PROGRESS", index, current=current,
+    )
+
+    stored = json.loads(store._store["jobflows/instances/inst-1/tasks/build/status"])
+    assert stored["state"] == "IN_PROGRESS"
+    assert "waiting_reason" not in stored
+    assert "jobflows/instances/inst-1/tasks/build/waiting_reason" not in store._store
 

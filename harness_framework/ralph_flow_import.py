@@ -99,7 +99,7 @@ def _description(step: dict[str, Any], workflow: dict[str, Any]) -> str:
     lines.extend([
         "",
         f"失败处理：自检不通过时按 on_fail={on_fail} 处理，最多 {max_fail} 次。",
-        "用户输入参数见 TASK PACKAGE.parameters（例如 requirement / task）。",
+        "用户输入参数见提示词 JSON 的 parameters 字段（例如 requirement / task）。",
         "只有真实通过 CHECK 才能结束；不要只描述计划，也不要在验证失败时声称完成。",
     ])
     if on_fail != step_id:
@@ -328,7 +328,7 @@ def compile_workflow(
         "description": str(workflow.get("description") or ""),
         "tasks": tasks,
         "provenance": _provenance(workflow, steps, manual),
-        # 实例创建表单里的用户任务输入；步骤通过 TASK PACKAGE.parameters 读取。
+        # 实例创建表单里的用户任务输入；步骤通过提示词 JSON 的 parameters 字段读取。
         "parameter_schema": {
             "type": "object",
             "properties": {

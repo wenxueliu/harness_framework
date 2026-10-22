@@ -476,6 +476,89 @@ class TestAggregatorInstances:
         )
         assert tasks_written.get("state") == "PENDING"
 
+    def test_skipped_downstream_revives_when_upstream_retried(self):
+        """上游重试变 PENDING 后，被跳过的下游要回到 BLOCKED 等待依赖。"""
+        store = {
+            "jobflows/instances/inst-006/status": json.dumps(
+                {"state": "RUNNING", "revision": 2}
+            ),
+            "jobflows/instances/inst-006/tasks/loop/definition": json.dumps(
+                {"id": "loop", "depends_on": []},
+            ),
+            "jobflows/instances/inst-006/tasks/loop/status": json.dumps(
+                {"state": "PENDING", "attempt_count": 2},
+            ),
+            "jobflows/instances/inst-006/tasks/loop__check1/definition": json.dumps(
+                {"id": "loop__check1", "depends_on": ["loop"]},
+            ),
+            "jobflows/instances/inst-006/tasks/loop__check1/status": json.dumps(
+                {"state": "SKIPPED_UPSTREAM_FAILED", "attempt_count": 0},
+            ),
+        }
+        consul = _make_store(store)
+        agg = Aggregator(consul, run_manager=make_mock_run_manager(), poll_interval=1)
+
+        agg._process_instance("inst-006")
+
+        puts = {c[0][0]: c[0][1] for c in consul.kv_put.call_args_list}
+        check = json.loads(puts["jobflows/instances/inst-006/tasks/loop__check1/status"])
+        assert check["state"] == "BLOCKED"
+
+    def test_skipped_downstream_reactivates_when_upstream_done(self):
+        """上游重试成功后，被跳过的下游直接进入 PENDING。"""
+        store = {
+            "jobflows/instances/inst-007/status": json.dumps(
+                {"state": "RUNNING", "revision": 2}
+            ),
+            "jobflows/instances/inst-007/tasks/loop/definition": json.dumps(
+                {"id": "loop", "depends_on": []},
+            ),
+            "jobflows/instances/inst-007/tasks/loop/status": json.dumps(
+                {"state": "DONE", "attempt_count": 2},
+            ),
+            "jobflows/instances/inst-007/tasks/loop__check1/definition": json.dumps(
+                {"id": "loop__check1", "depends_on": ["loop"]},
+            ),
+            "jobflows/instances/inst-007/tasks/loop__check1/status": json.dumps(
+                {"state": "SKIPPED_UPSTREAM_FAILED", "attempt_count": 0},
+            ),
+        }
+        consul = _make_store(store)
+        agg = Aggregator(consul, run_manager=make_mock_run_manager(), poll_interval=1)
+
+        agg._process_instance("inst-007")
+
+        puts = {c[0][0]: c[0][1] for c in consul.kv_put.call_args_list}
+        check = json.loads(puts["jobflows/instances/inst-007/tasks/loop__check1/status"])
+        assert check["state"] == "PENDING"
+
+    def test_skipped_downstream_stays_skipped_while_upstream_failed(self):
+        """上游仍是失败态时，下游保持跳过，不能被误激活。"""
+        store = {
+            "jobflows/instances/inst-008/status": json.dumps(
+                {"state": "RUNNING", "revision": 2}
+            ),
+            "jobflows/instances/inst-008/tasks/loop/definition": json.dumps(
+                {"id": "loop", "depends_on": []},
+            ),
+            "jobflows/instances/inst-008/tasks/loop/status": json.dumps(
+                {"state": "FAILED", "attempt_count": 2},
+            ),
+            "jobflows/instances/inst-008/tasks/loop__check1/definition": json.dumps(
+                {"id": "loop__check1", "depends_on": ["loop"]},
+            ),
+            "jobflows/instances/inst-008/tasks/loop__check1/status": json.dumps(
+                {"state": "SKIPPED_UPSTREAM_FAILED", "attempt_count": 0},
+            ),
+        }
+        consul = _make_store(store)
+        agg = Aggregator(consul, run_manager=make_mock_run_manager(), poll_interval=1)
+
+        agg._process_instance("inst-008")
+
+        written_keys = [c[0][0] for c in consul.kv_put.call_args_list]
+        assert "jobflows/instances/inst-008/tasks/loop__check1/status" not in written_keys
+
     def test_queued_instance_tasks_not_advanced(self):
         store = {
             "jobflows/instances/inst-002/status": json.dumps(

@@ -8,6 +8,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import hashlib
 import json
+import os
 import uuid
 from typing import Any
 
@@ -719,6 +720,27 @@ class JobFlowService:
             "tasks": tasks,
         }
 
+    def _ensure_directory(self, directory: str) -> str:
+        """显式执行目录在创建/启动时就建好，避免调度阶段才发现缺失。"""
+        path = os.path.abspath(os.path.expanduser(directory))
+        try:
+            os.makedirs(path, exist_ok=True)
+        except OSError as exc:
+            raise APIError(
+                "INVALID_DIRECTORY",
+                f"实例执行目录不可用: {path}（{exc}）",
+                422,
+                {"location": {"field": "directory"}},
+            ) from exc
+        if not os.path.isdir(path):
+            raise APIError(
+                "INVALID_DIRECTORY",
+                f"实例执行目录不是目录: {path}",
+                422,
+                {"location": {"field": "directory"}},
+            )
+        return path
+
     def create_instance(self, body: dict, actor: str, key: str | None) -> dict:
         cached = self._idempotent(key)
         if cached:
@@ -761,7 +783,7 @@ class JobFlowService:
                     422,
                     {"location": {"field": "directory"}},
                 )
-            directory = directory.strip()
+            directory = self._ensure_directory(directory.strip())
         now = _now()
         context = {
             "parameters": parameters,
@@ -851,6 +873,11 @@ class JobFlowService:
         return self._instance_view(meta)
 
     def start_instance(self, instance_id: str, actor: str) -> dict:
+        context = self._read(f"{INSTANCE_PREFIX}/{instance_id}/context", {})
+        configured = context.get("directory") if isinstance(context, dict) else None
+        if isinstance(configured, str) and configured.strip():
+            # 目录可能在创建后被删除，启动前再确保一次。
+            self._ensure_directory(configured.strip())
         if self.preflight_service is not None:
             preflight = self.preflight_service.run(instance_id)
             if preflight.get("status") != "PASSED":
@@ -1096,8 +1123,13 @@ class JobFlowService:
             raise APIError("TASK_NOT_FOUND", "实例任务不存在", 404)
         attempt_count = int(current.get("attempt_count", 0)) + 1
         attempt_id = f"attempt-{attempt_count}-{uuid.uuid4().hex[:8]}"
+        current.pop("waiting_reason", None)
         current.update({"state": "PENDING", "attempt_count": attempt_count, "current_attempt": attempt_id})
         self._write(status_key, current)
+        # 上一条等待原因（如 WORKSPACE_UNAVAILABLE）不能跟着新 attempt 继续展示。
+        task_base = f"{INSTANCE_PREFIX}/{instance_id}/tasks/{task_id}"
+        self.store.kv_delete(f"{task_base}/waiting_reason")
+        self.store.kv_delete(f"{task_base}/error_message")
         lease_epoch, _ = self.store.kv_get(f"{INSTANCE_PREFIX}/{instance_id}/tasks/{task_id}/lease_epoch")
         self.store.kv_put(
             f"{INSTANCE_PREFIX}/{instance_id}/tasks/{task_id}/lease_epoch",
@@ -1128,6 +1160,7 @@ class JobFlowService:
         })
         updated = dict(status)
         updated["state"] = "PENDING"
+        updated.pop("waiting_reason", None)
         updated["updated_at"] = _now()
         self._write(f"{base}/status", updated)
         return {

@@ -22,7 +22,7 @@ def _jobflow_dispatcher() -> JobFlowACPDispatcher:
 
 
 def _package(prompt: str) -> dict:
-    return json.loads(prompt.split("TASK PACKAGE:\n", 1)[1])
+    return json.loads(prompt)
 
 
 def test_package_contains_only_do_input_output_and_parameters():
@@ -62,10 +62,13 @@ def test_input_carries_injected_context_and_upstream_outputs():
     assert "[上游产物] upstream: 上游产物.md" in composed
 
 
-def test_prompt_never_mentions_stage_bridge():
+def test_prompt_is_raw_json_without_preamble_or_label():
     for prompt in (
         _workflow_dispatcher()._build_prompt("req-1", "build", {"type": "backend"}),
         _jobflow_dispatcher()._build_prompt("inst-1", "build", {"type": "backend"}),
     ):
+        assert prompt.startswith("{")
+        assert "TASK PACKAGE" not in prompt
         assert "stage-bridge" not in prompt
-        assert "Do not claim success when verification fails." in prompt
+        assert "You are the execution agent" not in prompt
+        assert json.loads(prompt)["do"] == ""

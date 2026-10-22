@@ -58,6 +58,10 @@ BLOCKED ──→ PENDING ──→ IN_PROGRESS ──→ DONE        │
 | `WAITING_FOR_HUMAN` | 执行缺少关键人工选择或自动路由预算耗尽 | Adaptive Control |
 | `SKIPPED_UPSTREAM_FAILED` | 阻塞依赖已失败，任务不会执行 | Aggregator |
 
+`SKIPPED_UPSTREAM_FAILED` 不是终态：上游任务被重试后，Aggregator 会按依赖重新
+判定下游——依赖仍失败则保持跳过，依赖全部完成回到 `PENDING`，依赖重新在跑则
+回到 `BLOCKED`。
+
 ### 状态转换规则
 
 **初始状态**：

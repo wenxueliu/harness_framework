@@ -123,7 +123,7 @@ class Aggregator:
             if not isinstance(task_info, dict):
                 continue
             cur_state = task_info.get("state", "QUEUED")
-            if cur_state not in ("QUEUED", "BLOCKED"):
+            if cur_state not in ("QUEUED", "BLOCKED", "SKIPPED_UPSTREAM_FAILED"):
                 continue
 
             depends_on = task_info.get("depends_on", [])
@@ -143,14 +143,29 @@ class Aggregator:
                     failed = True
 
             if failed:
-                task_info["state"] = "SKIPPED_UPSTREAM_FAILED"
-                self._write_instance_task(instance_id, task_id, task_info)
+                if cur_state != "SKIPPED_UPSTREAM_FAILED":
+                    task_info["state"] = "SKIPPED_UPSTREAM_FAILED"
+                    self._write_instance_task(instance_id, task_id, task_info)
                 continue
 
             if all(s == "DONE" or s == "SUCCEEDED" for s in dep_states):
-                task_info["state"] = "PENDING"
+                # 被跳过的节点必须能从依赖判断"为什么被跳过"；缺失依赖定义时
+                # 保持跳过，避免把来源不明的 SKIPPED 任务误当成可执行。
+                if cur_state == "SKIPPED_UPSTREAM_FAILED" and not blocking_deps:
+                    continue
+                if cur_state != "PENDING":
+                    task_info["state"] = "PENDING"
+                    task_info.pop("waiting_reason", None)
+                    self._write_instance_task(instance_id, task_id, task_info)
+                    log.info("instance %s: activated task %s", instance_id, task_id)
+                continue
+
+            # 上游已重试且不再是失败态：把之前跳过的下游放回等待队列。
+            if cur_state == "SKIPPED_UPSTREAM_FAILED":
+                task_info["state"] = "BLOCKED"
+                task_info.pop("waiting_reason", None)
                 self._write_instance_task(instance_id, task_id, task_info)
-                log.info("instance %s: activated task %s", instance_id, task_id)
+                log.info("instance %s: revived task %s", instance_id, task_id)
 
         # 检查是否所有任务已终态
         all_terminal = all(

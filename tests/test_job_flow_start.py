@@ -120,6 +120,27 @@ def test_retry_task_repairs_missing_active_run_pointer(mock_consul) -> None:
     assert run_status == "RUNNING"
 
 
+def test_retry_task_clears_stale_waiting_reason(mock_consul) -> None:
+    """重试后不能再显示上一次的等待原因（如 WORKSPACE_UNAVAILABLE）。"""
+    service = JobFlowService(mock_consul)
+    _seed_instance(service, "inst-stale")
+    base = f"{INSTANCE_PREFIX}/inst-stale/tasks/build"
+    service._write(f"{base}/status", {
+        "task_id": "build", "state": "WAITING_FOR_HUMAN", "attempt_count": 1,
+        "waiting_reason": "WORKSPACE_UNAVAILABLE",
+    })
+    mock_consul.kv_put(f"{base}/waiting_reason", "WORKSPACE_UNAVAILABLE")
+    mock_consul.kv_put(f"{base}/error_message", "execution directory not found: /tmp/gone")
+
+    service.retry_task("inst-stale", "build", "tester")
+
+    task = service._read(f"{base}/status")
+    assert task["state"] == "PENDING"
+    assert "waiting_reason" not in task
+    assert mock_consul.kv_get(f"{base}/waiting_reason")[0] is None
+    assert mock_consul.kv_get(f"{base}/error_message")[0] is None
+
+
 def test_start_instance_first_run_with_real_local_store() -> None:
     """用真实 LocalStore（非 mock）验证：首次启动在全局索引 > 0 时仍能注册。
 

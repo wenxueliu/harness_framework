@@ -100,7 +100,7 @@ daemon 日志同样记录该具体名称。
 | `on_fail` | 失败时回退到哪个节点重来 | `{task, max_fail_count}`；目标节点必须存在，且本节点必须有 `output` + `output_format` |
 
 产物流向：节点通过校验后，产物记录写入 `tasks/<task>/output`，下游节点的
-TASK PACKAGE 里以 `upstream` 字段带给 Agent。
+下游节点的 `input` 里以 `[上游产物]` 形式带给 Agent。
 
 每个任务初始化时还会写入独立的 `validity=UNKNOWN`。正常完成或通过检查后
 变为 `VALID`；需求变更或自适应恢复会把受影响的 DAG 下游闭包标记为

@@ -87,7 +87,7 @@ def test_prompt_carries_contract_fields_and_upstream_outputs():
         "type": "backend", "do": "做事", "input": "上游产物",
         "output": "本步骤产物", "depends_on": ["upstream"],
     })
-    package = json.loads(prompt.split("TASK PACKAGE:\n", 1)[1])
+    package = json.loads(prompt)
 
     assert set(package) == {"do", "input", "output", "parameters"}
     assert package["do"] == "做事"

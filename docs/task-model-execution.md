@@ -126,7 +126,7 @@ python scripts/add_task.py req-001 fix-login \
 
 ## 节点契约与提示词
 
-TASK PACKAGE 只包含四样东西：
+提示词就是一段 JSON，只包含四样东西：
 
 ```json
 {
@@ -142,7 +142,8 @@ TASK PACKAGE 只包含四样东西：
 - `output`：节点要交付的东西；模板里的 `output_format` 是框架侧的校验规则，不发给 Agent
 - `parameters`：实例创建时填的输入参数
 
-提示词开场白只保留通用要求，不再出现 stage-bridge 之类的旧机制。
+提示词没有开场白和 `TASK PACKAGE` 标签，直接输出这段 JSON，也不出现
+stage-bridge 之类的旧机制。
 
 ## 产物门禁
 

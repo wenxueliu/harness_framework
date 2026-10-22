@@ -160,11 +160,17 @@ class ACPDispatcher:
         if self.scope != JOBFLOW_SCOPE:
             return self.store.kv_put(f"{base}/status", state, cas=index)
         status = dict(current) if isinstance(current, dict) else {}
+        if state != "WAITING_FOR_HUMAN":
+            # 离开等待态后旧的等待原因必须消失，否则看板会一直显示上一次的错误。
+            status.pop("waiting_reason", None)
         status.update({"task_id": task_name, "state": state, **(fields or {})})
         status["updated_at"] = _now_iso()
-        return self.store.kv_put(
+        written = self.store.kv_put(
             f"{base}/status", json.dumps(status, ensure_ascii=False), cas=index,
         )
+        if written and state != "WAITING_FOR_HUMAN":
+            self.store.kv_delete(f"{base}/waiting_reason")
+        return written
 
     def stop(self) -> None:
         self._stop.set()
@@ -749,9 +755,7 @@ class ACPDispatcher:
             "output": str(meta.get("output") or "").strip(),
             "parameters": self._instance_parameters(req_id),
         }
-        return self._prompt_preamble() + "\n\nTASK PACKAGE:\n" + json.dumps(
-            package, ensure_ascii=False, indent=2
-        )
+        return json.dumps(package, ensure_ascii=False, indent=2)
 
     def _compose_input(self, req_id: str, task_name: str, meta: dict[str, Any]) -> str:
         """节点消费的东西 = 声明的 input + 注入的上下文 + 上游节点已产出的产物。"""
@@ -764,15 +768,6 @@ class ACPDispatcher:
         for item in self._upstream_outputs(req_id, meta):
             parts.append(f"[上游产物] {item['task']}: {item['output']}")
         return "\n".join(parts)
-
-    @staticmethod
-    def _prompt_preamble() -> str:
-        return (
-            "You are the execution agent for one Harness Framework DAG task. "
-            "Work autonomously in the provided workspace, implement the task completely, "
-            "run appropriate verification, and do not merely describe what should be done. "
-            "Do not claim success when verification fails."
-        )
 
     @staticmethod
     def _build_human_prompt(message: dict[str, Any]) -> str:

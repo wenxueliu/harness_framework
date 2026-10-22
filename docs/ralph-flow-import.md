@@ -54,7 +54,7 @@ explore ──▶ explore__check ──▶ propose ──▶ propose__check ─�
 节点里**不留任何 ralph 专用字段**，语义全部落在 `do` / `input` / `output` /
 `output_format` / `on_fail` / `require_approval` / `fail_group` 上。
 溯源信息放在**模板级** `provenance`（含原始 steps，足以还原成 ralph YAML），
-它不会进节点、也不会进 TASK PACKAGE，Agent 只看契约字段，不存在两个真相来源。
+它不会进节点、也不会进提示词 JSON，Agent 只看契约字段，不存在两个真相来源。
 
 ## 框架原生语义（新增）
 
