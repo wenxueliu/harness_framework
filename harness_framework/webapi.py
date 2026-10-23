@@ -1371,6 +1371,11 @@ class APIHandler(BaseHTTPRequestHandler):
             if len(parts) == 7 and parts[4] == "tasks" and parts[6] == "retry":
                 self._require(context, "task:retry", template["group_id"])
                 return service.retry_task(instance_id, unquote(parts[5]), actor)
+            if len(parts) == 7 and parts[4] == "tasks" and parts[6] == "rewind":
+                self._require(context, "run:control", template["group_id"])
+                return service.rewind_task(
+                    instance_id, unquote(parts[5]), body, actor, key
+                )
             if len(parts) == 7 and parts[4] == "tasks" and parts[6] == "approve":
                 self._require(context, "task:retry", template["group_id"])
                 return service.approve_task(instance_id, unquote(parts[5]), actor)

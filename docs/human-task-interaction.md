@@ -58,6 +58,43 @@ curl -X POST \
 消息状态依次为 `PENDING → PROCESSING → APPLIED`。被新 interrupt 替代的消息为
 `INTERRUPTED`，执行异常则为 `FAILED`。
 
+## 实例任务：retry 与 rewind
+
+作业流实例有两个不同的重跑入口，不要混用：
+
+| 操作 | 语义 | 下游行为 |
+|------|------|----------|
+| `retry` | 只重跑当前节点 | 未完成 / `SKIPPED_UPSTREAM_FAILED` 的下游自动复活；已 `DONE` 的不动 |
+| `rewind` | 从当前节点重新开始 | 下游闭包（含已 `DONE`）全部重置 |
+
+只修了代码或产物、输入契约没变，用 retry：
+
+```bash
+curl -X POST \
+  http://127.0.0.1:8080/api/instances/inst-001/tasks/test/retry
+```
+
+`do` / `input` / `output` 变了，或需求变了需要从某一步重来，用 rewind：
+
+```bash
+curl -X POST \
+  http://127.0.0.1:8080/api/instances/inst-001/tasks/test/rewind \
+  -H 'Content-Type: application/json' \
+  -d '{"reason":"验收标准变更","reset_downstream":true}'
+```
+
+rewind 的行为：
+
+1. 目标节点按依赖状态进入 `PENDING` 或 `BLOCKED`；下游闭包全部 `BLOCKED`；
+2. 闭包内任务的 attempts、产物、结论、会话绑定先归档到
+   `jobflows/instances/<id>/rewinds/<rewind_id>/`，再清除活动字段；
+3. `lease_epoch` 递增，旧 attempt 的迟到结果会被拒绝；
+4. 已结束的实例回到 `RUNNING`，聚合器下一轮自动继续调度，不需要额外触发。
+
+`reset_downstream=false` 时只重置目标节点，适合"这一节点自身实现有问题、
+下游结论仍然有效"的场景。`SUPERSEDED`、`DRAINING`、`ARCHIVED` 实例不允许
+rewind；模板结构整体变化请用 `rerun` 创建新实例。
+
 ## 当前边界
 
 - Dashboard 使用 3 秒短轮询，不是 SSE/WebSocket 推送。

@@ -19,6 +19,7 @@ from .agent_providers import (
     unsupported_agent_message,
 )
 from .api_errors import APIError
+from .incremental import affected_downstream_closure
 from .kv_store_protocol import KVStore
 from .secrets import SecretStore
 
@@ -1142,6 +1143,146 @@ class JobFlowService:
         resumed = self.resume_for_message(instance_id, actor).get("resumed", False)
         return {"instance": self.get_instance(instance_id), "attempt_id": attempt_id,
                 "resumed": resumed}
+
+    def rewind_task(
+        self, instance_id: str, task_id: str, body: dict, actor: str,
+        key: str | None = None,
+    ) -> dict:
+        """从指定节点重来：目标节点 PENDING，下游闭包全部 BLOCKED。
+
+        与 retry 的区别：retry 只补跑未完成的下游，rewind 会把已经 DONE 的
+        下游也重置，用于需求/契约变化后从某一步重新开始。旧状态与产物会先
+        归档到 rewinds/<rewind_id>/，再清除活动字段。
+        """
+        cached = self._idempotent(key)
+        if cached:
+            return cached
+        self._instance(instance_id)
+        status_now = self._read(f"{INSTANCE_PREFIX}/{instance_id}/status", {})
+        state = status_now.get("state", "") if isinstance(status_now, dict) else ""
+        if state in {"SUPERSEDED", "DRAINING", "ARCHIVED"}:
+            raise APIError(
+                "INSTANCE_STATE_INVALID",
+                f"实例当前状态 {state} 不能执行 rewind", 409,
+                {"state": state},
+            )
+
+        definitions: dict[str, dict] = {}
+        items, _ = self.store.kv_get(
+            f"{INSTANCE_PREFIX}/{instance_id}/tasks/", recurse=True
+        )
+        for item in items or []:
+            item_key = item.get("Key", "")
+            if not item_key.endswith("/status"):
+                continue
+            name = item_key.split("/")[-2]
+            definition = self._read(
+                f"{INSTANCE_PREFIX}/{instance_id}/tasks/{name}/definition", {}
+            )
+            definitions[name] = definition if isinstance(definition, dict) else {}
+        if task_id not in definitions:
+            raise APIError("TASK_NOT_FOUND", "实例任务不存在", 404)
+
+        reset_downstream = body.get("reset_downstream", True)
+        if not isinstance(reset_downstream, bool):
+            raise APIError(
+                "VALIDATION_FAILED", "reset_downstream 必须是布尔值", 422,
+            )
+        dependencies = {
+            name: {"depends_on": definition.get("depends_on", [])}
+            for name, definition in definitions.items()
+        }
+        impacted = (
+            affected_downstream_closure(dependencies, [task_id])
+            if reset_downstream else {task_id}
+        )
+
+        def _state_of(name: str) -> str:
+            value = self._read(f"{INSTANCE_PREFIX}/{instance_id}/tasks/{name}/status", {})
+            if isinstance(value, dict):
+                return str(value.get("state", ""))
+            return str(value or "")
+
+        dependency_names = [
+            dep.get("task", "") if isinstance(dep, dict) else str(dep)
+            for dep in definitions[task_id].get("depends_on", [])
+        ]
+        deps_satisfied = all(
+            _state_of(dep) in {"DONE", "SUCCEEDED"} for dep in dependency_names
+        )
+
+        rewind_id = f"rewind-{uuid.uuid4().hex[:12]}"
+        previous_states: dict[str, str] = {}
+        now = _now()
+        for name in sorted(impacted):
+            base = f"{INSTANCE_PREFIX}/{instance_id}/tasks/{name}"
+            current = self._read(f"{base}/status", {})
+            previous_states[name] = (
+                str(current.get("state", "")) if isinstance(current, dict) else str(current or "")
+            )
+            self._archive_task(instance_id, name, rewind_id)
+
+            for field in (
+                "error_message", "waiting_reason", "result", "output",
+                "validity", "attempt_id", "finished_at", "completed_at",
+                "failed_by", "failed_at", "approved_by", "approved_at",
+            ):
+                self.store.kv_delete(f"{base}/{field}")
+            for namespace in ("attempts/", "evidence/", "artifacts/", "approval/"):
+                self.store.kv_delete(f"{base}/{namespace}", recurse=True)
+
+            epoch, _ = self.store.kv_get(f"{base}/lease_epoch")
+            self.store.kv_put(f"{base}/lease_epoch", str(int(epoch or "0") + 1))
+
+            updated = dict(current) if isinstance(current, dict) else {}
+            updated.pop("waiting_reason", None)
+            updated.pop("error_message", None)
+            updated["state"] = (
+                "PENDING" if name == task_id and deps_satisfied else "BLOCKED"
+            )
+            updated["current_attempt"] = ""
+            updated["rewind_id"] = rewind_id
+            updated["rewound_at"] = now
+            self._write(f"{base}/status", updated)
+
+        record = {
+            "rewind_id": rewind_id,
+            "instance_id": instance_id,
+            "task_id": task_id,
+            "reset_downstream": reset_downstream,
+            "rewound_tasks": sorted(impacted),
+            "previous_states": previous_states,
+            "reason": str(body.get("reason") or ""),
+            "created_by": actor,
+            "created_at": now,
+        }
+        self._write(f"{INSTANCE_PREFIX}/{instance_id}/rewinds/{rewind_id}", record)
+
+        if state in TERMINAL_INSTANCE_STATES:
+            self.resume_for_message(instance_id, actor)
+        elif state != "RUNNING":
+            self._transition(instance_id, "RUNNING", actor)
+        self._append_event(
+            f"{INSTANCE_PREFIX}/{instance_id}", "TASK_REWOUND", actor, record,
+        )
+        response = {
+            "instance": self.get_instance(instance_id),
+            "rewind_id": rewind_id,
+            "rewound_tasks": sorted(impacted),
+        }
+        self._remember(key, response)
+        return response
+
+    def _archive_task(self, instance_id: str, task_id: str, rewind_id: str) -> None:
+        base = f"{INSTANCE_PREFIX}/{instance_id}/tasks/{task_id}"
+        archive = f"{INSTANCE_PREFIX}/{instance_id}/rewinds/{rewind_id}/tasks/{task_id}"
+        items, _ = self.store.kv_get(f"{base}/", recurse=True)
+        for item in items or []:
+            item_key = item.get("Key", "")
+            if not item_key.startswith(f"{base}/"):
+                continue
+            relative = item_key[len(base) + 1:]
+            self._write(f"{archive}/{relative}", self._read(item_key, ""))
 
     def approve_task(self, instance_id: str, task_id: str, actor: str) -> dict:
         """批准一个等待人工审查的验证节点，放回队列等待调度。"""
