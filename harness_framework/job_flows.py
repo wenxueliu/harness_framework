@@ -132,12 +132,11 @@ def _validate_parameter_schema(schema: Any, parameters: Any, *, enforce_required
 
 
 def _validate_task_contracts(tasks: list[dict], raw_source: str = "") -> None:
-    """节点契约校验：input / output / do 与依赖、on_fail 必须自洽。
+    """节点契约校验：do / on_fail 与依赖必须自洽。
 
-    - 有前置步骤 → 必须声明 input（说明消费什么）
-    - 有后续步骤 → 必须声明 output（说明交给下游什么）
-    - 配置 on_fail → 必须声明 output 与 output_format
-      （回退前要先产出可交接的产物，格式不符即视为失败并触发回退）
+    - input / output 均为可选，缺失时只是提示词不含对应描述，不影响调度
+    - 配置 on_fail → 必须声明 output_format
+      （格式不符即视为失败并触发回退）
     - do 与 description 至少有一个
     """
     contract_fields = ("do", "input", "output", "output_format", "on_fail")
@@ -150,11 +149,6 @@ def _validate_task_contracts(tasks: list[dict], raw_source: str = "") -> None:
         # 旧模板没有契约字段，保持原有宽松校验。
         return
     by_id = {task["id"]: task for task in tasks}
-    successors: dict[str, list[str]] = {task_id: [] for task_id in by_id}
-    for task in tasks:
-        for dependency in task.get("depends_on", []):
-            if dependency in successors:
-                successors[dependency].append(task["id"])
     for task in tasks:
         task_id = task["id"]
         if not str(task.get("do") or "").strip() and not str(
@@ -165,22 +159,6 @@ def _validate_task_contracts(tasks: list[dict], raw_source: str = "") -> None:
                 422,
                 {"location": {"node": task_id, "field": "do",
                               "line": _source_line(raw_source, task_id, "do")}},
-            )
-        if task.get("depends_on") and not str(task.get("input") or "").strip():
-            raise APIError(
-                "TASK_FIELD_REQUIRED",
-                f"节点 {task_id} 有前置步骤，必须声明 input",
-                422,
-                {"location": {"node": task_id, "field": "input",
-                              "line": _source_line(raw_source, task_id, "input")}},
-            )
-        if successors.get(task_id) and not str(task.get("output") or "").strip():
-            raise APIError(
-                "TASK_FIELD_REQUIRED",
-                f"节点 {task_id} 有后续步骤，必须声明 output",
-                422,
-                {"location": {"node": task_id, "field": "output",
-                              "line": _source_line(raw_source, task_id, "output")}},
             )
         on_fail = task.get("on_fail")
         if not on_fail:
@@ -193,14 +171,6 @@ def _validate_task_contracts(tasks: list[dict], raw_source: str = "") -> None:
                 422,
                 {"location": {"node": task_id, "field": "on_fail",
                               "line": _source_line(raw_source, task_id, "on_fail")}},
-            )
-        if not str(task.get("output") or "").strip():
-            raise APIError(
-                "TASK_FIELD_REQUIRED",
-                f"节点 {task_id} 配置了 on_fail，必须声明 output",
-                422,
-                {"location": {"node": task_id, "field": "output",
-                              "line": _source_line(raw_source, task_id, "output")}},
             )
         if not isinstance(task.get("output_format"), dict):
             raise APIError(

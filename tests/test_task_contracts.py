@@ -20,35 +20,32 @@ def _create(tasks: list[dict], name: str = "demo") -> dict:
     )
 
 
-def test_successor_requires_output():
-    with pytest.raises(APIError) as exc:
-        _create([
-            {"id": "a", "do": "做事"},
-            {"id": "b", "do": "接力", "input": "结果", "depends_on": ["a"]},
-        ])
-    assert "output" in str(exc.value)
+def test_output_is_optional_for_successor():
+    template = _create([
+        {"id": "a", "do": "做事"},
+        {"id": "b", "do": "接力", "input": "结果", "depends_on": ["a"]},
+    ])
+    assert template["template_id"].startswith("tpl-")
 
 
-def test_predecessor_requires_input():
-    with pytest.raises(APIError) as exc:
-        _create([
-            {"id": "a", "do": "做事", "output": "结果"},
-            {"id": "b", "do": "接力", "output": "结果2", "depends_on": ["a"]},
-        ])
-    assert "input" in str(exc.value)
+def test_input_is_optional_for_predecessor():
+    template = _create([
+        {"id": "a", "do": "做事", "output": "结果"},
+        {"id": "b", "do": "接力", "output": "结果2", "depends_on": ["a"]},
+    ])
+    assert template["template_id"].startswith("tpl-")
 
 
-def test_on_fail_requires_output():
-    with pytest.raises(APIError) as exc:
-        _create([
-            {"id": "a", "do": "做事", "output": "结果"},
-            {"id": "b", "do": "接力", "input": "结果", "output": "结果2",
-             "depends_on": ["a"]},
-            {"id": "c", "do": "收尾", "input": "结果2", "output": "结果3",
-             "depends_on": ["b"],
-             "on_fail": {"task": "a", "max_fail_count": 2}},
-        ])
-    assert "on_fail" in str(exc.value)
+def test_on_fail_does_not_require_output():
+    template = _create([
+        {"id": "a", "do": "做事", "output": "结果"},
+        {"id": "b", "do": "接力", "input": "结果", "output": "结果2",
+         "depends_on": ["a"]},
+        {"id": "c", "do": "收尾", "input": "结果2", "depends_on": ["b"],
+         "on_fail": {"task": "a", "max_fail_count": 2},
+         "output_format": {"kind": "marker", "pattern": "VERDICT"}},
+    ])
+    assert template["template_id"].startswith("tpl-")
 
 
 def test_on_fail_requires_output_format():

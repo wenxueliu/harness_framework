@@ -8,8 +8,8 @@ const fields: { name: string; type: string; required: string; desc: string }[] =
   { name: 'depends_on', type: 'string[]', required: '可选', desc: '前置节点 id 数组；全部 DONE 后本节点才会被调度' },
   { name: 'do', type: 'string', required: '与 description 二选一', desc: '这一步要做什么（发给 Agent 的执行指令）' },
   { name: 'description', type: 'string', required: '与 do 二选一', desc: '人类可读说明；do 存在时以 do 为准' },
-  { name: 'input', type: 'string', required: '有前置时必填', desc: '这一步消费什么；上游产物会自动带进提示词' },
-  { name: 'output', type: 'string', required: '有后续或 on_fail 时必填', desc: '这一步要产出什么' },
+  { name: 'input', type: 'string', required: '可选', desc: '这一步消费什么；声明后上游产物会自动带进提示词' },
+  { name: 'output', type: 'string', required: '可选', desc: '这一步要产出什么；声明后才会带给下游' },
   { name: 'output_format', type: 'object', required: '可选', desc: '产物格式校验（框架侧）：file / json / marker / text；不符即视为节点失败' },
   { name: 'fail_group', type: 'string', required: '可选', desc: '共享失败预算的验证组（同一组必须用相同 on_fail）' },
   { name: 'on_fail', type: 'object', required: '可选', desc: '{task, max_fail_count}：失败时回退到哪个节点重跑' },
@@ -27,9 +27,8 @@ const formats = [
 ]
 
 const rules = [
-  '有前置步骤 → 必须声明 input',
-  '有后续步骤 → 必须声明 output',
-  '配置 on_fail → 必须声明 output 与 output_format，且 on_fail.task 必须存在',
+  'input / output 都是可选字段，只影响提示词内容，不影响调度',
+  '配置 on_fail → 必须声明 output_format，且 on_fail.task 必须存在',
   '格式校验不通过 = 该节点失败 → 触发 on_fail 回退上游重跑（最多 max_fail_count 次）',
 ]
 </script>
