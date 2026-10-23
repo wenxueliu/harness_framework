@@ -28,6 +28,7 @@ import {
   getTaskSessionMapping,
   approveJobFlowTask,
   retryJobFlowTask,
+  rewindJobFlowTask,
   type JobFlowInstance,
   type TaskSessionMapping,
 } from '@/api/jobFlow'
@@ -54,6 +55,7 @@ const taskId = String(route.params.taskId || '')
 const loading = ref(true)
 const workspaceLoading = ref(false)
 const retrying = ref(false)
+const rewinding = ref(false)
 const saving = ref(false)
 const error = ref('')
 const workspaceError = ref('')
@@ -413,6 +415,28 @@ async function retry() {
   }
 }
 
+async function rewind() {
+  const confirmed = window.confirm(
+    `确定从「${taskId}」重来吗？\n\n` +
+    '该节点及其所有下游任务（包括已完成）都会被重置为未完成并重新执行。\n' +
+    '旧产物会归档保留，但需要重新跑完整条下游链路。',
+  )
+  if (!confirmed) return
+  rewinding.value = true
+  error.value = ''
+  try {
+    await rewindJobFlowTask(instanceId, taskId, { reason: '页面手动重跑' })
+    await Promise.all([loadTask(), loadWorkspace(), loadSessionMapping()])
+    resetStream()
+    liveCursor.value = 0
+    startLivePolling()
+  } catch (cause) {
+    error.value = cause instanceof Error ? cause.message : '任务重跑失败'
+  } finally {
+    rewinding.value = false
+  }
+}
+
 onMounted(async () => {
   try {
     await loadTask()
@@ -463,6 +487,7 @@ onUnmounted(() => {
         <span class="rounded bg-background px-2 py-0.5">Attempt {{ selectedAttemptId || attemptCount }}</span>
         <span class="rounded bg-background px-2 py-0.5">{{ capabilityText }}</span>
         <button v-if="taskState === 'AWAITING_REVIEW'" data-testid="task-approve" class="rounded border border-amber-400/50 px-2 py-1 text-amber-300 disabled:opacity-50" :disabled="approving" @click="approve">批准验证</button>
+        <button data-testid="task-rewind" class="rounded border border-amber-400/50 px-2 py-1 text-amber-300 disabled:opacity-50" :disabled="rewinding" @click="rewind">从此节点重来</button>
         <button class="ml-auto rounded border border-border px-2 py-1 disabled:opacity-50" :disabled="retrying" @click="retry">重试任务</button>
       </div>
 
@@ -581,7 +606,7 @@ onUnmounted(() => {
             class="min-h-[30rem] flex-1"
             theme="vs-dark"
             :language="file.path.endsWith('.py') ? 'python' : file.path.endsWith('.ts') ? 'typescript' : 'plaintext'"
-            :options="{ readOnly: !file.writable, automaticLayout: true, minimap: { enabled: true } }"
+            :options="{ readOnly: !file.writable, automaticLayout: true, minimap: { enabled: true }, editContext: false }"
             @change="rememberDraft"
           />
           <div v-else-if="file" class="grid flex-1 place-items-center text-sm text-muted-foreground">{{ file.reason || '二进制文件无法预览' }}</div>

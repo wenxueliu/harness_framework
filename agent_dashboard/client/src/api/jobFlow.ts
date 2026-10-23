@@ -478,6 +478,24 @@ export async function approveJobFlowTask(instanceId: string, taskId: string) {
   )
 }
 
+/**
+ * 从当前节点重来：下游闭包（含已完成）全部重置。
+ * 与 retry 的区别是 retry 只补跑未完成的下游。
+ */
+export async function rewindJobFlowTask(
+  instanceId: string,
+  taskId: string,
+  options: { reason?: string; resetDownstream?: boolean } = {},
+) {
+  return apiRequest<{ instance: JobFlowInstance; rewind_id: string; rewound_tasks: string[] }>(
+    `/api/instances/${encodeURIComponent(instanceId)}/tasks/${encodeURIComponent(taskId)}/rewind`,
+    jsonRequest('POST', {
+      reason: options.reason || '',
+      reset_downstream: options.resetDownstream ?? true,
+    }),
+  )
+}
+
 export async function controlJobFlowInstance(instanceId: string, action: 'pause' | 'abort' | 'drain' | 'archive') {
   return apiRequest<{ instance: JobFlowInstance }>(
     '/api/instances/' + encodeURIComponent(instanceId) + '/' + action, jsonRequest('POST', {}),
