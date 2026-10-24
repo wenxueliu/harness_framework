@@ -34,6 +34,14 @@ curl -s 'http://127.0.0.1:8080/api/instances/<instance_id>/attempts'
 返回里每个节点带 `task_id`、`state`、`attempt_count`、`fail_count`、
 `retry_feedback` 和 `attempts[]`。看板实例页的「执行过程」标签直接用这份数据。
 
+回放某一轮的 Agent 会话：
+
+```bash
+curl -s 'http://127.0.0.1:8080/api/instances/<instance_id>/tasks/<task>/session?attempt_id=<attempt_id>'
+```
+
+看板里点执行记录的「回放会话」即可打开对应轮次的对话。
+
 查看单个任务的执行历史：
 
 ```bash

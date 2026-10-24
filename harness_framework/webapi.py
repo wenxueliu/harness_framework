@@ -1200,8 +1200,10 @@ class APIHandler(BaseHTTPRequestHandler):
                     instance_id, unquote(parts[5])
                 )}
             if len(parts) == 7 and parts[4] == "tasks" and parts[6] == "session":
+                query = parse_qs(parsed_url.query)
                 return self._task_session_mapping(
-                    instance_id, unquote(parts[5]), instance
+                    instance_id, unquote(parts[5]), instance,
+                    attempt_id=(query.get("attempt_id") or [""])[0],
                 )
             if len(parts) == 7 and parts[4] == "tasks" and parts[6] == "live":
                 return self._task_live_updates(
@@ -1604,7 +1606,7 @@ class APIHandler(BaseHTTPRequestHandler):
         return payload
 
     def _task_session_mapping(
-        self, instance_id: str, task_id: str, instance: dict,
+        self, instance_id: str, task_id: str, instance: dict, attempt_id: str = "",
     ) -> dict:
         """Return the Agent-side session mapping for one task.
 
@@ -1613,17 +1615,31 @@ class APIHandler(BaseHTTPRequestHandler):
         attach with ACP ``session/load``.
         """
         base = f"jobflows/instances/{instance_id}/tasks/{task_id}"
-        session_id = ""
-        for key in ("acp/session_id", "harness_session_id", "native_session_id"):
-            value, _ = self.consul.kv_get(f"{base}/{key}")
-            if isinstance(value, str) and value.strip():
-                session_id = value.strip()
-                break
+        # 指定 attempt 时回放那一轮的会话，而不是任务当前会话。
+        attempt_record: dict = {}
+        if attempt_id:
+            raw_attempt, _ = self.consul.kv_get(
+                f"{base}/attempts/{attempt_id}")
+            try:
+                value = json.loads(raw_attempt or "{}")
+            except (TypeError, json.JSONDecodeError):
+                value = {}
+            attempt_record = value if isinstance(value, dict) else {}
+        session_id = str(attempt_record.get("session_id") or "").strip()
+        if not session_id and not attempt_id:
+            # 只有「查看当前会话」时才回落到任务级映射；指定 attempt 时不能拿
+            # 最新会话冒充历史轮次，否则会回放错内容。
+            for key in ("acp/session_id", "harness_session_id", "native_session_id"):
+                value, _ = self.consul.kv_get(f"{base}/{key}")
+                if isinstance(value, str) and value.strip():
+                    session_id = value.strip()
+                    break
 
-        provider = ""
-        raw_provider, _ = self.consul.kv_get(f"{base}/acp/provider")
-        if isinstance(raw_provider, str):
-            provider = normalize_agent(raw_provider)
+        provider = str(attempt_record.get("provider") or "")
+        if not provider:
+            raw_provider, _ = self.consul.kv_get(f"{base}/acp/provider")
+            if isinstance(raw_provider, str):
+                provider = normalize_agent(raw_provider)
         if not provider:
             # 旧实例没有显式 provider，用 initialize 握手返回的 agentInfo.name 推断。
             raw_init, _ = self.consul.kv_get(f"{base}/acp/initialize")
@@ -1637,10 +1653,11 @@ class APIHandler(BaseHTTPRequestHandler):
                 "",
             )
 
-        cwd = ""
-        raw_cwd, _ = self.consul.kv_get(f"{base}/acp/cwd")
-        if isinstance(raw_cwd, str):
-            cwd = raw_cwd.strip()
+        cwd = str(attempt_record.get("cwd") or "").strip()
+        if not cwd:
+            raw_cwd, _ = self.consul.kv_get(f"{base}/acp/cwd")
+            if isinstance(raw_cwd, str):
+                cwd = raw_cwd.strip()
         if not cwd:
             context = instance.get("context") if isinstance(instance, dict) else {}
             if isinstance(context, dict):
@@ -1655,7 +1672,9 @@ class APIHandler(BaseHTTPRequestHandler):
         if not cwd:
             missing.append("cwd")
 
-        attempt_id, _ = self.consul.kv_get(f"{base}/acp/attempt_id")
+        current_attempt, _ = self.consul.kv_get(f"{base}/acp/attempt_id")
+        if not attempt_id:
+            attempt_id = current_attempt or ""
         run_id, _ = self.consul.kv_get(f"{base}/acp/run_id")
         task_status = (instance.get("tasks") or {}).get(task_id) or {}
         state = str(task_status.get("state") or task_status.get("status") or "")

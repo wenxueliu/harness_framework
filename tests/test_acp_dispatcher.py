@@ -863,3 +863,26 @@ def test_manual_retry_counts_one_attempt_and_reuses_the_pending_id():
     assert claim["attempt_id"] == result["attempt_id"]
     final = json.loads(store._store[status_key])
     assert final["attempt_count"] == 1
+
+
+def test_attempt_record_stores_cwd_for_session_replay():
+    store = MockConsulStore()
+    _job_flow_service(store, instance_extra={"directory": "/tmp"})
+    dispatcher = JobFlowACPDispatcher(
+        store,
+        commands={"codex": ["codex-acp"]},
+        client_factory=FakeACPClient,
+    )
+    instance_id, task_name, meta = dispatcher._pending_tasks()[0]
+    claim = dispatcher._claim(instance_id, task_name, meta)
+    assert claim is not None
+    dispatcher._active[(f"jobflow:{instance_id}", task_name)] = {
+        **claim, "scope_id": instance_id, "client": None,
+    }
+
+    dispatcher._execute(instance_id, task_name, meta, claim)
+
+    base = f"jobflows/instances/{instance_id}/tasks/{task_name}"
+    record = json.loads(store._store[f"{base}/attempts/{claim['attempt_id']}"])
+    assert record["cwd"] == "/tmp"
+    assert record["session_id"] == "acp-session-new"

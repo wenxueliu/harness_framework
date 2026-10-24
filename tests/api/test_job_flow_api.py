@@ -1301,3 +1301,45 @@ def test_instance_execution_process_lists_every_node():
         assert "attempts" in build and "retry_feedback" in build
     finally:
         server.shutdown()
+
+
+def test_attempt_scoped_session_mapping_does_not_fall_back_to_latest():
+    store = MockConsulStore()
+    server = serve(
+        store,
+        host="127.0.0.1",
+        port=0,
+        auth_config=AuthConfig(mode="local", local_user="replay-test"),
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    port = server.server_address[1]
+    try:
+        _, instance_id = _start_running_instance(
+            store, port, "replay-template", "Replay",
+        )
+        base = f"jobflows/instances/{instance_id}/tasks/build"
+        store.kv_put(f"{base}/acp/session_id", "ses_latest")
+        store.kv_put(f"{base}/acp/cwd", "/tmp")
+        store.kv_put(f"{base}/acp/provider", "codex")
+        store.kv_put(f"{base}/attempts/attempt-old", json.dumps({
+            "attempt_id": "attempt-old", "state": "DONE",
+        }))
+
+        status, current = request(
+            port, "GET", f"/api/instances/{instance_id}/tasks/build/session",
+        )
+        assert status == 200
+        assert current["session_id"] == "ses_latest"
+        assert current["loadable"] is True
+
+        status, old = request(
+            port, "GET",
+            f"/api/instances/{instance_id}/tasks/build/session?attempt_id=attempt-old",
+        )
+        assert status == 200
+        assert old["session_id"] == ""
+        assert old["loadable"] is False
+        assert "session_id" in old["missing"]
+    finally:
+        server.shutdown()

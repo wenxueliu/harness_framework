@@ -53,6 +53,8 @@ const route = useRoute()
 const router = useRouter()
 const instanceId = String(route.params.instanceId || '')
 const taskId = String(route.params.taskId || '')
+// 从实例执行过程跳转过来时，用于回放历史某一轮的会话。
+const routeAttemptId = String(route.query.attempt || '')
 
 const loading = ref(true)
 const workspaceLoading = ref(false)
@@ -136,11 +138,15 @@ const connectBlockedReason = computed(() => {
   const mapping = sessionMapping.value
   if (!mapping) return sessionMappingError.value ? '' : '正在读取会话映射…'
   if (!mapping.loadable) {
-    if (mapping.missing.includes('session_id')) return '该任务还没有 Agent 会话'
+    if (mapping.missing.includes('session_id')) {
+      return replayAttemptId.value
+        ? '这一轮没有记录会话 ID（旧版本执行的历史轮次）'
+        : '该任务还没有 Agent 会话'
+    }
     if (mapping.missing.includes('cwd')) return '缺少执行目录映射，无法连接历史会话'
     return '缺少 Agent 映射，无法连接历史会话'
   }
-  if (taskRunning.value) return '任务执行中：上方实时推送；完成后可连接查看完整历史'
+  if (taskRunning.value && !replayAttemptId.value) return '任务执行中：上方实时推送；完成后可连接查看完整历史'
   return ''
 })
 
@@ -240,10 +246,18 @@ async function loadWorkspace(attemptId?: string) {
   }
 }
 
+const replayAttemptId = computed(() => {
+  if (!routeAttemptId) return ''
+  const current = instance.value?.tasks[taskId]?.current_attempt
+  return routeAttemptId === current ? '' : routeAttemptId
+})
+
 async function loadSessionMapping() {
   sessionMappingError.value = ''
   try {
-    sessionMapping.value = await getTaskSessionMapping(instanceId, taskId)
+    sessionMapping.value = await getTaskSessionMapping(
+      instanceId, taskId, replayAttemptId.value || undefined,
+    )
   } catch (cause) {
     sessionMapping.value = null
     sessionMappingError.value = cause instanceof Error ? cause.message : '会话映射加载失败'
@@ -529,6 +543,9 @@ onUnmounted(() => {
         <span class="rounded bg-background px-2 py-0.5">{{ taskState }}</span>
         <span data-testid="instance-state" class="rounded bg-background px-2 py-0.5">实例 {{ instanceState }}</span>
         <span class="rounded bg-background px-2 py-0.5">Attempt {{ selectedAttemptId || attemptCount }}</span>
+        <span v-if="replayAttemptId" class="rounded border border-blue-500/30 bg-blue-500/10 px-2 py-0.5 text-blue-300">
+          回放历史轮次
+        </span>
         <span class="rounded bg-background px-2 py-0.5">{{ capabilityText }}</span>
         <button v-if="taskState === 'AWAITING_REVIEW'" data-testid="task-approve" class="rounded border border-amber-400/50 px-2 py-1 text-amber-300 disabled:opacity-50" :disabled="approving" @click="approve">批准验证</button>
         <button data-testid="task-rewind" class="rounded border border-amber-400/50 px-2 py-1 text-amber-300 disabled:opacity-50" :disabled="rewinding" @click="rewind">从此节点重来</button>
@@ -583,9 +600,17 @@ onUnmounted(() => {
                   <p v-if="attempt.failure_reason" class="text-red-300">{{ attempt.failure_reason }}</p>
                   <p v-else-if="attempt.output_excerpt" class="max-h-16 overflow-auto whitespace-pre-wrap text-muted-foreground">{{ attempt.output_excerpt }}</p>
                   <p v-else class="text-muted-foreground">—</p>
-                  <button v-if="attempt.session_id" class="mt-1 font-mono text-[10px] text-blue-300 hover:underline" @click="selectAttemptById(attempt.attempt_id)">
-                    {{ attempt.session_id }}
-                  </button>
+                  <div v-if="attempt.session_id" class="mt-1 flex flex-wrap items-center gap-2">
+                    <RouterLink
+                      :to="`/instances/${encodeURIComponent(instanceId)}/tasks/${encodeURIComponent(taskId)}?attempt=${encodeURIComponent(attempt.attempt_id)}`"
+                      class="font-mono text-[10px] text-blue-300 hover:underline"
+                      title="回放这一轮的 Agent 会话">
+                      回放会话 · {{ attempt.session_id }}
+                    </RouterLink>
+                    <button class="text-[10px] text-muted-foreground hover:underline" @click="selectAttemptById(attempt.attempt_id)">
+                      查看工作区
+                    </button>
+                  </div>
                 </td>
               </tr>
             </tbody>

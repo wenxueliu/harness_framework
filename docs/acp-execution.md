@@ -281,7 +281,14 @@ python -m harness_framework.daemon --local \
 | `error` / `failure_evidence` | 失败原因与机器证据（退出码、输出片段等） |
 | `output_excerpt` | 本轮 Agent 回复的末尾片段（截断 2KB） |
 
-查询：`GET /api/instances/<id>/tasks/<task>/attempts`。
+查询：
+
+- `GET /api/instances/<id>/attempts`：整个实例的执行过程（节点 + 逐轮 attempt）
+- `GET /api/instances/<id>/tasks/<task>/attempts`：单个任务
+- `GET /api/instances/<id>/tasks/<task>/session?attempt_id=<attempt>`：回放某一轮的会话
+
+指定 `attempt_id` 时只使用该轮记录里的 `session_id`，不会回落到任务最新会话——
+旧版本没有记录 attempt 级会话的轮次会返回 `loadable=false`，避免回放错内容。
 
 治理语义（验证节点失败回退）：
 

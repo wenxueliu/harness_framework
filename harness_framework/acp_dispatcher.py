@@ -533,6 +533,10 @@ class ACPDispatcher:
             # 对话正文不再落 KV。
             self.store.kv_put(f"{base}/acp/provider", provider)
             self.store.kv_put(f"{base}/acp/cwd", cwd)
+            self._update_attempt_state(
+                req_id, task_name, claim["attempt_id"], "IN_PROGRESS",
+                provider=provider, cwd=cwd,
+            )
             self.store.kv_put(f"{base}/acp/attempt_id", claim["attempt_id"])
             self.store.kv_put(f"{base}/acp/run_id", claim["run_id"])
             client = self.client_factory(

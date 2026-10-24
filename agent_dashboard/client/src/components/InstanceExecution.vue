@@ -1,6 +1,7 @@
 <script setup lang="ts">
 /** 实例级执行过程：每个节点折叠成一条，展开看逐轮 attempt。 */
 import { computed, onMounted, ref } from 'vue'
+import { RouterLink } from 'vue-router'
 import { listJobFlowInstanceAttempts, type InstanceExecutionTask } from '@/api/jobFlow'
 
 const props = defineProps<{ instanceId: string }>()
@@ -131,7 +132,12 @@ defineExpose({ load })
                   <p v-if="attempt.failure_reason" class="text-red-300">{{ attempt.failure_reason }}</p>
                   <p v-else-if="attempt.output_excerpt" class="max-h-16 overflow-auto whitespace-pre-wrap text-muted-foreground">{{ attempt.output_excerpt }}</p>
                   <p v-else class="text-muted-foreground">—</p>
-                  <p v-if="attempt.session_id" class="mt-0.5 font-mono text-[10px] text-muted-foreground">{{ attempt.session_id }}</p>
+                  <RouterLink v-if="attempt.session_id"
+                    :to="`/instances/${encodeURIComponent(instanceId)}/tasks/${encodeURIComponent(task.task_id)}?attempt=${encodeURIComponent(attempt.attempt_id)}`"
+                    class="mt-0.5 inline-block font-mono text-[10px] text-blue-300 hover:underline"
+                    title="回放这一轮的 Agent 会话">
+                    回放会话 · {{ attempt.session_id }}
+                  </RouterLink>
                 </td>
               </tr>
             </tbody>

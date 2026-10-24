@@ -422,10 +422,12 @@ export interface TaskSessionMapping {
 export async function getTaskSessionMapping(
   instanceId: string,
   taskId: string,
+  attemptId?: string,
 ): Promise<TaskSessionMapping> {
+  const query = attemptId ? '?attempt_id=' + encodeURIComponent(attemptId) : ''
   return apiRequest<TaskSessionMapping>(
     '/api/instances/' + encodeURIComponent(instanceId)
-      + '/tasks/' + encodeURIComponent(taskId) + '/session',
+      + '/tasks/' + encodeURIComponent(taskId) + '/session' + query,
   )
 }
 
