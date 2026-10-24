@@ -27,9 +27,11 @@ import {
   getTaskLiveUpdates,
   getTaskSessionMapping,
   approveJobFlowTask,
+  listJobFlowTaskAttempts,
   retryJobFlowTask,
   rewindJobFlowTask,
   type JobFlowInstance,
+  type TaskAttemptRecord,
   type TaskSessionMapping,
 } from '@/api/jobFlow'
 import type {
@@ -72,6 +74,8 @@ const openFiles = ref<WorkspaceFile[]>([])
 const draft = ref('')
 const baseContent = ref('')
 const conflict = ref<{ currentSha: string | null; currentContent: string } | null>(null)
+const attemptHistory = ref<TaskAttemptRecord[]>([])
+const historyOpen = ref(false)
 const sessionMapping = ref<TaskSessionMapping | null>(null)
 const sessionMappingError = ref('')
 const acpDraft = ref('')
@@ -140,9 +144,39 @@ const connectBlockedReason = computed(() => {
   return ''
 })
 
+const retryFeedback = computed(() => instance.value?.tasks[taskId]?.retry_feedback ?? {})
+const failCount = computed(() => instance.value?.tasks[taskId]?.fail_count ?? 0)
+const failedAttempts = computed(() => attemptHistory.value.filter((item) => item.state === 'FAILED').length)
+
+function formatDuration(ms: number | null | undefined) {
+  if (ms === null || ms === undefined) return '—'
+  if (ms < 1000) return `${ms}ms`
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`
+  const minutes = Math.floor(ms / 60_000)
+  return `${minutes}m${Math.round((ms % 60_000) / 1000)}s`
+}
+
+function formatTime(value: string) {
+  if (!value) return '—'
+  return value.replace('T', ' ').replace('Z', '').slice(0, 19)
+}
+
+function attemptStateClass(state: string) {
+  if (state === 'DONE') return 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
+  if (state === 'FAILED' || state === 'EXPIRED') return 'border-red-400/30 bg-red-400/10 text-red-300'
+  if (state === 'IN_PROGRESS') return 'border-blue-500/30 bg-blue-500/10 text-blue-300'
+  if (state === 'WAITING_FOR_HUMAN') return 'border-amber-400/30 bg-amber-400/10 text-amber-300'
+  return 'border-border text-muted-foreground'
+}
+
 function goBack() {
   if (window.history.length > 1) router.back()
   else router.push('/instances/' + encodeURIComponent(instanceId))
+}
+
+async function selectAttemptById(attemptId: string) {
+  selectedAttemptId.value = attemptId
+  await loadWorkspace(attemptId)
 }
 
 function draftKey(item: WorkspaceFile) {
@@ -156,6 +190,16 @@ async function loadTask() {
   taskState.value = current.state
   attemptCount.value = current.attempt_count
   if (current.current_attempt) selectedAttemptId.value = current.current_attempt
+}
+
+async function loadAttemptHistory() {
+  try {
+    attemptHistory.value = await listJobFlowTaskAttempts(instanceId, taskId)
+  } catch (cause) {
+    if (!(cause instanceof HarnessApiError && cause.status === 404)) {
+      error.value = cause instanceof Error ? cause.message : '执行历史加载失败'
+    }
+  }
 }
 
 async function loadWorkspace(attemptId?: string) {
@@ -404,7 +448,7 @@ async function retry() {
   retrying.value = true
   try {
     await retryJobFlowTask(instanceId, taskId)
-    await Promise.all([loadTask(), loadWorkspace(), loadSessionMapping()])
+    await Promise.all([loadTask(), loadWorkspace(), loadSessionMapping(), loadAttemptHistory()])
     resetStream()
     liveCursor.value = 0
     startLivePolling()
@@ -426,7 +470,7 @@ async function rewind() {
   error.value = ''
   try {
     await rewindJobFlowTask(instanceId, taskId, { reason: '页面手动重跑' })
-    await Promise.all([loadTask(), loadWorkspace(), loadSessionMapping()])
+    await Promise.all([loadTask(), loadWorkspace(), loadSessionMapping(), loadAttemptHistory()])
     resetStream()
     liveCursor.value = 0
     startLivePolling()
@@ -444,7 +488,7 @@ onMounted(async () => {
       const preflight = await getJobFlowPreflight(instanceId)
       preflightStatus.value = preflight.status
     } catch { preflightStatus.value = '' }
-    await Promise.all([loadWorkspace(), loadSessionMapping()])
+    await Promise.all([loadWorkspace(), loadSessionMapping(), loadAttemptHistory()])
     startLivePolling()
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : '任务加载失败'
@@ -490,6 +534,64 @@ onUnmounted(() => {
         <button data-testid="task-rewind" class="rounded border border-amber-400/50 px-2 py-1 text-amber-300 disabled:opacity-50" :disabled="rewinding" @click="rewind">从此节点重来</button>
         <button class="ml-auto rounded border border-border px-2 py-1 disabled:opacity-50" :disabled="retrying" @click="retry">重试任务</button>
       </div>
+
+      <!-- 执行历史：每一轮（attempt）的结果、耗时与失败原因 -->
+      <section data-testid="attempt-history" class="border-b border-border px-4 py-2 text-xs">
+        <button class="flex w-full items-center gap-2 text-left" @click="historyOpen = !historyOpen">
+          <span class="font-semibold text-muted-foreground">执行历史</span>
+          <span class="rounded bg-background px-1.5 py-0.5">{{ attemptHistory.length }} 次</span>
+          <span v-if="failedAttempts" class="rounded border border-red-400/30 bg-red-400/10 px-1.5 py-0.5 text-red-300">失败 {{ failedAttempts }} 次</span>
+          <span v-if="failCount" class="rounded border border-amber-400/30 bg-amber-400/10 px-1.5 py-0.5 text-amber-300">
+            回退 {{ failCount }}/{{ retryFeedback.max_attempts ?? '—' }}
+          </span>
+          <span v-if="retryFeedback.attempt" class="rounded border border-amber-400/30 bg-amber-400/10 px-1.5 py-0.5 text-amber-300">
+            上一轮验证未通过，反馈已注入本轮提示词
+          </span>
+          <span class="ml-auto text-muted-foreground">{{ historyOpen ? '收起' : '展开' }}</span>
+        </button>
+
+        <div v-if="historyOpen" class="mt-2 space-y-2">
+          <div v-if="retryFeedback.failed_checks?.length" class="rounded border border-amber-400/30 bg-amber-400/10 p-2 text-[11px] text-amber-100">
+            <p class="font-semibold">上一轮回退原因（{{ formatTime(retryFeedback.at || '') }}）</p>
+            <p v-for="check in retryFeedback.failed_checks" :key="check.task" class="mt-1 font-mono">
+              {{ check.task }}: {{ check.error || '未记录原因' }}
+            </p>
+          </div>
+
+          <div v-if="!attemptHistory.length" class="text-muted-foreground">还没有执行记录。</div>
+          <table v-else class="w-full table-fixed border-collapse text-left text-[11px]">
+            <thead class="text-muted-foreground">
+              <tr>
+                <th class="w-14 py-1 font-medium">轮次</th>
+                <th class="w-24 py-1 font-medium">状态</th>
+                <th class="w-40 py-1 font-medium">开始</th>
+                <th class="w-20 py-1 font-medium">耗时</th>
+                <th class="w-20 py-1 font-medium">Agent</th>
+                <th class="py-1 font-medium">失败原因 / 输出</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="(attempt, index) in attemptHistory" :key="attempt.attempt_id" class="border-t border-border/50 align-top">
+                <td class="py-1 font-mono">#{{ index + 1 }}</td>
+                <td class="py-1">
+                  <span class="rounded border px-1.5 py-0.5" :class="attemptStateClass(attempt.state)">{{ attempt.state }}</span>
+                </td>
+                <td class="py-1 font-mono text-muted-foreground">{{ formatTime(attempt.started_at || attempt.created_at) }}</td>
+                <td class="py-1 font-mono text-muted-foreground">{{ formatDuration(attempt.duration_ms) }}</td>
+                <td class="py-1 font-mono text-muted-foreground">{{ attempt.provider || '—' }}</td>
+                <td class="py-1">
+                  <p v-if="attempt.failure_reason" class="text-red-300">{{ attempt.failure_reason }}</p>
+                  <p v-else-if="attempt.output_excerpt" class="max-h-16 overflow-auto whitespace-pre-wrap text-muted-foreground">{{ attempt.output_excerpt }}</p>
+                  <p v-else class="text-muted-foreground">—</p>
+                  <button v-if="attempt.session_id" class="mt-1 font-mono text-[10px] text-blue-300 hover:underline" @click="selectAttemptById(attempt.attempt_id)">
+                    {{ attempt.session_id }}
+                  </button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
 
       <div data-testid="task-workbench" class="grid flex-1 grid-cols-1 min-h-0 xl:grid-cols-[minmax(20rem,0.9fr)_minmax(16rem,0.65fr)_minmax(28rem,1.25fr)]">
         <section aria-label="Agent 会话" class="flex min-h-0 flex-col border-border p-3 xl:border-r">

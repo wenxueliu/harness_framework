@@ -682,7 +682,21 @@ class JobFlowService:
                 task_id = key.split("/")[-2]
                 if isinstance(value, dict):
                     definition = version_tasks.get(task_id, {})
-                    tasks[task_id] = {**value, "depends_on": definition.get("depends_on", [])}
+                    task_base = f"{INSTANCE_PREFIX}/{instance_id}/tasks/{task_id}"
+                    feedback = self._read(f"{task_base}/retry_feedback", {})
+                    fail_count, _ = self.store.kv_get(f"{task_base}/fail_count")
+                    try:
+                        fail_count_value = int(str(fail_count or "0").strip('"') or 0)
+                    except (TypeError, ValueError):
+                        fail_count_value = 0
+                    fail_round, _ = self.store.kv_get(f"{task_base}/fail_round")
+                    tasks[task_id] = {
+                        **value,
+                        "depends_on": definition.get("depends_on", []),
+                        "retry_feedback": feedback if isinstance(feedback, dict) else {},
+                        "fail_count": fail_count_value,
+                        "fail_round": str(fail_round or ""),
+                    }
         return {
             **meta,
             "group_id": template_meta.get("group_id") if isinstance(template_meta, dict) else None,
@@ -1092,10 +1106,14 @@ class JobFlowService:
         current = self._read(status_key)
         if not isinstance(current, dict):
             raise APIError("TASK_NOT_FOUND", "实例任务不存在", 404)
-        attempt_count = int(current.get("attempt_count", 0)) + 1
+        # 手动重试在请求时就登记一次 attempt；Dispatcher 认领时复用这个 id，
+        # 不再重复 +1（见 _reusable_pending_attempt）。
+        attempt_count = int(current.get("attempt_count", 0) or 0) + 1
         attempt_id = f"attempt-{attempt_count}-{uuid.uuid4().hex[:8]}"
+        previous_state = str(current.get("state", "") or "")
         current.pop("waiting_reason", None)
-        current.update({"state": "PENDING", "attempt_count": attempt_count, "current_attempt": attempt_id})
+        current.update({"state": "PENDING", "attempt_count": attempt_count,
+                        "current_attempt": attempt_id})
         self._write(status_key, current)
         # 上一条等待原因（如 WORKSPACE_UNAVAILABLE）不能跟着新 attempt 继续展示。
         task_base = f"{INSTANCE_PREFIX}/{instance_id}/tasks/{task_id}"
@@ -1109,6 +1127,11 @@ class JobFlowService:
         self._write(f"{INSTANCE_PREFIX}/{instance_id}/tasks/{task_id}/attempts/{attempt_id}", {
             "attempt_id": attempt_id, "state": "PENDING", "created_at": _now(), "created_by": actor,
         })
+        self._append_event(
+            f"{INSTANCE_PREFIX}/{instance_id}", "TASK_RETRY_REQUESTED", actor,
+            {"task": task_id, "attempt_id": attempt_id,
+             "attempt_count": attempt_count, "previous_state": previous_state},
+        )
         # 已结束的实例必须回到 RUNNING，否则调度器不会认领这个 PENDING 任务。
         resumed = self.resume_for_message(instance_id, actor).get("resumed", False)
         return {"instance": self.get_instance(instance_id), "attempt_id": attempt_id,
@@ -1352,8 +1375,20 @@ class JobFlowService:
                 "state": attempt.get("state", ""),
                 "created_at": attempt.get("created_at", ""),
                 "created_by": attempt.get("created_by", ""),
+                "started_at": attempt.get("started_at", ""),
+                "ended_at": attempt.get("ended_at", ""),
+                "duration_ms": attempt.get("duration_ms"),
+                "provider": attempt.get("provider", ""),
+                "agent_id": attempt.get("agent_id", ""),
+                "session_id": attempt.get("session_id", ""),
+                "output_excerpt": attempt.get("output_excerpt", ""),
+                "waiting_reason": attempt.get("waiting_reason", ""),
             }
-            failure_reason = attempt.get("failure_reason") or attempt.get("error_message")
+            failure_reason = (
+                attempt.get("failure_reason")
+                or attempt.get("error_message")
+                or attempt.get("error")
+            )
             if failure_reason:
                 record["failure_reason"] = failure_reason
             binding = None

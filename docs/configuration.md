@@ -96,8 +96,8 @@ daemon 日志同样记录该具体名称。
 | `do` | 这一步要做什么（执行指令） | 与 `description` 至少有一个；发给 Agent |
 | `input` | 这一步消费什么 | 可选；缺失时提示词不含该段描述 |
 | `output` | 这一步要产出什么 | 可选；缺失时下游提示词不含该段描述 |
-| `output_format` | 产物的机器可校验格式 | `file` / `json` / `marker` / `text`；不符即视为该节点失败 |
-| `on_fail` | 失败时回退到哪个节点重来 | `{task, max_fail_count}`；目标节点必须存在，且本节点必须配置 `output_format` |
+| `output_format` | 产物的机器可校验格式 | `file` / `json` / `marker` / `text` / `command`；不符即视为该节点失败 |
+| `on_fail` | 失败时回退到哪个节点重来 | `{task, max_fail_count}`；目标节点必须存在，且本节点必须配置 `output_format`；失败原因写入目标节点的 `retry_feedback` |
 
 产物流向：节点通过校验后，产物记录写入 `tasks/<task>/output`，下游节点的
 下游节点的 `input` 里以 `[上游产物]` 形式带给 Agent。

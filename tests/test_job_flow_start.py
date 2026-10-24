@@ -184,3 +184,24 @@ def test_start_instance_running_run_is_idempotent(mock_consul) -> None:
     assert len(runs) == 1
     status, _ = mock_consul.kv_get(f"{INSTANCE_PREFIX}/inst-idempotent/status")
     assert json.loads(status)["state"] == "QUEUED"
+
+
+def test_instance_view_exposes_retry_feedback_and_fail_count(mock_consul) -> None:
+    service = JobFlowService(mock_consul)
+    _seed_instance(service, "inst-feedback")
+    base = f"{INSTANCE_PREFIX}/inst-feedback/tasks/build"
+    service._write(f"{base}/status", {
+        "task_id": "build", "state": "FAILED", "attempt_count": 2,
+    })
+    service._write(f"{base}/retry_feedback", {
+        "attempt": 2, "max_attempts": 2,
+        "failed_checks": [{"task": "build__check", "error": "验证未通过: 缺少测试"}],
+    })
+    mock_consul.kv_put(f"{base}/fail_count", "2")
+    service._write(f"{base}/fail_round", "2")
+
+    task = service.get_instance("inst-feedback")["tasks"]["build"]
+
+    assert task["fail_count"] == 2
+    assert task["fail_round"] == "2"
+    assert task["retry_feedback"]["failed_checks"][0]["task"] == "build__check"

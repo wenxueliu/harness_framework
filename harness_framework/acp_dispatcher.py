@@ -120,6 +120,53 @@ class ACPDispatcher:
             return f"{INSTANCE_PREFIX}/{scope_id}"
         return f"workflows/{scope_id}"
 
+    def _reusable_pending_attempt(
+        self, req_id: str, task_name: str, status: dict[str, Any],
+    ) -> str:
+        """手动 retry 预先登记的 PENDING attempt，认领时复用同一个 id。"""
+        if self.scope != JOBFLOW_SCOPE:
+            return ""
+        candidate = str(status.get("current_attempt") or "")
+        if not candidate.startswith("attempt-"):
+            return ""
+        raw, _ = self.store.kv_get(
+            f"{self._task_base(req_id, task_name)}/attempts/{candidate}")
+        try:
+            record = json.loads(raw) if raw else {}
+        except (TypeError, json.JSONDecodeError):
+            return ""
+        return candidate if isinstance(record, dict) and record.get("state") == "PENDING" else ""
+
+    def _update_attempt_state(
+        self, req_id: str, task_name: str, attempt_id: str,
+        state: str, **fields: Any,
+    ) -> None:
+        """补全一次 attempt 的执行结果，供看板按轮回看。"""
+        if self.scope != JOBFLOW_SCOPE or not attempt_id:
+            return
+        key = f"{self._task_base(req_id, task_name)}/attempts/{attempt_id}"
+        raw, _ = self.store.kv_get(key)
+        try:
+            record = json.loads(raw) if raw else {}
+        except (TypeError, json.JSONDecodeError):
+            record = {}
+        if not isinstance(record, dict):
+            record = {}
+        record.setdefault("attempt_id", attempt_id)
+        record.update(fields)
+        record["state"] = state
+        now = _now_iso()
+        record["updated_at"] = now
+        if state in {"DONE", "FAILED", "WAITING_FOR_HUMAN", "EXPIRED",
+                     "CANCELLED", "ABORTED"}:
+            record.setdefault("ended_at", now)
+            started = _parse_iso(record.get("started_at") or record.get("created_at"))
+            ended = _parse_iso(record.get("ended_at"))
+            if started and ended:
+                record["duration_ms"] = max(
+                    0, int((ended - started).total_seconds() * 1000))
+        self.store.kv_put(key, json.dumps(record, ensure_ascii=False))
+
     def _instance_directory(self, req_id: str) -> str:
         """Return the execution directory configured on a job-flow instance.
 
@@ -331,7 +378,10 @@ class ACPDispatcher:
                     return None
             else:
                 run_id = self.run_manager.get_or_create_run(req_id, "acp-dispatcher")
-        attempt_id = f"attempt-{uuid.uuid4().hex}"
+        attempt_id = self._reusable_pending_attempt(req_id, task_name, status)
+        reused_attempt = bool(attempt_id)
+        if not attempt_id:
+            attempt_id = f"attempt-{uuid.uuid4().hex}"
         previous_epoch, _ = self.store.kv_get(f"{base}/lease_epoch")
         lease_epoch = int(previous_epoch or "0") + 1
         binding_key = ""
@@ -359,10 +409,14 @@ class ACPDispatcher:
             )
         attempt_fields = {}
         if self.scope == JOBFLOW_SCOPE:
-            attempt_fields = {
-                "current_attempt": attempt_id,
-                "attempt_count": int(status.get("attempt_count", 0) or 0) + 1,
-            }
+            attempt_fields = {"current_attempt": attempt_id}
+            if not reused_attempt:
+                # 手动 retry 已在请求时计数，这里只对系统发起的执行 +1。
+                attempt_fields["attempt_count"] = (
+                    int(status.get("attempt_count", 0) or 0) + 1)
+            else:
+                attempt_fields["attempt_count"] = int(
+                    status.get("attempt_count", 0) or 0)
         if not self._write_task_state(
             req_id, task_name, "IN_PROGRESS", index,
             current=status, fields=attempt_fields,
@@ -393,7 +447,8 @@ class ACPDispatcher:
             self.store.kv_put(f"{base}/attempts/{attempt_id}", json.dumps({
                 "attempt_id": attempt_id, "state": "IN_PROGRESS",
                 "agent_id": agent_id, "provider": provider,
-                "created_at": now,
+                "created_at": now, "started_at": now,
+                "created_by": "acp-dispatcher",
             }, ensure_ascii=False))
         self.run_manager.record_transition(
             req_id, run_id, task_name, "PENDING", "IN_PROGRESS", agent_id,
@@ -593,6 +648,10 @@ class ACPDispatcher:
                     task_id=task_name,
                 )
                 if not passed:
+                    self.store.kv_put(
+                        f"{base}/failure_evidence",
+                        json.dumps(evidence, ensure_ascii=False),
+                    )
                     self._fail(
                         req_id, task_name, claim,
                         f"产物校验未通过: {reason}",
@@ -612,6 +671,10 @@ class ACPDispatcher:
             if _truthy(meta.get("require_verdict")):
                 passed, reason = parse_verdict(_agent_text(result.updates))
                 if not passed:
+                    self.store.kv_put(
+                        f"{base}/failure_evidence",
+                        json.dumps({"verdict": reason}, ensure_ascii=False),
+                    )
                     self._fail(
                         req_id, task_name, claim,
                         f"验证未通过: {reason}",
@@ -755,7 +818,26 @@ class ACPDispatcher:
             "output": str(meta.get("output") or "").strip(),
             "parameters": self._instance_parameters(req_id),
         }
+        feedback = self._retry_feedback(req_id, task_name)
+        if feedback:
+            package["retry_feedback"] = feedback
         return json.dumps(package, ensure_ascii=False, indent=2)
+
+    def _retry_feedback(self, req_id: str, task_name: str) -> dict[str, Any]:
+        """上一次验证失败的原因；Aggregator 回退目标节点时写入。"""
+        raw, _ = self.store.kv_get(
+            f"{self._task_base(req_id, task_name)}/retry_feedback")
+        if not raw:
+            return {}
+        try:
+            value = json.loads(raw)
+        except (TypeError, json.JSONDecodeError):
+            return {}
+        return value if isinstance(value, dict) else {}
+
+    def _clear_retry_feedback(self, req_id: str, task_name: str) -> None:
+        self.store.kv_delete(
+            f"{self._task_base(req_id, task_name)}/retry_feedback")
 
     def _compose_input(self, req_id: str, task_name: str, meta: dict[str, Any]) -> str:
         """节点消费的东西 = 声明的 input + 注入的上下文 + 上游节点已产出的产物。"""
@@ -857,6 +939,12 @@ class ACPDispatcher:
         self.store.kv_put(f"{base}/completed_by", claim["agent_id"])
         self.store.kv_put(f"{base}/completed_at", _now_iso())
         self.store.kv_put(f"{base}/result", json.dumps(payload, ensure_ascii=False))
+        self._clear_retry_feedback(req_id, task_name)
+        self._update_attempt_state(
+            req_id, task_name, claim["attempt_id"], "DONE",
+            provider=claim["provider"], session_id=result.session_id,
+            output_excerpt=_agent_text(result.updates)[-2000:],
+        )
         self.run_manager.record_transition(
             req_id, claim["run_id"], task_name, "IN_PROGRESS", "DONE",
             claim["agent_id"], "ACP turn completed", {"provider": claim["provider"]},
@@ -886,6 +974,16 @@ class ACPDispatcher:
         self.store.kv_put(f"{base}/failed_by", claim["agent_id"])
         self.store.kv_put(f"{base}/failed_at", _now_iso())
         self.store.kv_put(f"{base}/error_message", error[:8000])
+        evidence_raw, _ = self.store.kv_get(f"{base}/failure_evidence")
+        try:
+            evidence = json.loads(evidence_raw) if evidence_raw else {}
+        except (TypeError, json.JSONDecodeError):
+            evidence = {}
+        self._update_attempt_state(
+            req_id, task_name, claim["attempt_id"], "FAILED",
+            provider=claim["provider"], error=error[:4000],
+            failure_evidence=evidence if isinstance(evidence, dict) else {},
+        )
         self.run_manager.record_transition(
             req_id, claim["run_id"], task_name, "IN_PROGRESS", "FAILED",
             claim["agent_id"], error[:1000], {"provider": claim["provider"]},
@@ -915,6 +1013,11 @@ class ACPDispatcher:
             return
         self.store.kv_put(f"{base}/waiting_reason", "WORKSPACE_UNAVAILABLE")
         self.store.kv_put(f"{base}/error_message", error[:8000])
+        self._update_attempt_state(
+            req_id, task_name, claim["attempt_id"], "WAITING_FOR_HUMAN",
+            provider=claim["provider"], error=error[:4000],
+            waiting_reason="WORKSPACE_UNAVAILABLE",
+        )
         self.run_manager.record_transition(
             req_id, claim["run_id"], task_name, "IN_PROGRESS", "WAITING_FOR_HUMAN",
             claim["agent_id"], error[:1000],
@@ -1023,6 +1126,11 @@ class ACPDispatcher:
         if not self._write_task_state(req_id, task_name, new_state, index, current=status):
             return
         self.store.kv_put(f"{base}/attempt_id", "")
+        self._update_attempt_state(
+            req_id, task_name, claim["attempt_id"],
+            "ABORTED" if new_state == "ABORTED" else "CANCELLED",
+            provider=claim["provider"], error=f"ACP control cancellation: {reason}",
+        )
         if new_state == "ABORTED":
             self.store.kv_put(f"{base}/aborted_at", _now_iso())
         self.run_manager.record_transition(
@@ -1163,6 +1271,11 @@ class JobFlowACPDispatcher(ACPDispatcher):
                 )
                 self.store.kv_put(f"{base}/failed_at", now)
                 self.store.kv_put(f"{base}/error_message", "hard deadline exceeded")
+                attempt_id, _ = self.store.kv_get(f"{base}/attempt_id")
+                self._update_attempt_state(
+                    instance_id, task_id, str(attempt_id or ""), "FAILED",
+                    error="hard deadline exceeded",
+                )
                 continue
             if not lease_deadline or lease_deadline > now:
                 continue
@@ -1173,6 +1286,11 @@ class JobFlowACPDispatcher(ACPDispatcher):
                 fields={"current_attempt": "", "lease_epoch": int(epoch or "0") + 1},
             )
             self.store.kv_put(f"{base}/lease_epoch", str(int(epoch or "0") + 1))
+            attempt_id, _ = self.store.kv_get(f"{base}/attempt_id")
+            self._update_attempt_state(
+                instance_id, task_id, str(attempt_id or ""), "EXPIRED",
+                error="lease expired, task requeued",
+            )
 
     def _jobflow_task_meta(self) -> list[tuple[str, str, dict[str, Any]]]:
         items, _ = self.store.kv_get(f"{INSTANCE_PREFIX}/", recurse=True)
@@ -1241,6 +1359,15 @@ def _agent_text(updates: list[dict[str, Any]]) -> str:
 
 def _now_iso() -> str:
     return datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _parse_iso(value: Any) -> datetime.datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
 
 def _deadline(seconds: int) -> str:

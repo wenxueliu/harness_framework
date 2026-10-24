@@ -459,7 +459,13 @@ watch(() => instance.value?.group_id, (groupId) => {
         <h2 class="text-sm font-semibold">实例任务</h2>
         <div class="mt-3 divide-y divide-border">
           <RouterLink v-for="(task, taskId) in instance.tasks" :key="taskId" :to="'/instances/' + encodeURIComponent(instance.instance_id) + '/tasks/' + encodeURIComponent(String(taskId))" data-testid="instance-task" class="flex items-center justify-between py-3 hover:text-blue-300">
-            <span class="font-mono text-xs">{{ taskId }}</span><span class="text-xs text-muted-foreground">{{ task.state }} · {{ task.attempt_count }} 次尝试</span>
+            <span class="font-mono text-xs">{{ taskId }}</span>
+            <span class="flex items-center gap-2 text-xs text-muted-foreground">
+              <span>{{ task.state }} · {{ task.attempt_count }} 次尝试</span>
+              <span v-if="task.fail_count" class="rounded border border-amber-400/30 bg-amber-400/10 px-1.5 py-0.5 text-amber-300">
+                回退 {{ task.fail_count }}/{{ task.retry_feedback?.max_attempts ?? '—' }}
+              </span>
+            </span>
           </RouterLink>
         </div>
       </section>

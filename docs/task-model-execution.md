@@ -126,14 +126,21 @@ python scripts/add_task.py req-001 fix-login \
 
 ## 节点契约与提示词
 
-提示词就是一段 JSON，只包含四样东西：
+提示词就是一段 JSON，通常包含四样东西；因验证失败回退重跑时多一个 `retry_feedback`：
 
 ```json
 {
   "do": "这一步要做什么",
   "input": "消费什么（含注入的上下文与上游产物）",
   "output": "要产出什么",
-  "parameters": {"requirement": "实例级输入参数"}
+  "parameters": {"requirement": "实例级输入参数"},
+  "retry_feedback": {
+    "attempt": 1,
+    "max_attempts": 2,
+    "failed_checks": [
+      {"task": "build__check", "error": "验证未通过: 缺少测试", "evidence": {"exit_code": 1}}
+    ]
+  }
 }
 ```
 
@@ -141,6 +148,10 @@ python scripts/add_task.py req-001 fix-login \
 - `input`：节点声明的 input + 注入的上下文（`context_inputs`）+ 上游节点已产出的产物
 - `output`：节点要交付的东西；模板里的 `output_format` 是框架侧的校验规则，不发给 Agent
 - `parameters`：实例创建时填的输入参数
+- `retry_feedback`：上一轮验证失败的原因与证据；Aggregator 回退目标节点时写入
+  `tasks/<target>/retry_feedback`，目标节点完成后自动清除。没有回退时不出现
+
+`input` / `output` 都是可选字段，缺失只是提示词里对应位置为空。
 
 提示词没有开场白和 `TASK PACKAGE` 标签，直接输出这段 JSON，也不出现
 stage-bridge 之类的旧机制。
@@ -149,9 +160,9 @@ stage-bridge 之类的旧机制。
 
 | 机制 | 作用 |
 |------|------|
-| `output_format` | 框架在本轮结束后校验产物（`file` / `json` / `marker` / `text`），不符即视为节点失败 |
+| `output_format` | 框架在本轮结束后校验产物（`file` / `json` / `marker` / `text` / `command`），不符即视为节点失败 |
 | `require_verdict` | 要求 Agent 给出 `VERDICT: PASS` |
-| `on_fail` | 失败时回退到指定节点重跑，受 `max_fail_count` 限制 |
+| `on_fail` | 失败时回退到指定节点重跑，受 `max_fail_count` 限制；失败原因通过 `retry_feedback` 带回目标节点 |
 
 旧的 `completion_contract` / `agent_contract` 已废弃：它们依赖 stage-bridge 写
 Consul 键，在当前执行路径上没有写入通道，保留只会让任务永远失败或让 Agent 去找

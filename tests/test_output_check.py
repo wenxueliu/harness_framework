@@ -95,3 +95,58 @@ def test_json_output_accepts_plain_object():
         {"kind": "json", "required": ["a"]}, '前缀 {"a": 1} 后缀')
     assert ok is True
     assert evidence["json"] == {"a": 1}
+
+
+def test_command_output_runs_in_working_directory(tmp_path):
+    import sys
+
+    ok, reason, evidence = verify_output(
+        {"kind": "command", "command": [sys.executable, "-c", "print('ok')"]},
+        "", cwd=str(tmp_path),
+    )
+    assert ok is True
+    assert evidence["exit_code"] == 0
+    assert "ok" in evidence["output_tail"]
+
+
+def test_command_output_fails_on_unexpected_exit_code(tmp_path):
+    import sys
+
+    ok, reason, evidence = verify_output(
+        {"kind": "command", "command": [sys.executable, "-c", "raise SystemExit(3)"]},
+        "", cwd=str(tmp_path),
+    )
+    assert ok is False
+    assert "退出码 3" in reason
+    assert evidence["exit_code"] == 3
+
+
+def test_command_output_checks_stdout_pattern(tmp_path):
+    import sys
+
+    ok, reason, _ = verify_output(
+        {
+            "kind": "command",
+            "command": [sys.executable, "-c", "print('12 passed')"],
+            "stdout_pattern": r"\d+ passed",
+        },
+        "", cwd=str(tmp_path),
+    )
+    assert ok is True
+
+    ok, reason, _ = verify_output(
+        {
+            "kind": "command",
+            "command": [sys.executable, "-c", "print('2 failed')"],
+            "stdout_pattern": r"\d+ passed",
+        },
+        "", cwd=str(tmp_path),
+    )
+    assert ok is False
+    assert "未匹配" in reason
+
+
+def test_command_output_requires_a_command(tmp_path):
+    ok, reason, _ = verify_output({"kind": "command", "command": []}, "", cwd=str(tmp_path))
+    assert ok is False
+    assert "command" in reason

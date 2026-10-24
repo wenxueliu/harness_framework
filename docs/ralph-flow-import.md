@@ -63,6 +63,7 @@ explore ──▶ explore__check ──▶ propose ──▶ propose__check ─�
 | `require_verdict` | 结论必须是 `VERDICT: PASS`，否则任务判失败 | `acp_dispatcher._execute` |
 | `require_approval` | 需要人工批准才执行；批准只对本次有效 | `acp_dispatcher._claim` |
 | `on_fail` | 失败时回退到指定任务重跑 | `aggregator._recover_failed_checks` |
+| `retry_feedback` | 回退时把验证失败原因与证据带给目标节点 | `aggregator` 写入 / `acp_dispatcher._build_prompt` 注入 |
 
 验证节点没给出 `VERDICT: PASS` → 产物格式校验失败 → 任务失败 → 触发 `on_fail`
 回退到对应的执行节点重跑（最多 `max_fail_count` 次）。

@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+import uuid
 from typing import Optional
 
 from .kv_store_protocol import KVStore
@@ -204,7 +205,12 @@ class Aggregator:
         DAG 本身不表达回退边，所以用「把上游任务重置为 PENDING」实现：
         上游重跑完成后，验证节点（BLOCKED）会因依赖满足被重新激活。
         失败次数超过 max_fail_count 时不再回退，任务保持 FAILED。
+
+        回退时把验证失败的原因与证据写入目标节点的 ``retry_feedback``，
+        目标节点下一轮提示词会带上这段反馈，避免盲目重试。
         """
+        failures_by_target: dict[str, list[dict]] = {}
+        meta_by_check: dict[str, dict] = {}
         for task_id, info in list(tasks.items()):
             if not isinstance(info, dict) or info.get("state") != "FAILED":
                 continue
@@ -212,16 +218,25 @@ class Aggregator:
             if not isinstance(on_fail, dict):
                 continue
             target = str(on_fail.get("task") or "")
+            if not target or target not in tasks:
+                continue
+            failures_by_target.setdefault(target, []).append({
+                "task": task_id,
+                "error": str(info.get("error_message") or "")[:4000],
+                "evidence": self._failure_evidence(instance_id, task_id),
+            })
+            meta_by_check[task_id] = info
+        for target, failures in failures_by_target.items():
+            first = meta_by_check[failures[0]["task"]]
+            on_fail = first.get("on_fail") or {}
             try:
                 max_count = int(on_fail.get("max_fail_count") or 1)
             except (TypeError, ValueError):
                 max_count = 1
-            if not target or target not in tasks:
-                continue
             # 失败预算按步骤共享：同一 fail_group 的多个验证者共用一个计数，
             # 对应 ralph-flow 的步骤级 fail_count（一轮失败只记一次，
             # 与该轮有几个验证者失败无关）。
-            group = str(info.get("fail_group") or task_id)
+            group = str(first.get("fail_group") or failures[0]["task"])
             group_base = f"{INSTANCE_PREFIX}/{instance_id}/tasks/{group}"
             round_id = self._step_round(instance_id, group)
             last_round, _ = self.consul.kv_get(f"{group_base}/fail_round")
@@ -233,26 +248,75 @@ class Aggregator:
                 self.consul.kv_put(f"{group_base}/fail_round", round_id)
             if count > max_count:
                 continue
-            info["fail_count"] = count
-            info["state"] = "BLOCKED"
-            info["error_message"] = (
-                f"验证未通过，回退到 {target} 重做（第 {count}/{max_count} 次）"
+            for failure in failures:
+                info = tasks.get(failure["task"])
+                if not isinstance(info, dict):
+                    continue
+                info["fail_count"] = count
+                info["state"] = "BLOCKED"
+                info["error_message"] = (
+                    f"验证未通过，回退到 {target} 重做"
+                    f"（第 {count}/{max_count} 次）"
+                )
+                self._write_instance_task(instance_id, failure["task"], info)
+            target_base = f"{INSTANCE_PREFIX}/{instance_id}/tasks/{target}"
+            self.consul.kv_put(
+                f"{target_base}/retry_feedback",
+                json.dumps({
+                    "round": round_id,
+                    "attempt": count,
+                    "max_attempts": max_count,
+                    "failed_checks": failures,
+                    "at": _now_iso(),
+                }, ensure_ascii=False),
             )
-            self._write_instance_task(instance_id, task_id, info)
+            self._append_event(
+                instance_id, "CHECK_ROLLBACK", "aggregator", {
+                    "target": target,
+                    "checks": [item["task"] for item in failures],
+                    "round": round_id,
+                    "attempt": count,
+                    "max_attempts": max_count,
+                    "errors": [item["error"] for item in failures],
+                },
+            )
             target_info = tasks.get(target)
             if isinstance(target_info, dict):
                 target_info["state"] = "PENDING"
                 target_info["current_attempt"] = ""
                 self._write_instance_task(instance_id, target, target_info)
-                base = f"{INSTANCE_PREFIX}/{instance_id}/tasks/{target}"
-                epoch, _ = self.consul.kv_get(f"{base}/lease_epoch")
+                epoch, _ = self.consul.kv_get(f"{target_base}/lease_epoch")
                 self.consul.kv_put(
-                    f"{base}/lease_epoch", str(int(epoch or "0") + 1))
-                self.consul.kv_put(f"{base}/attempt_id", "")
+                    f"{target_base}/lease_epoch", str(int(epoch or "0") + 1))
+                self.consul.kv_put(f"{target_base}/attempt_id", "")
             log.info(
                 "instance %s: check %s failed, fallback to %s (%s/%s)",
-                instance_id, task_id, target, count, max_count,
+                instance_id, ",".join(item["task"] for item in failures),
+                target, count, max_count,
             )
+
+    def _append_event(
+        self, instance_id: str, event_type: str, actor: str, data: dict,
+    ) -> None:
+        event_id = f"event-{uuid.uuid4().hex[:12]}"
+        self.consul.kv_put(
+            f"{INSTANCE_PREFIX}/{instance_id}/events/{event_id}",
+            json.dumps({
+                "event_id": event_id, "type": event_type, "actor": actor,
+                "created_at": _now_iso(), "data": data,
+            }, ensure_ascii=False),
+        )
+
+    def _failure_evidence(self, instance_id: str, task_id: str) -> dict:
+        raw, _ = self.consul.kv_get(
+            f"{INSTANCE_PREFIX}/{instance_id}/tasks/{task_id}/failure_evidence")
+        if not raw:
+            return {}
+        try:
+            value = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+        return value if isinstance(value, dict) else {}
 
     def _step_round(self, instance_id: str, group: str) -> str:
         """一轮 = 步骤（fail_group 指向的执行节点）的一次 attempt。"""

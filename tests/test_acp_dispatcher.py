@@ -154,6 +154,35 @@ def test_task_package_carries_instance_parameters():
     assert set(package) == {"do", "input", "output", "parameters"}
 
 
+def test_prompt_carries_retry_feedback_after_rollback():
+    import json
+
+    store = _store("backend")
+    dispatcher = JobFlowACPDispatcher(
+        store, commands={"codex": ["codex-acp"]},
+        client_factory=FakeACPClient,
+    )
+    store.kv_put(
+        "jobflows/instances/inst-1/tasks/build/retry_feedback",
+        json.dumps({
+            "attempt": 1,
+            "max_attempts": 2,
+            "failed_checks": [{
+                "task": "build__check",
+                "error": "验证未通过: 缺少测试",
+                "evidence": {"exit_code": 1},
+            }],
+        }),
+    )
+
+    package = json.loads(dispatcher._build_prompt(
+        "inst-1", "build", {"type": "backend", "do": "do it"}))
+
+    feedback = package["retry_feedback"]
+    assert feedback["failed_checks"][0]["task"] == "build__check"
+    assert "缺少测试" in feedback["failed_checks"][0]["error"]
+
+
 def test_dispatcher_publishes_updates_to_live_hub():
     from harness_framework.live_sessions import LiveSessionHub
 
@@ -759,3 +788,78 @@ def test_write_task_state_clears_stale_waiting_reason():
     assert "waiting_reason" not in stored
     assert "jobflows/instances/inst-1/tasks/build/waiting_reason" not in store._store
 
+
+
+def test_job_flow_attempt_record_captures_each_run():
+    store = MockConsulStore()
+    _job_flow_service(store)
+    dispatcher = JobFlowACPDispatcher(
+        store,
+        commands={"claude": ["claude-acp"], "codex": ["codex-acp"]},
+        client_factory=FakeACPClient,
+    )
+    instance_id, task_name, meta = dispatcher._pending_tasks()[0]
+    claim = dispatcher._claim(instance_id, task_name, meta)
+    assert claim is not None
+    dispatcher._active[(f"jobflow:{instance_id}", task_name)] = {
+        **claim, "scope_id": instance_id, "client": None,
+    }
+
+    dispatcher._execute(instance_id, task_name, meta, claim)
+
+    base = f"jobflows/instances/{instance_id}/tasks/{task_name}"
+    record = json.loads(store._store[f"{base}/attempts/{claim['attempt_id']}"])
+    assert record["state"] == "DONE"
+    assert record["provider"] == "codex"
+    assert record["session_id"] == "acp-session-new"
+    assert record["ended_at"]
+    assert record["duration_ms"] >= 0
+    assert record["output_excerpt"]
+
+
+def test_job_flow_failed_attempt_records_the_error():
+    store = MockConsulStore()
+    _job_flow_service(store)
+    dispatcher = JobFlowACPDispatcher(
+        store,
+        commands={"codex": ["codex-acp"]},
+        client_factory=FakeACPClient,
+    )
+    instance_id, task_name, meta = dispatcher._pending_tasks()[0]
+    claim = dispatcher._claim(instance_id, task_name, meta)
+    assert claim is not None
+
+    dispatcher._fail(instance_id, task_name, claim, "ACP session/prompt failed")
+
+    base = f"jobflows/instances/{instance_id}/tasks/{task_name}"
+    record = json.loads(store._store[f"{base}/attempts/{claim['attempt_id']}"])
+    assert record["state"] == "FAILED"
+    assert "session/prompt" in record["error"]
+    assert record["ended_at"]
+
+
+def test_manual_retry_counts_one_attempt_and_reuses_the_pending_id():
+    store = MockConsulStore()
+    service = _job_flow_service(store)
+    status_key = "jobflows/instances/inst-acp/tasks/build/status"
+    before = json.loads(store._store[status_key])
+    assert before["attempt_count"] == 0
+
+    result = service.retry_task("inst-acp", "build", "tester")
+
+    after_retry = json.loads(store._store[status_key])
+    assert after_retry["attempt_count"] == before["attempt_count"] + 1
+    assert after_retry["current_attempt"] == result["attempt_id"]
+
+    dispatcher = JobFlowACPDispatcher(
+        store,
+        commands={"codex": ["codex-acp"]},
+        client_factory=FakeACPClient,
+    )
+    _, task_name, meta = dispatcher._pending_tasks()[0]
+    claim = dispatcher._claim("inst-acp", task_name, meta)
+
+    assert claim is not None
+    assert claim["attempt_id"] == result["attempt_id"]
+    final = json.loads(store._store[status_key])
+    assert final["attempt_count"] == 1

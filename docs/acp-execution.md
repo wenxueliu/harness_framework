@@ -269,6 +269,27 @@ python -m harness_framework.daemon --local \
 
 测试至少覆盖：多实例并行隔离、V1/V2、能力缺失、MCP 未授权、Skill 注入失败、Workspace 冲突、Session 恢复、Task 重试、successor 和外部副作用补偿。
 
+### Attempt 记录
+
+每次认领都会写 `jobflows/instances/<id>/tasks/<task>/attempts/<attempt_id>`，结束时补全：
+
+| 字段 | 含义 |
+|------|------|
+| `state` | `PENDING` / `IN_PROGRESS` / `DONE` / `FAILED` / `WAITING_FOR_HUMAN` / `EXPIRED` / `CANCELLED` / `ABORTED` |
+| `created_at` / `started_at` / `ended_at` / `duration_ms` | 时间线 |
+| `provider` / `agent_id` / `session_id` | 谁执行的、会话入口 |
+| `error` / `failure_evidence` | 失败原因与机器证据（退出码、输出片段等） |
+| `output_excerpt` | 本轮 Agent 回复的末尾片段（截断 2KB） |
+
+查询：`GET /api/instances/<id>/tasks/<task>/attempts`。
+
+治理语义（验证节点失败回退）：
+
+- 回退预算记在 `tasks/<step>/fail_count` 与 `fail_round`，同一 `fail_group` 共享，一轮只记一次；
+- 回退时写 `tasks/<target>/retry_feedback`，目标节点下一轮提示词会带上失败原因与证据；
+- 审计事件 `CHECK_ROLLBACK` 记录 `target`、`checks`、`round`、`attempt`、`max_attempts`；
+- 手动重试记录 `TASK_RETRY_REQUESTED` 事件，并复用预先登记的 attempt id，不重复计数。
+
 ## 12. 参考
 
 - [ACP Session Setup](https://agentclientprotocol.com/protocol/v1/session-setup)

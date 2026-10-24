@@ -9,12 +9,16 @@
 ``json``    Agent 最后必须给出一段 JSON，按 required/types 校验
 ``marker``  Agent 输出里必须匹配给定的正则
 ``text``    Agent 输出长度下限
+``command`` 框架在工作目录直接执行命令，按退出码/输出判定（不依赖 Agent 自述，
+            用于避免「假通过」；命令来自模板定义，拥有与 Agent 同等的执行权限）
 """
 from __future__ import annotations
 
 import json
 import os
 import re
+import shlex
+import subprocess
 from typing import Any
 
 _ARTIFACT_DIRS = (
@@ -36,6 +40,8 @@ def verify_output(
         return _verify_marker(spec, text or "")
     if kind == "text":
         return _verify_text(spec, text or "")
+    if kind == "command":
+        return _verify_command(spec, cwd)
     return False, f"未知的 output_format.kind: {kind}", {}
 
 
@@ -148,3 +154,51 @@ def _verify_text(
             "length": len(text.strip()),
         }
     return True, "", {"length": len(text.strip())}
+
+
+def _verify_command(
+    spec: dict[str, Any], cwd: str,
+) -> tuple[bool, str, dict[str, Any]]:
+    """框架侧执行命令做确定性校验，结果不依赖 Agent 自述。"""
+    raw = spec.get("command")
+    if isinstance(raw, str):
+        command = shlex.split(raw, posix=os.name != "nt")
+    elif isinstance(raw, list):
+        command = [str(item) for item in raw]
+    else:
+        command = []
+    if not command or not all(item.strip() for item in command):
+        return False, "output_format.command 必须是非空字符串或字符串数组", {}
+    timeout = int(spec.get("timeout_seconds") or 600)
+    expected = int(spec.get("expect_exit", 0))
+    try:
+        completed = subprocess.run(
+            command, cwd=cwd or None, capture_output=True, text=True,
+            errors="replace", timeout=timeout,
+        )
+    except FileNotFoundError:
+        return False, f"命令不存在: {command[0]}", {"command": command}
+    except subprocess.TimeoutExpired:
+        return False, f"命令超时（{timeout}s）: {' '.join(command)}", {
+            "command": command, "timeout_seconds": timeout,
+        }
+    except OSError as exc:
+        return False, f"命令无法执行: {exc}", {"command": command}
+    output = f"{completed.stdout or ''}{completed.stderr or ''}"
+    evidence = {
+        "command": command,
+        "exit_code": completed.returncode,
+        "output_tail": output[-4000:],
+    }
+    if completed.returncode != expected:
+        return False, f"命令退出码 {completed.returncode}，期望 {expected}", evidence
+    pattern = str(spec.get("stdout_pattern") or "").strip()
+    if pattern:
+        try:
+            matched = re.search(pattern, output)
+        except re.error as exc:
+            return False, f"output_format.stdout_pattern 无效: {exc}", evidence
+        if not matched:
+            return False, f"命令输出未匹配 {pattern}", evidence
+        evidence["matched"] = matched.group(0)
+    return True, "", evidence

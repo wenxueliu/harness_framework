@@ -51,8 +51,53 @@ export interface JobFlowInstance {
   status: { state: string; revision: number }
   created_at?: string
   execution_profile_id?: string
-  tasks: Record<string, { state: string; attempt_count: number; current_attempt?: string; depends_on?: string[] }>
+  tasks: Record<string, {
+    state: string
+    attempt_count: number
+    current_attempt?: string
+    depends_on?: string[]
+    error_message?: string
+    waiting_reason?: string
+    fail_count?: number
+    retry_feedback?: RetryFeedback
+  }>
   successor_of?: string
+}
+
+/** 验证失败回退时由 Aggregator 写给目标节点的反馈。 */
+export interface RetryFeedback {
+  round?: string
+  attempt?: number
+  max_attempts?: number
+  at?: string
+  failed_checks?: Array<{
+    task: string
+    error?: string
+    evidence?: Record<string, unknown>
+  }>
+}
+
+/** 一次真实执行（一个 attempt）的结果记录。 */
+export interface TaskAttemptRecord {
+  attempt_id: string
+  state: string
+  created_at: string
+  created_by: string
+  started_at: string
+  ended_at: string
+  duration_ms: number | null
+  provider: string
+  agent_id: string
+  session_id: string
+  output_excerpt: string
+  waiting_reason: string
+  failure_reason?: string
+  workspace_binding?: {
+    workspace_id: string
+    binding_type: string
+    writable: boolean | null
+    bound_at: string
+  } | null
 }
 
 export interface JobFlowArtifact {
@@ -469,6 +514,17 @@ export async function retryJobFlowTask(instanceId: string, taskId: string) {
     `/api/instances/${encodeURIComponent(instanceId)}/tasks/${encodeURIComponent(taskId)}/retry`,
     jsonRequest('POST', {}),
   )
+}
+
+/** 某任务的全部 attempt（含已完成/失败状态与失败原因）。 */
+export async function listJobFlowTaskAttempts(
+  instanceId: string,
+  taskId: string,
+): Promise<TaskAttemptRecord[]> {
+  const result = await apiRequest<{ attempts: TaskAttemptRecord[] }>(
+    `/api/instances/${encodeURIComponent(instanceId)}/tasks/${encodeURIComponent(taskId)}/attempts`,
+  )
+  return result.attempts ?? []
 }
 
 export async function approveJobFlowTask(instanceId: string, taskId: string) {

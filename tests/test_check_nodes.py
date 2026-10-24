@@ -323,3 +323,36 @@ def test_approve_task_releases_a_waiting_check():
         "jobflows/instances/inst-020/tasks/propose__check/status"])
     assert status["state"] == "PENDING"
     assert store._store["jobflows/instances/inst-020/tasks/propose__check/approval"]
+
+
+def test_rollback_writes_failure_feedback_for_the_target():
+    store = MockConsulStore(_check_instance())
+    store.kv_put(
+        "jobflows/instances/inst-010/tasks/explore__check/status",
+        json.dumps({
+            "state": "FAILED", "attempt_count": 1,
+            "error_message": "产物校验未通过: 未匹配 VERDICT:\\s*PASS",
+        }),
+    )
+    store.kv_put(
+        "jobflows/instances/inst-010/tasks/explore__check/failure_evidence",
+        json.dumps({"matched": None, "commands": ["pytest -q"]}),
+    )
+    agg = Aggregator(store, run_manager=make_mock_run_manager(), poll_interval=1)
+
+    agg._process_instance("inst-010")
+
+    feedback = json.loads(store._store[
+        "jobflows/instances/inst-010/tasks/explore/retry_feedback"])
+    assert feedback["attempt"] == 1
+    assert feedback["failed_checks"][0]["task"] == "explore__check"
+    assert "VERDICT" in feedback["failed_checks"][0]["error"]
+    assert feedback["failed_checks"][0]["evidence"]["commands"] == ["pytest -q"]
+
+    events = [
+        json.loads(value) for key, value in store._store.items()
+        if key.startswith("jobflows/instances/inst-010/events/")
+    ]
+    rollbacks = [item for item in events if item["type"] == "CHECK_ROLLBACK"]
+    assert rollbacks and rollbacks[0]["data"]["target"] == "explore"
+    assert rollbacks[0]["data"]["checks"] == ["explore__check"]

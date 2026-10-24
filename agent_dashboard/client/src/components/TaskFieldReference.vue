@@ -24,11 +24,13 @@ const formats = [
   { kind: 'json', example: '{"kind":"json","required":["summary"],"types":{"summary":"string"}}', desc: '输出里的 JSON 按字段校验' },
   { kind: 'marker', example: '{"kind":"marker","pattern":"VERDICT:\\\\s*PASS"}', desc: '输出必须匹配正则' },
   { kind: 'text', example: '{"kind":"text","min_length":200}', desc: '输出长度下限' },
+  { kind: 'command', example: '{"kind":"command","command":["python","-m","pytest","-q"],"stdout_pattern":"passed"}', desc: '框架直接执行命令判定，不依赖 Agent 自述，避免假通过' },
 ]
 
 const rules = [
   'input / output 都是可选字段，只影响提示词内容，不影响调度',
   '配置 on_fail → 必须声明 output_format，且 on_fail.task 必须存在',
+  '验证失败回退时，失败原因与证据通过 retry_feedback 带回目标节点',
   '格式校验不通过 = 该节点失败 → 触发 on_fail 回退上游重跑（最多 max_fail_count 次）',
 ]
 </script>
