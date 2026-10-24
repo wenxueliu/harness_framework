@@ -9,6 +9,7 @@ import ManifestViewer from '@/components/ManifestViewer.vue'
 import ChangeSetPanel from '@/components/ChangeSetPanel.vue'
 import WorkspaceCard from '@/components/WorkspaceCard.vue'
 import ArtifactList from '@/components/ArtifactList.vue'
+import InstanceExecution from '@/components/InstanceExecution.vue'
 import { HarnessApiError } from '@/api/client'
 import type { Task } from '@/api/types'
 import { useCapabilityStore } from '@/stores/capabilities'
@@ -79,7 +80,7 @@ const applyingChangesetId = ref('')
 const events = ref<JobFlowEvent[]>([])
 const eventsLoading = ref(false)
 const eventFilter = ref('')
-const activeTab = ref('preflight')
+const activeTab = ref('execution')
 const deleteDialogOpen = ref(false)
 const deleting = ref(false)
 const capabilities = useCapabilityStore()
@@ -88,6 +89,7 @@ const workspaceDetail = ref<WorkspaceRecord | null>(null)
 const extendingRetention = ref(false)
 
 const TAB_ITEMS = [
+  { key: 'execution', label: '执行过程' },
   { key: 'preflight', label: '预检' },
   { key: 'manifest', label: 'Manifest' },
   { key: 'artifacts', label: '产物' },
@@ -418,6 +420,7 @@ watch(() => instance.value?.group_id, (groupId) => {
             :class="activeTab === tab.key ? 'border-b-2 border-blue-400 text-blue-300 font-medium' : 'text-muted-foreground'"
             @click="loadTab(tab.key)">{{ tab.label }}</button>
         </div>
+        <InstanceExecution v-if="activeTab === 'execution'" :instance-id="instanceId" />
         <PreflightPanel
           v-if="activeTab === 'preflight'"
           :result="preflight"

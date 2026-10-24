@@ -1255,3 +1255,49 @@ def test_execution_profile_revision_and_full_update():
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_instance_execution_process_lists_every_node():
+    store = MockConsulStore()
+    server = serve(
+        store,
+        host="127.0.0.1",
+        port=0,
+        auth_config=AuthConfig(mode="local", local_user="exec-test"),
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    port = server.server_address[1]
+    try:
+        _, instance_id = _start_running_instance(
+            store, port, "exec-template", "Execution",
+        )
+        status, retried = request(
+            port, "POST", f"/api/instances/{instance_id}/tasks/build/retry", {},
+        )
+        assert status == 200, retried
+        store.kv_put(
+            f"jobflows/instances/{instance_id}/tasks/build/attempts/"
+            f"{retried['attempt_id']}",
+            json.dumps({
+                "attempt_id": retried["attempt_id"], "state": "FAILED",
+                "provider": "codex", "error": "产物校验未通过",
+                "created_at": "2026-01-01T00:00:00Z",
+                "duration_ms": 1200,
+            }),
+        )
+
+        status, payload = request(
+            port, "GET", f"/api/instances/{instance_id}/attempts",
+        )
+
+        assert status == 200
+        nodes = {item["task_id"]: item for item in payload["tasks"]}
+        assert "build" in nodes
+        build = nodes["build"]
+        assert build["attempts"][0]["state"] == "FAILED"
+        assert build["attempts"][0]["provider"] == "codex"
+        assert "产物校验未通过" in build["attempts"][0]["failure_reason"]
+        assert "attempts" in build and "retry_feedback" in build
+    finally:
+        server.shutdown()

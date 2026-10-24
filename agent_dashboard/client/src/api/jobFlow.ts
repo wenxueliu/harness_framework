@@ -527,6 +527,27 @@ export async function listJobFlowTaskAttempts(
   return result.attempts ?? []
 }
 
+/** 整个实例的执行过程：每个节点一条记录，内含逐轮 attempt。 */
+export interface InstanceExecutionTask {
+  task_id: string
+  state: string
+  attempt_count: number
+  fail_count: number
+  retry_feedback?: RetryFeedback
+  error_message?: string
+  depends_on?: string[]
+  attempts: TaskAttemptRecord[]
+}
+
+export async function listJobFlowInstanceAttempts(
+  instanceId: string,
+): Promise<InstanceExecutionTask[]> {
+  const result = await apiRequest<{ tasks: InstanceExecutionTask[] }>(
+    `/api/instances/${encodeURIComponent(instanceId)}/attempts`,
+  )
+  return result.tasks ?? []
+}
+
 export async function approveJobFlowTask(instanceId: string, taskId: string) {
   return apiRequest<{ instance: JobFlowInstance; approved: boolean }>(
     `/api/instances/${encodeURIComponent(instanceId)}/tasks/${encodeURIComponent(taskId)}/approve`,

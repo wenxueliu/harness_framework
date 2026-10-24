@@ -1406,6 +1406,27 @@ class JobFlowService:
             result.append(record)
         return sorted(result, key=lambda item: (item["created_at"], item["attempt_id"]))
 
+    def list_instance_attempts(self, instance_id: str) -> list[dict]:
+        """整个实例的执行过程：每个节点折叠成一条记录，内含逐轮 attempt。
+
+        看板的「执行过程」页用它一次性拿到所有节点的执行历史，避免逐节点请求。
+        """
+        instance = self.get_instance(instance_id)
+        result: list[dict] = []
+        for task_id, task in instance["tasks"].items():
+            attempts = self.list_task_attempts(instance_id, task_id)
+            result.append({
+                "task_id": task_id,
+                "state": task.get("state", ""),
+                "attempt_count": task.get("attempt_count", 0),
+                "fail_count": task.get("fail_count", 0),
+                "retry_feedback": task.get("retry_feedback", {}),
+                "error_message": task.get("error_message", ""),
+                "depends_on": task.get("depends_on", []),
+                "attempts": attempts,
+            })
+        return sorted(result, key=lambda item: item["task_id"])
+
     def get_task_attempt(self, instance_id: str, task_id: str, attempt_id: str) -> dict:
         attempts = self.list_task_attempts(instance_id, task_id)
         attempt = next(

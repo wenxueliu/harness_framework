@@ -1189,6 +1189,8 @@ class APIHandler(BaseHTTPRequestHandler):
                 return {"tasks": instance["tasks"]}
             if len(parts) == 5 and parts[4] == "events":
                 return {"events": service.list_events(instance_id)}
+            if len(parts) == 5 and parts[4] == "attempts":
+                return {"tasks": service.list_instance_attempts(instance_id)}
             if len(parts) == 5 and parts[4] == "changesets":
                 return {"changesets": service.list_changesets(instance_id)}
             if len(parts) == 5 and parts[4] == "artifacts":

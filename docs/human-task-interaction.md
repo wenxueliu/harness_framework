@@ -25,7 +25,16 @@ session。旧 attempt、session 和事件仍保留用于审计。
 
 ## HTTP API
 
-查看任务的执行历史（每一次 attempt 的状态、耗时与失败原因）：
+查看整个实例的执行过程（每个节点 + 它每一轮 attempt）：
+
+```bash
+curl -s 'http://127.0.0.1:8080/api/instances/<instance_id>/attempts'
+```
+
+返回里每个节点带 `task_id`、`state`、`attempt_count`、`fail_count`、
+`retry_feedback` 和 `attempts[]`。看板实例页的「执行过程」标签直接用这份数据。
+
+查看单个任务的执行历史：
 
 ```bash
 curl -s 'http://127.0.0.1:8080/api/instances/<instance_id>/tasks/<task>/attempts'
