@@ -340,7 +340,7 @@ watch(() => instance.value?.group_id, (groupId) => {
         <button data-testid="pause-instance" class="rounded border border-border px-3 py-2 text-xs disabled:opacity-40" :disabled="controlling || instance?.status.state !== 'RUNNING'" @click="control('pause')">暂停</button>
         <button data-testid="abort-instance" class="rounded border border-red-400/50 px-3 py-2 text-xs text-red-300 disabled:opacity-40" :disabled="controlling || !['QUEUED','RUNNING','PAUSED','DRAINING'].includes(instance?.status.state || '')" @click="control('abort')">中止</button>
         <button data-testid="drain-instance" class="rounded border border-border px-3 py-2 text-xs disabled:opacity-40" :disabled="controlling || !['QUEUED','RUNNING','PAUSED'].includes(instance?.status.state || '')" @click="control('drain')">Drain</button>
-        <button data-testid="rerun-instance" class="rounded bg-blue-500 px-3 py-2 text-xs text-white" :disabled="rerunning" @click="editing = !editing">修改并重新执行</button>
+        <button data-testid="rerun-instance" class="rounded bg-blue-500 px-3 py-2 text-xs text-white disabled:cursor-not-allowed disabled:opacity-40" :disabled="rerunning || !instance" @click="editing = !editing">修改并重新执行</button>
         <button data-testid="delete-instance" class="rounded border border-red-400/50 px-3 py-2 text-xs text-red-300 disabled:cursor-not-allowed disabled:opacity-40" :disabled="!deletableStates.has(instance?.status.state || '')" title="只有排队中或终态实例可以删除" @click="removeInstance">删除实例</button>
       </div>
     </template>
@@ -472,14 +472,30 @@ watch(() => instance.value?.group_id, (groupId) => {
           </RouterLink>
         </div>
       </section>
-      <section v-if="editing" data-testid="instance-edit-panel" class="rounded-lg border border-blue-400/40 bg-card p-4">
-        <h2 class="text-sm font-semibold">创建后继实例</h2>
-        <p class="mt-1 text-xs text-muted-foreground">修改只影响后继实例；当前实例会先进入排空状态。</p>
-        <label class="mt-3 block text-xs text-muted-foreground">Git 分支 / ref<input v-model="gitRef" data-testid="instance-git-ref" class="mt-1 w-full rounded border border-input bg-background px-3 py-2 font-mono text-xs" /></label>
-        <label class="mt-3 block text-xs text-muted-foreground">输入参数 JSON<textarea v-model="parameterText" data-testid="instance-parameters" class="mt-1 min-h-28 w-full rounded border border-input bg-background p-2 font-mono text-xs" /></label>
-        <button data-testid="confirm-rerun" class="mt-3 rounded bg-blue-500 px-3 py-2 text-xs text-white" :disabled="rerunning" @click="rerun">创建后继并执行</button>
-      </section>
     </div>
+    <dialog
+      :open="editing"
+      data-testid="instance-edit-panel"
+      class="fixed inset-0 z-50 m-0 h-screen w-screen max-h-none max-w-none border-0 bg-black/60 p-0"
+      @click.self="editing = false"
+    >
+      <div class="fixed inset-0 flex items-center justify-center p-4" @click.self="editing = false">
+        <div class="w-full max-w-lg space-y-3 rounded-xl border border-blue-400/40 bg-card p-6" role="dialog" aria-modal="true" aria-labelledby="rerun-instance-title">
+          <h2 id="rerun-instance-title" class="text-base font-semibold">修改并重新执行</h2>
+          <p class="text-xs text-muted-foreground">修改只影响后继实例；当前实例会先进入排空状态。</p>
+          <label class="block text-xs text-muted-foreground">Git 分支 / ref
+            <input v-model="gitRef" data-testid="instance-git-ref" class="mt-1 w-full rounded border border-input bg-background px-3 py-2 font-mono text-xs" />
+          </label>
+          <label class="block text-xs text-muted-foreground">输入参数 JSON
+            <textarea v-model="parameterText" data-testid="instance-parameters" class="mt-1 min-h-28 w-full rounded border border-input bg-background p-2 font-mono text-xs" />
+          </label>
+          <div class="flex gap-3 pt-1">
+            <button class="flex-1 rounded border border-border px-4 py-2 text-sm hover:bg-accent" @click="editing = false">取消</button>
+            <button data-testid="confirm-rerun" class="flex-1 rounded bg-blue-500 px-4 py-2 text-sm text-white disabled:opacity-50" :disabled="rerunning" @click="rerun">{{ rerunning ? '提交中…' : '创建后继并执行' }}</button>
+          </div>
+        </div>
+      </div>
+    </dialog>
     <dialog
       :open="deleteDialogOpen"
       class="fixed inset-0 z-50 m-0 h-screen w-screen max-h-none max-w-none border-0 bg-black/60 p-0"
